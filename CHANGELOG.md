@@ -6,6 +6,13 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.0.1] - 2026-07-11
+
+### Changed
+
+- Replaced the diagram-like plugin icon with a minimal woven `R` monogram that remains legible at small sizes.
+- Simplified the light and dark wordmarks and documented the separation between the compact icon and extended brand narrative.
+
 ## [1.0.0] - 2026-07-11
 
 ### Added
@@ -19,5 +26,6 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.0.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...HEAD
+[1.0.1]: https://github.com/liyanqing90/rootloom/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/liyanqing90/rootloom/releases/tag/v1.0.0

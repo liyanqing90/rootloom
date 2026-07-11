@@ -7,9 +7,11 @@ Rootloom is a product name, not a category label. It describes how the project w
 
 The English tagline is **“Reliable Codex engineering, woven from the roots up.”** The supporting description may be used when more context is needed: **“From project truth to verified delivery.”**
 
-## Mark anatomy
+## Identity layers
 
-The mark uses one continuous fiber:
+The square icon is deliberately distilled: an iris ribbon forms the stem and bowl of an `R`, while a mint ribbon crosses above it to form the leg. The overlap is the loom; the monogram is the root. It remains legible at favicon and plugin-composer sizes and does not attempt to explain the architecture.
+
+The extended brand hero carries the larger product narrative:
 
 1. a small evidence network establishes the roots;
 2. five frames represent the five supported capability levels;
@@ -41,4 +43,4 @@ Amber is intentionally scarce. Do not use it for ordinary decoration; it signals
 | `assets/hero.svg` | Capability-level explainer |
 | `docs/diagram/architecture.svg` | Mechanism and enforcement architecture |
 
-Keep clear space around the mark equal to one capability-frame height. Do not recolor individual frames, remove the roots, add model/vendor logos, or place the mark on a similarly bright violet–mint gradient.
+Keep clear space around the icon equal to the ribbon width. Do not add nodes, text, checks, model/vendor logos, or architecture details to the square mark. Do not recolor either ribbon or place the icon on a similarly bright violet–mint gradient.
