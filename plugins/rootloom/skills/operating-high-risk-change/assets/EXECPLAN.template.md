@@ -1,0 +1,76 @@
+# <Task title>
+
+## Status
+
+- State: draft | in progress | blocked | complete
+- Owner: <name or agent>
+- Last updated: <YYYY-MM-DD>
+- Risk: R3 | R4
+
+## Goal and observable success
+
+<What changes for users or systems, and how completion is proven.>
+
+## Non-goals
+
+- <Explicitly excluded scope.>
+
+## Baseline evidence
+
+- <Current behavior, failing test, trace, metrics, relevant paths.>
+- <Pre-existing failures or dirty-tree constraints.>
+
+## Constraints and invariants
+
+- <Compatibility, security, data, performance, legal, cost, or operational rules.>
+
+## Impact map
+
+- Producers: <paths/services>
+- Consumers: <paths/services>
+- Persisted data: <tables/files/topics or none>
+- Public contracts: <APIs/schemas/config/CLI/events>
+- Generated artifacts: <paths/generator or none>
+- External systems: <accounts/environments/resources or none>
+
+## Design and decisions
+
+- Ownership: <where state/data/behavior lives>
+- Interfaces: <inputs, outputs, errors, contracts>
+- Dependency direction: <allowed edges>
+- Compatibility window: <old/new coexistence>
+- Alternatives rejected: <option and evidence-based reason>
+
+## Implementation sequence
+
+1. <Small independently verifiable expansion step.>
+2. <Migration/backfill/compatibility step.>
+3. <Verification and rollout step.>
+4. <Contraction only after its gate.>
+
+## Rollout, failure, and rollback
+
+- Dry-run/preview: <procedure>
+- Mixed-version behavior: <description>
+- Failure detection: <logs/metrics/errors/checks>
+- Rollback or compensation: <procedure>
+- Irreversible point: <none or exact approval gate>
+
+## Verification
+
+- Focused tests: `<commands>`
+- Contract/migration tests: `<commands>`
+- Type/lint/build/package: `<commands>`
+- UI/browser evidence: `<routes, states, screenshots>`
+- Security/dependency checks: `<commands>`
+- Post-action verification: `<checks>`
+
+## Risks
+
+- Risk: <failure mode>
+  - Mitigation: <control>
+  - Residual risk: <what remains>
+
+## Decision log
+
+- <YYYY-MM-DD> — <decision, evidence, consequence>

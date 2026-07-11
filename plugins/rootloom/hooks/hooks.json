@@ -1,0 +1,30 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/run_component_hook.py\" project-guidance-hook",
+            "timeout": 15,
+            "statusMessage": "Checking project guidance"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$PLUGIN_ROOT/hooks/run_component_hook.py\" subagent-audit-hook",
+            "timeout": 5,
+            "statusMessage": "Auditing subagent budget"
+          }
+        ]
+      }
+    ]
+  }
+}

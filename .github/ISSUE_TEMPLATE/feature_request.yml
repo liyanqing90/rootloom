@@ -1,0 +1,34 @@
+name: Feature request
+description: Propose a focused improvement that preserves the safety model.
+title: "[Feature]: "
+labels: [enhancement, triage]
+body:
+  - type: checkboxes
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues and documentation.
+          required: true
+        - label: The proposal does not require sending repository content to an external service.
+          required: true
+  - type: textarea
+    attributes:
+      label: Problem
+      description: Describe the repeated user or repository problem, not only the desired implementation.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Repository evidence
+      description: Which manifest, command, CI, documentation, or module-boundary evidence can support this feature deterministically?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Proposed behavior
+      description: Explain inputs, output, safety gates, and skip behavior.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Alternatives and trade-offs

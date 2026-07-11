@@ -1,0 +1,222 @@
+# rootloom:managed version=1
+# Codex command rules are experimental. Test every change with:
+# codex execpolicy check --pretty --rules <this-file> -- <command...>
+#
+# Rules primarily govern requests to run outside the sandbox; Hooks and
+# sandboxing remain necessary defense in depth. Ordinary local `git commit`
+# is explicitly allowed because it is reversible and does not publish remotely.
+
+prefix_rule(
+    pattern = ["git", "reset", "--hard"],
+    decision = "forbidden",
+    justification = "Do not discard working-tree or index changes. Use a surgical, reviewed alternative or temporarily change this policy only after explicit authorization.",
+    match = [
+        "git reset --hard",
+        "git reset --hard HEAD~1",
+    ],
+)
+
+# Inspection is still possible with `git clean --dry-run`; forced deletion is blocked.
+prefix_rule(
+    pattern = ["git", "clean"],
+    decision = "prompt",
+    justification = "git clean can delete untracked work. Inspect with --dry-run and require approval for the exact command.",
+    match = [
+        "git clean --dry-run",
+        "git clean -n",
+        "git clean -fd",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "clean", ["-f", "-fd", "-df", "-fdx", "-xdf", "-fxd", "--force"]],
+    decision = "forbidden",
+    justification = "Do not force-delete untracked user work. Remove only explicitly reviewed paths.",
+    match = [
+        "git clean -f",
+        "git clean -fd",
+        "git clean -fdx",
+        "git clean --force",
+    ],
+    not_match = [
+        "git clean --dry-run",
+        "git clean -n",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "checkout", "--"],
+    decision = "prompt",
+    justification = "Restoring files can discard local changes. Require approval for the exact paths.",
+    match = [
+        "git checkout -- src/app.ts",
+        "git checkout -- .",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "checkout", "--", [".", "/", "*", ":(top)"]],
+    decision = "forbidden",
+    justification = "Do not bulk-discard file changes. Apply a targeted, reviewed edit instead.",
+    match = [
+        "git checkout -- .",
+        "git checkout -- *",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "restore"],
+    decision = "prompt",
+    justification = "Restoring files may discard user work; require approval for the exact paths and flags.",
+    match = [
+        "git restore src/app.ts",
+        "git restore .",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "restore", [".", "/", "*", ":(top)"]],
+    decision = "forbidden",
+    justification = "Do not bulk-discard file changes. Restore only explicitly reviewed paths.",
+    match = [
+        "git restore .",
+        "git restore *",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "commit"],
+    decision = "allow",
+    justification = "Local commits are reversible repository history and are allowed. Remote publication remains governed separately by git push rules.",
+    match = [
+        "git commit -m test",
+        "git commit --amend",
+        "git commit --allow-empty -m checkpoint",
+    ],
+)
+
+prefix_rule(
+    pattern = ["git", "push"],
+    decision = "prompt",
+    justification = "Pushing changes affects a remote repository and requires explicit approval.",
+    match = [
+        "git push",
+        "git push origin main",
+        "git push --force-with-lease",
+    ],
+)
+
+# Catastrophic recursive deletions. Multiple common flag arrangements are listed
+# because prefix rules match argv positions exactly.
+prefix_rule(
+    pattern = ["rm", ["-rf", "-fr"], ["/", ".", "..", "~", "$HOME", "/*"]],
+    decision = "forbidden",
+    justification = "Refuse recursive forced deletion of root, home, the current directory, or its parent. Delete only reviewed paths.",
+    match = [
+        "rm -rf /",
+        "rm -rf .",
+        "rm -fr ..",
+    ],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-r", "--recursive"], ["-f", "--force"], ["/", ".", "..", "~", "$HOME", "/*"]],
+    decision = "forbidden",
+    justification = "Refuse recursive forced deletion of root, home, the current directory, or its parent.",
+    match = [
+        "rm -r -f /",
+        "rm --recursive --force .",
+    ],
+)
+
+prefix_rule(
+    pattern = ["rm", ["-f", "--force"], ["-r", "--recursive"], ["/", ".", "..", "~", "$HOME", "/*"]],
+    decision = "forbidden",
+    justification = "Refuse recursive forced deletion of root, home, the current directory, or its parent.",
+    match = [
+        "rm -f -r /",
+        "rm --force --recursive ..",
+    ],
+)
+
+prefix_rule(
+    pattern = [["npm", "pnpm", "cargo"], "publish"],
+    decision = "prompt",
+    justification = "Publishing a package is an external side effect and requires explicit approval.",
+    match = [
+        "npm publish",
+        "pnpm publish",
+        "cargo publish",
+    ],
+)
+
+prefix_rule(
+    pattern = ["yarn", "npm", "publish"],
+    decision = "prompt",
+    justification = "Publishing a package is an external side effect and requires explicit approval.",
+    match = ["yarn npm publish"],
+)
+
+prefix_rule(
+    pattern = ["twine", "upload"],
+    decision = "prompt",
+    justification = "Uploading a Python distribution is an external publication and requires explicit approval.",
+    match = ["twine upload dist/package.whl"],
+)
+
+prefix_rule(
+    pattern = ["docker", "push"],
+    decision = "prompt",
+    justification = "Pushing an image mutates a remote registry and requires explicit approval.",
+    match = ["docker push example/app:latest"],
+)
+
+prefix_rule(
+    pattern = ["kubectl", ["apply", "delete", "replace", "patch"]],
+    decision = "prompt",
+    justification = "This command can mutate a Kubernetes cluster; confirm cluster, namespace, target, authorization, and rollback.",
+    match = [
+        "kubectl apply -f deployment.yaml",
+        "kubectl delete pod app-1",
+    ],
+)
+
+prefix_rule(
+    pattern = ["helm", ["install", "upgrade", "uninstall", "rollback"]],
+    decision = "prompt",
+    justification = "This command mutates a Helm release; confirm environment, release, values, authorization, and rollback.",
+    match = [
+        "helm upgrade app ./chart",
+        "helm uninstall app",
+    ],
+)
+
+prefix_rule(
+    pattern = ["terraform", ["apply", "destroy", "import"]],
+    decision = "prompt",
+    justification = "This command can mutate managed infrastructure; require a reviewed plan and exact target approval.",
+    match = [
+        "terraform apply",
+        "terraform destroy -auto-approve",
+    ],
+)
+
+prefix_rule(
+    pattern = ["pulumi", ["up", "destroy", "import"]],
+    decision = "prompt",
+    justification = "This command can mutate managed infrastructure; require preview, target confirmation, authorization, and rollback.",
+    match = [
+        "pulumi up",
+        "pulumi destroy",
+    ],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", ["create", "delete"]],
+    decision = "prompt",
+    justification = "Creating or deleting a release is an external publication action and requires explicit approval.",
+    match = [
+        "gh release create v1.0.0",
+        "gh release delete v1.0.0",
+    ],
+)

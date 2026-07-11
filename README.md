@@ -1,0 +1,263 @@
+<p align="center">
+  <img src="plugins/rootloom/assets/icon.svg" width="112" alt="Rootloom logo">
+</p>
+
+<h1 align="center">Rootloom</h1>
+
+<p align="center">
+  <strong>Reliable Codex engineering, woven from the roots up.</strong>
+</p>
+
+<p align="center">
+  <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
+</p>
+
+<p align="center">
+  <a href="https://github.com/liyanqing90/rootloom/actions/workflows/ci.yml"><img src="https://github.com/liyanqing90/rootloom/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/liyanqing90/rootloom?color=6D5EF7" alt="MIT license"></a>
+  <a href="https://github.com/liyanqing90/rootloom/releases"><img src="https://img.shields.io/github/v/release/liyanqing90/rootloom?display_name=tag&sort=semver" alt="Latest release"></a>
+  <img src="https://img.shields.io/badge/Python-3.11%2B-39B98F" alt="Python 3.11+">
+</p>
+
+![Rootloom brand: evidence roots woven through capability frames into verified delivery](assets/rootloom-brand.webp)
+
+Rootloom lets a team install only the Codex capabilities it actually wants—without forcing every project to adopt subagents, Hooks, or a monolithic prompt:
+
+| Capability | Shipped result |
+| --- | --- |
+| Global policy | A refined, installable global [`AGENTS.md`](plugins/rootloom/assets/system/AGENTS.md) |
+| Project context | Automatic evidence-backed root guidance plus lazy nested guidance |
+| Guidance quality | `$refine-project-guidance` for durable semantic invariants without file-level documentation churn |
+| Engineering workflows | Ordinary change, review-only, high-risk, and opt-in high-assurance Skills |
+| Model routing | Four custom Agent TOMLs with explicit model, reasoning, role, and sandbox defaults |
+| Runtime and commands | A quality-first profile, four-thread concurrent cap, and tested command Rules |
+| Deterministic delivery | A staged `codex exec` runner with one writer, scope gates, verification, and independent review |
+
+The repository, marketplace, and plugin share one stable public ID: `rootloom`.
+
+## Why Rootloom
+
+**Root** is repository truth: source, schemas, tests, project guidance, and root-cause evidence. **Loom** is the structure that weaves Skills, Hooks, Rules, Agents, and verification into coherent capability layers. Seeding context is the first thread, not the whole product.
+
+![Rootloom capability map: five selectable levels](assets/hero.svg)
+
+## Why a system instead of a longer prompt
+
+OpenAI's current [GPT-5.6 guidance](https://developers.openai.com/api/docs/guides/latest-model) recommends lean prompts, stating rules once, and defining autonomy, approval boundaries, constraints, and success criteria clearly. Codex already gives each concern a better home:
+
+- [`AGENTS.md`](https://developers.openai.com/codex/agent-configuration/agents-md) for stable global and local guidance;
+- [Skills](https://developers.openai.com/codex/build-skills) for reusable procedures with progressive disclosure;
+- [custom agents](https://developers.openai.com/codex/agent-configuration/subagents) for role, model, reasoning, sandbox, MCP, and app configuration;
+- [Rules](https://developers.openai.com/codex/agent-configuration/rules) for command policy;
+- [Hooks](https://developers.openai.com/codex/hooks) for deterministic lifecycle work and audits;
+- profiles, scripts, tests, and CI for runtime defaults and executable proof.
+
+Putting everything into `AGENTS.md` wastes context and turns advice into fake enforcement. This project keeps each layer narrow and makes its actual enforcement boundary explicit.
+
+## Install
+
+Requirements:
+
+- Codex CLI or the Codex desktop app with plugin and lifecycle-Hook support;
+- Git;
+- Python 3.11 or newer.
+
+Add the GitHub marketplace and install the stable package ID:
+
+```bash
+codex plugin marketplace add liyanqing90/rootloom
+codex plugin add rootloom@rootloom
+```
+
+Start a new Codex task and choose the capability level before trusting optional Hooks:
+
+| Preset | What it enables | Subagents |
+| --- | --- | --- |
+| `skills-only` | Bundled Skills only; no user policy/runtime assets; lifecycle Hooks disabled | No |
+| `guidance` | Global policy + automatic project context | No |
+| `engineering` | Guidance + command safety; recommended for normal coding | No |
+| `delegated` | Engineering + atomic four-role delegation control | Yes |
+| `full` | Delegated + configured high-assurance profile | Yes |
+
+Then ask Codex to plan and apply the level—no hand-editing required:
+
+```text
+$setup-rootloom
+Show the capability levels, then plan and apply the engineering preset.
+```
+
+Use `full` when you want this repository's complete system. Advanced users can compose the stable dimensions `global-policy`, `project-context`, `command-safety`, `delegation-control`, and `high-assurance`; dependencies are closed automatically.
+
+After setup, open `/hooks` and review the two bundled commands. Trust the current definition if the selected layer enables either Hook:
+
+- `SessionStart` performs safe local project-guidance seeding only in `project-context`.
+- `SubagentStart` audits the cumulative child budget and named role/model routing only in `delegation-control`.
+
+The setup Skill is plan-first, backs up replacements, writes atomically, records hashes, and supports rollback. It refuses user-owned conflicts unless you explicitly authorize those exact replacements.
+
+See [Setup, update, and rollback](docs/setup.md) for the full contract.
+
+## What the setup installs
+
+| Capability | Path | Purpose |
+| --- | --- | --- |
+| `global-policy` | `~/.codex/AGENTS.md` | Lean global working agreement for authority, autonomy, engineering, evidence, routing, delegation, and communication |
+| `project-context` / Hooks | `~/.codex/.rootloom/components.json` | Independently enable project seeding and subagent auditing |
+| `delegation-control` | `~/.codex/config.toml` | Only `agents.max_threads = 4`, `max_depth = 1`, and interruption visibility; all unrelated keys are preserved |
+| `high-assurance` | `~/.codex/high-assurance.config.toml` | Sol/high, on-request, workspace-write quality-first CLI profile |
+| `delegation-control` | `~/.codex/agents/*.toml` | Atomic Terra evidence + Sol diagnosis, implementation, and verification role set |
+| `command-safety` | `~/.codex/rules/rootloom.rules` | Local commit allowed; publication, infrastructure, and destructive commands governed separately |
+
+Setup deliberately leaves your ordinary model, reasoning level, approval policy, sandbox, providers, MCP servers, plugins, and apps unchanged. It will not split `delegation-control` into a misleading partial role set.
+
+## The two `AGENTS.md` results
+
+The repository contains the actual polished outputs, not only prose about them:
+
+- [Global working agreement](plugins/rootloom/assets/system/AGENTS.md) — installed across projects.
+- [Polished project example](examples/AGENTS.project.md) — managed facts plus concise user-owned invariants.
+- [This repository's own AGENTS.md](AGENTS.md) — a live generated-and-refined example.
+
+### Global guidance owns stable behavior
+
+It defines authorization, reversible autonomy, working-tree protection, root-cause and scope defaults, evidence standards, workflow routing, automatic project guidance, delegation limits, and concise communication. It contains no repository commands, framework preferences, project architecture, or personality role-play.
+
+### Project guidance owns repository facts
+
+The `SessionStart` Hook deterministically extracts purpose, source-of-truth files, top-level structure, package manager, canonical commands, CI, and module boundaries. It writes only a marker-delimited block and preserves everything outside it.
+
+`$refine-project-guidance` adds only durable, evidence-cited invariants that change future decisions: ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture/migration/verification documents.
+
+Nested guidance is seeded only for a real module boundary with distinct manifests, commands, ownership, or invariants. The system never creates mandatory per-file L3 comments.
+
+## Workflow series
+
+| Skill | When it runs | Key contract |
+| --- | --- | --- |
+| `$setup-rootloom` | Explicit install, update, audit, layer change, or rollback | Choose a capability preset; plan first; never silently replace user policy |
+| `$seed-project-guidance` | Missing or structurally stale guidance | Deterministic facts only |
+| `$refine-project-guidance` | First non-trivial task, repeated mistakes, or architecture/contract changes | Durable project-specific invariants only |
+| `$operating-coding-change` | Ordinary R1/R2 implementation | Root cause, focused diff, proportional verification |
+| `$operating-code-review` | Review-only requests | Evidence-backed findings first; no edits |
+| `$operating-high-risk-change` | APIs, schemas, data, security, infrastructure, deploy, release | ExecPlan, compatibility, rollback, authorization gates |
+| `$high-assurance-coding-change` | Explicit controlled multi-agent request | Evidence → diagnosis gate → one writer → deterministic verification → independent review |
+
+Normal tasks stay single-agent. The high-assurance workflow is opt-in because multiple agents add token use, latency, and coordination risk.
+
+## Model routing
+
+When `delegation-control` is selected, the role split optimizes total delivery cost, not per-call price:
+
+```text
+evidence_explorer       gpt-5.6-terra / medium / read-only
+root_cause_reviewer     gpt-5.6-sol   / xhigh  / read-only
+implementation_worker   gpt-5.6-sol   / high   / workspace-write
+verification_reviewer   gpt-5.6-sol   / xhigh  / read-only
+```
+
+Terra compresses bounded evidence. Sol makes the expensive decisions, writes the code, and verifies the result. A weaker model never owns the final root cause, implementation, or acceptance decision.
+
+Custom Agent TOMLs are the model-routing source of truth. Skills own sequence and gates; Hooks only audit. Parent live permissions can override child defaults, so use the deterministic runner when hard stage isolation matters.
+
+## Why four can still look like ten
+
+`agents.max_threads = 4` limits **concurrently open threads**. It does not limit how many children a task can create over its lifetime. Four agents can finish, close, and be replaced by six more while never exceeding four open threads.
+
+The optional `delegation-control` layer adds two more controls:
+
+- a global and Skill-level total budget of four children per task;
+- a `SubagentStart` advisory counter that warns the UI and tells the fifth child to stop and report.
+
+The current Hook API cannot cancel a child at start, so the advisory is intentionally not presented as a hard guarantee. The deterministic high-assurance runner is the strict path.
+
+## Git commit no longer falls into the approval trap
+
+The Rules are tested to produce:
+
+```text
+git commit          → allow
+git push            → prompt
+git reset --hard    → forbidden
+```
+
+A local commit is reversible repository history; it is not remote publication. Push, release, package publication, infrastructure mutation, and destructive operations remain separately governed.
+
+Rules use the most restrictive matching result. If another broad rule says `git → prompt`, it overrides `git commit → allow`. Also, `approval_policy = "never"` cannot answer a prompt, so prompt-gated commands fail in non-interactive execution. The setup guide explains how to inspect this exact failure mode with `codex execpolicy check`.
+
+## High-assurance deterministic route
+
+When the native spawn surface cannot attest the requested custom role/model—or when exact order matters—run the bundled sequential pipeline:
+
+```bash
+python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
+  --repo /absolute/path/to/repo \
+  --task /absolute/path/to/task.md \
+  --verify 'make focused-test' \
+  --verify 'make check'
+```
+
+The runner loads the same four Agent TOMLs and enforces a repository lock, clean baseline, read-only stage snapshots, one writer, exact allowed paths, unchanged Git index, structured outputs, deterministic verification, independent review, and at most one repair cycle. Artifacts are private and must live outside the target repository.
+
+See [Architecture](docs/architecture.md) for the complete enforcement boundary.
+
+## GEB: keep the insight, remove the prompt debt
+
+The [GEB system](https://chunxiang.space/geb-system) correctly emphasizes hierarchical local context and a code/document feedback loop. This project retains those ideas as global → root → genuine-module guidance and automatic seeding.
+
+It rejects identity role-play, hidden-thinking instructions, universal file-length laws, exhaustive L2 inventories, mandatory L3 source headers, and documentation expansion that blocks unrelated work. Those patterns conflict with lean prompting and create stale duplicated terrain.
+
+Read the detailed [official-guidance and GEB analysis](docs/guidance-design.md).
+
+## Why there is no core MCP server
+
+The core needs local Git/filesystem evidence and native Codex configuration. An MCP server would add another process and trust surface without adding a missing capability.
+
+Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Do not make every coding task inherit it merely to complete an architecture checklist.
+
+## Safety model
+
+- Project seeding is local, bounded, deterministic, standard-library-only, and network-free.
+- Unmarked guidance, overrides, symlinks, untrusted repositories, opted-out projects, temporary/vendor/cache trees, secret-like content, and malformed managed blocks are preserved or rejected.
+- Global setup is explicit, atomic, backed up, hash-checked, and rollback-aware.
+- Read-only roles disable apps by default; only one standard role is write-capable.
+- Rules, sandboxing, Hooks, Skills, and model instructions are defense in depth, not a substitute for OS policy, credentials, branch protection, review, or CI.
+
+## Update
+
+```bash
+codex plugin marketplace upgrade rootloom
+codex plugin add rootloom@rootloom
+```
+
+Review the updated Hook definition, start a new task, and invoke `$setup-rootloom` again. Its plan shows only changed managed assets.
+
+## Development
+
+```bash
+git clone https://github.com/liyanqing90/rootloom.git
+cd rootloom
+make check
+```
+
+`make check` validates the marketplace, plugin, Hooks, all Skills and UI metadata, setup assets, Python/SVG syntax, links, release hygiene, secret-like content, command Rules, seeder behavior, setup/rollback, subagent budget, and deterministic runner gates.
+
+The live smoke test uses a disposable `CODEX_HOME`:
+
+```bash
+make smoke
+```
+
+## Documentation
+
+- [Brand system and asset usage](docs/brand.md)
+- [Architecture and enforcement boundaries](docs/architecture.md)
+- [Guidance design and GEB analysis](docs/guidance-design.md)
+- [Setup, update, rollback, commit policy, and subagent limits](docs/setup.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [Contributing](CONTRIBUTING.md)
+- [Security policy](SECURITY.md)
+- [Changelog](CHANGELOG.md)
+
+## License
+
+[MIT](LICENSE) © 2026 liyanqing.

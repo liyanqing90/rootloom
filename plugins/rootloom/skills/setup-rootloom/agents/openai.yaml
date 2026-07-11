@@ -1,0 +1,6 @@
+interface:
+  display_name: "Set Up Rootloom"
+  short_description: "Choose and install a Codex capability layer"
+  default_prompt: "Use $setup-rootloom to show the capability levels, plan the right layer, and install it safely."
+policy:
+  allow_implicit_invocation: false

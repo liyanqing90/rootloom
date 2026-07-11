@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/liyanqing90/rootloom/security/advisories/new
+    about: Report vulnerabilities privately. Do not create a public issue.
+  - name: Support guide
+    url: https://github.com/liyanqing90/rootloom/blob/main/SUPPORT.md
+    about: Check diagnostic steps and choose the right support channel.

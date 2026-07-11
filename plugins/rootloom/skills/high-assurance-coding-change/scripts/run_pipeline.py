@@ -1,0 +1,1517 @@
+#!/usr/bin/env python3
+"""Run a model-routed high-assurance coding pipeline with explicit stage gates."""
+
+from __future__ import annotations
+
+import argparse
+from contextlib import contextmanager
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+from pathlib import PurePosixPath
+import re
+import shlex
+import signal
+import subprocess
+import sys
+import textwrap
+import tomllib
+from typing import Any, Iterator
+
+
+ROLE_FILES = {
+    "evidence": "evidence_explorer.toml",
+    "diagnosis": "root_cause_reviewer.toml",
+    "implementation": "implementation_worker.toml",
+    "review": "verification_reviewer.toml",
+}
+
+ROLE_SANDBOXES = {
+    "evidence": "read-only",
+    "diagnosis": "read-only",
+    "implementation": "workspace-write",
+    "review": "read-only",
+}
+
+COMMON_DISABLED_FEATURES = (
+    "plugins",
+    "apps",
+    "remote_plugin",
+    "memories",
+    "tool_suggest",
+)
+
+VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
+VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
+HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
+MAX_DELTA_PROMPT_CHARS = 120_000
+RUNNER_VERSION = "2.0"
+
+EVIDENCE_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "observed_facts": {"type": "array", "items": {"type": "string"}},
+        "execution_path": {"type": "array", "items": {"type": "string"}},
+        "reproduction": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "status": {
+                    "type": "string",
+                    "enum": ["reproduced", "not_reproduced", "not_attempted"],
+                },
+                "evidence": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["status", "evidence"],
+        },
+        "scope": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "direct": {"type": "array", "items": {"type": "string"}},
+                "possible": {"type": "array", "items": {"type": "string"}},
+                "excluded": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": ["direct", "possible", "excluded"],
+        },
+        "unknowns": {"type": "array", "items": {"type": "string"}},
+        "hypotheses": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "hypothesis": {"type": "string"},
+                    "supporting_evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                    "contradicting_evidence": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "required": [
+                    "hypothesis",
+                    "supporting_evidence",
+                    "contradicting_evidence",
+                ],
+            },
+        },
+    },
+    "required": [
+        "observed_facts",
+        "execution_path",
+        "reproduction",
+        "scope",
+        "unknowns",
+        "hypotheses",
+    ],
+}
+
+DIAGNOSIS_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "decision": {"type": "string", "enum": ["GO", "NO_GO"]},
+        "root_cause": {"type": "string"},
+        "violated_invariant": {"type": "string"},
+        "rejected_alternatives": {"type": "array", "items": {"type": "string"}},
+        "change_contract": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "allowed_paths": {"type": "array", "items": {"type": "string"}},
+                "allowed_behavior": {"type": "array", "items": {"type": "string"}},
+                "forbidden_scope": {"type": "array", "items": {"type": "string"}},
+                "preserved_contracts": {"type": "array", "items": {"type": "string"}},
+                "acceptance_criteria": {"type": "array", "items": {"type": "string"}},
+            },
+            "required": [
+                "allowed_paths",
+                "allowed_behavior",
+                "forbidden_scope",
+                "preserved_contracts",
+                "acceptance_criteria",
+            ],
+        },
+        "required_tests": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "decision",
+        "root_cause",
+        "violated_invariant",
+        "rejected_alternatives",
+        "change_contract",
+        "required_tests",
+        "risks",
+    ],
+}
+
+IMPLEMENTATION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "status": {"type": "string", "enum": ["completed", "blocked"]},
+        "files_changed": {"type": "array", "items": {"type": "string"}},
+        "behavioral_change": {"type": "string"},
+        "tests_run": {"type": "array", "items": {"type": "string"}},
+        "diff_risks": {"type": "array", "items": {"type": "string"}},
+        "deviations": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "status",
+        "files_changed",
+        "behavioral_change",
+        "tests_run",
+        "diff_risks",
+        "deviations",
+    ],
+}
+
+REVIEW_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "verdict": {"type": "string", "enum": ["PASS", "FAIL"]},
+        "findings": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "severity": {
+                        "type": "string",
+                        "enum": ["BLOCKER", "HIGH", "MEDIUM", "LOW"],
+                    },
+                    "location": {"type": "string"},
+                    "evidence": {"type": "string"},
+                    "failure_mode": {"type": "string"},
+                    "correction": {"type": "string"},
+                },
+                "required": [
+                    "severity",
+                    "location",
+                    "evidence",
+                    "failure_mode",
+                    "correction",
+                ],
+            },
+        },
+        "contract_compliance": {"type": "array", "items": {"type": "string"}},
+        "test_adequacy": {"type": "string"},
+        "residual_risks": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [
+        "verdict",
+        "findings",
+        "contract_compliance",
+        "test_adequacy",
+        "residual_risks",
+    ],
+}
+
+
+class PipelineError(RuntimeError):
+    """A controlled pipeline failure with a stable exit code."""
+
+    def __init__(self, message: str, exit_code: int = 1) -> None:
+        super().__init__(message)
+        self.exit_code = exit_code
+
+
+def require_nonempty_text(value: Any, field: str) -> None:
+    if not isinstance(value, str) or not value.strip():
+        raise PipelineError(f"semantic gate failed: {field} must be non-empty", 8)
+
+
+def require_nonempty_list(value: Any, field: str) -> None:
+    if not isinstance(value, list) or not value:
+        raise PipelineError(f"semantic gate failed: {field} must be non-empty", 8)
+
+
+def normalize_repo_path(value: str, *, contract: bool = False) -> str:
+    candidate = value.strip() if contract else value
+    if not candidate or "\x00" in candidate or "\\" in candidate:
+        raise PipelineError(f"unsafe repository path: {value!r}", 8)
+    path = PurePosixPath(candidate)
+    if path.is_absolute() or candidate.startswith("./"):
+        raise PipelineError(f"repository path must be relative and normalized: {value!r}", 8)
+    if any(part in {"", ".", ".."} for part in path.parts):
+        raise PipelineError(f"repository path contains an unsafe segment: {value!r}", 8)
+    if path.parts[0] == ".git":
+        raise PipelineError(f"repository metadata is outside the change contract: {value!r}", 8)
+    return path.as_posix()
+
+
+def normalize_allowed_paths(values: Any) -> list[tuple[str, bool]]:
+    require_nonempty_list(values, "change_contract.allowed_paths")
+    rules: list[tuple[str, bool]] = []
+    for raw in values:
+        if not isinstance(raw, str):
+            raise PipelineError("allowed_paths entries must be strings", 8)
+        value = raw.strip()
+        recursive = value.endswith("/**") or value.endswith("/")
+        base = value[:-3] if value.endswith("/**") else value.rstrip("/")
+        if any(token in base for token in ("*", "?", "[", "]")):
+            raise PipelineError(
+                f"unsupported allowed_paths glob {raw!r}; use an exact path or directory/**",
+                8,
+            )
+        normalized = normalize_repo_path(base, contract=True)
+        rules.append((normalized, recursive))
+    return rules
+
+
+def path_is_allowed(path: str, rules: list[tuple[str, bool]]) -> bool:
+    normalized = normalize_repo_path(path)
+    return any(
+        normalized == base or (recursive and normalized.startswith(base + "/"))
+        for base, recursive in rules
+    )
+
+
+def validate_evidence(value: dict[str, Any]) -> None:
+    reproduction = value.get("reproduction", {})
+    if reproduction.get("status") == "reproduced" and not reproduction.get("evidence"):
+        raise PipelineError(
+            "semantic gate failed: reproduced evidence must include reproduction evidence",
+            8,
+        )
+
+
+def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
+    decision = value.get("decision")
+    if decision != "GO":
+        return []
+    require_nonempty_text(value.get("root_cause"), "root_cause")
+    require_nonempty_text(value.get("violated_invariant"), "violated_invariant")
+    contract = value.get("change_contract")
+    if not isinstance(contract, dict):
+        raise PipelineError("semantic gate failed: GO requires a change_contract", 8)
+    rules = normalize_allowed_paths(contract.get("allowed_paths"))
+    require_nonempty_list(contract.get("allowed_behavior"), "change_contract.allowed_behavior")
+    require_nonempty_list(
+        contract.get("acceptance_criteria"),
+        "change_contract.acceptance_criteria",
+    )
+    require_nonempty_list(value.get("required_tests"), "required_tests")
+    return rules
+
+
+def validate_implementation(
+    value: dict[str, Any],
+    allowed_rules: list[tuple[str, bool]],
+    actual_paths: set[str],
+) -> None:
+    if value.get("status") != "completed":
+        if actual_paths:
+            raise PipelineError(
+                "blocked implementation changed repository paths: "
+                + ", ".join(sorted(actual_paths)),
+                6,
+            )
+        return
+    require_nonempty_text(value.get("behavioral_change"), "behavioral_change")
+    require_nonempty_list(value.get("files_changed"), "files_changed")
+    deviations = value.get("deviations")
+    if deviations:
+        raise PipelineError(
+            "semantic gate failed: completed implementation contains unapproved deviations",
+            8,
+        )
+    reported_paths: list[str] = []
+    for raw in value["files_changed"]:
+        if not isinstance(raw, str):
+            raise PipelineError("files_changed entries must be strings", 8)
+        path = normalize_repo_path(raw, contract=True)
+        reported_paths.append(path)
+    outside = [path for path in reported_paths if not path_is_allowed(path, allowed_rules)]
+    if outside:
+        raise PipelineError(
+            "semantic gate failed: implementation reported paths outside the contract: "
+            + ", ".join(outside),
+            8,
+        )
+    reported = set(reported_paths)
+    if reported != actual_paths:
+        missing = sorted(actual_paths - reported)
+        extra = sorted(reported - actual_paths)
+        details = []
+        if missing:
+            details.append("unreported actual paths=" + ", ".join(missing))
+        if extra:
+            details.append("reported but unchanged paths=" + ", ".join(extra))
+        raise PipelineError(
+            "semantic gate failed: files_changed does not equal the actual stage delta: "
+            + "; ".join(details),
+            8,
+        )
+
+
+def validate_review(value: dict[str, Any]) -> None:
+    findings = value.get("findings")
+    if not isinstance(findings, list):
+        raise PipelineError("semantic gate failed: review findings must be a list", 8)
+    hard = [
+        finding
+        for finding in findings
+        if isinstance(finding, dict) and finding.get("severity") in HARD_REVIEW_SEVERITIES
+    ]
+    if value.get("verdict") == "PASS" and hard:
+        raise PipelineError(
+            "semantic gate failed: PASS review contains BLOCKER or HIGH findings",
+            8,
+        )
+    if value.get("verdict") == "FAIL" and not findings:
+        raise PipelineError("semantic gate failed: FAIL review must include findings", 8)
+    require_nonempty_list(value.get("contract_compliance"), "contract_compliance")
+    require_nonempty_text(value.get("test_adequacy"), "test_adequacy")
+
+
+def run_bytes(argv: list[str], cwd: Path) -> bytes:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace")
+        raise PipelineError(
+            f"command failed ({result.returncode}): {shlex.join(argv)}\n{message}",
+        )
+    return result.stdout
+
+
+def run_text_exact(argv: list[str], cwd: Path) -> str:
+    return run_bytes(argv, cwd).decode("utf-8", errors="backslashreplace")
+
+
+def git_status_raw(repo: Path) -> bytes:
+    return run_bytes(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        repo,
+    )
+
+
+def ensure_supported_repository_topology(repo: Path) -> None:
+    stage_entries = run_bytes(["git", "ls-files", "--stage", "-z"], repo)
+    gitlinks: list[str] = []
+    for entry in stage_entries.split(b"\x00"):
+        if not entry:
+            continue
+        if entry.startswith(b"160000 "):
+            _, _, raw_path = entry.partition(b"\t")
+            gitlinks.append(os.fsdecode(raw_path))
+
+    nested: list[str] = []
+    root_git = repo / ".git"
+    for current_raw, directories, files in os.walk(repo, followlinks=False):
+        current = Path(current_raw)
+        candidate = current / ".git"
+        if candidate == root_git:
+            if ".git" in directories:
+                directories.remove(".git")
+            continue
+        if ".git" in directories:
+            nested.append(str(candidate.relative_to(repo)))
+            directories.remove(".git")
+        if ".git" in files:
+            nested.append(str(candidate.relative_to(repo)))
+
+    if gitlinks or nested:
+        details = []
+        if gitlinks:
+            details.append("gitlinks=" + ", ".join(sorted(gitlinks)))
+        if nested:
+            details.append("nested repositories=" + ", ".join(sorted(nested)))
+        raise PipelineError(
+            "submodules and nested Git repositories are not supported by the strict "
+            "snapshot gate; use an isolated flattened worktree or a repository-specific "
+            "external pipeline (" + "; ".join(details) + ")",
+            9,
+        )
+
+
+def optional_git_bytes(argv: list[str], repo: Path) -> bytes:
+    result = subprocess.run(
+        argv,
+        cwd=repo,
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if result.returncode in (0, 1):
+        return result.stdout
+    message = result.stderr.decode("utf-8", errors="replace")
+    raise PipelineError(
+        f"command failed ({result.returncode}): {shlex.join(argv)}\n{message}",
+    )
+
+
+def tree_fingerprint(root: Path) -> dict[str, Any]:
+    def metadata_fingerprint(path: Path) -> dict[str, Any]:
+        try:
+            info = path.lstat()
+        except FileNotFoundError:
+            return {"kind": "missing"}
+        if path.is_dir() and not path.is_symlink():
+            return {"kind": "directory", "mode": info.st_mode}
+        return file_fingerprint(path)
+
+    if not root.exists() and not root.is_symlink():
+        return {".": {"kind": "missing"}}
+    if not root.is_dir() or root.is_symlink():
+        return {".": file_fingerprint(root)}
+    values: dict[str, Any] = {".": metadata_fingerprint(root)}
+    for path in sorted(root.rglob("*")):
+        values[path.relative_to(root).as_posix()] = metadata_fingerprint(path)
+    return values
+
+
+def git_control_state(repo: Path) -> dict[str, Any]:
+    common_raw = run_checked(["git", "rev-parse", "--git-common-dir"], repo)
+    common_dir = Path(common_raw)
+    if not common_dir.is_absolute():
+        common_dir = (repo / common_dir).resolve()
+    git_dir_raw = run_checked(["git", "rev-parse", "--git-dir"], repo)
+    git_dir = Path(git_dir_raw)
+    if not git_dir.is_absolute():
+        git_dir = (repo / git_dir).resolve()
+    operation_files = (
+        "ORIG_HEAD",
+        "MERGE_HEAD",
+        "CHERRY_PICK_HEAD",
+        "REVERT_HEAD",
+        "REBASE_HEAD",
+        "BISECT_LOG",
+        "AUTO_MERGE",
+    )
+    gitfile_path = repo / ".git"
+    gitfile_state = (
+        {"kind": "directory", "mode": gitfile_path.lstat().st_mode}
+        if gitfile_path.is_dir() and not gitfile_path.is_symlink()
+        else file_fingerprint(gitfile_path)
+    )
+    return {
+        "head": run_bytes(["git", "rev-parse", "--verify", "HEAD"], repo),
+        "symbolic_head": optional_git_bytes(["git", "symbolic-ref", "-q", "HEAD"], repo),
+        "refs": run_bytes(
+            [
+                "git",
+                "for-each-ref",
+                "--sort=refname",
+                "--format=%(refname)%00%(objectname)%00%(symref)",
+            ],
+            repo,
+        ),
+        "config": file_fingerprint(common_dir / "config"),
+        "config_worktree": file_fingerprint(git_dir / "config.worktree"),
+        "gitfile": gitfile_state,
+        "hooks": tree_fingerprint(common_dir / "hooks"),
+        "info": tree_fingerprint(common_dir / "info"),
+        "logs": tree_fingerprint(git_dir / "logs"),
+        "operation_files": {
+            name: file_fingerprint(git_dir / name) for name in operation_files
+        },
+        "sequencer": tree_fingerprint(git_dir / "sequencer"),
+        "rebase_apply": tree_fingerprint(git_dir / "rebase-apply"),
+        "rebase_merge": tree_fingerprint(git_dir / "rebase-merge"),
+        "alternates": file_fingerprint(common_dir / "objects" / "info" / "alternates"),
+    }
+
+
+def parse_status_paths(raw: bytes) -> set[str]:
+    fields = raw.split(b"\x00")
+    paths: set[str] = set()
+    index = 0
+    while index < len(fields):
+        entry = fields[index]
+        index += 1
+        if not entry:
+            continue
+        if len(entry) < 4 or entry[2:3] != b" ":
+            raise PipelineError(f"could not parse git status entry: {entry!r}")
+        status = entry[:2].decode("ascii", errors="strict")
+        paths.add(normalize_repo_path(os.fsdecode(entry[3:])))
+        if "R" in status or "C" in status:
+            if index >= len(fields) or not fields[index]:
+                raise PipelineError("could not parse renamed/copied git status entry")
+            paths.add(normalize_repo_path(os.fsdecode(fields[index])))
+            index += 1
+    return paths
+
+
+def file_fingerprint(path: Path) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"kind": "missing"}
+    base: dict[str, Any] = {"mode": info.st_mode}
+    if path.is_symlink():
+        target = os.readlink(path)
+        base.update(
+            kind="symlink",
+            target=target,
+            sha256=hashlib.sha256(os.fsencode(target)).hexdigest(),
+        )
+        return base
+    if path.is_file():
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        base.update(kind="file", size=info.st_size, sha256=digest.hexdigest())
+        return base
+    if path.is_dir():
+        nested = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(path),
+                "status",
+                "--porcelain=v1",
+                "-z",
+                "--untracked-files=all",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        head = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "HEAD"],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+        payload = head.stdout + b"\x00" + nested.stdout
+        base.update(kind="directory", sha256=hashlib.sha256(payload).hexdigest())
+        return base
+    base.update(kind="other", size=info.st_size)
+    return base
+
+
+def capture_repo_state(repo: Path) -> dict[str, Any]:
+    ensure_supported_repository_topology(repo)
+    status_raw = git_status_raw(repo)
+    visible_raw = run_bytes(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+        repo,
+    )
+    ignored_raw = run_bytes(
+        ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+        repo,
+    )
+    paths = {
+        normalize_repo_path(os.fsdecode(item))
+        for item in (visible_raw + ignored_raw).split(b"\x00")
+        if item
+    }
+    return {
+        "status_raw": status_raw,
+        "paths": paths,
+        "worktree": {path: file_fingerprint(repo / path) for path in paths},
+        "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
+        "git_control": git_control_state(repo),
+    }
+
+
+def changed_paths_between(before: dict[str, Any], after: dict[str, Any]) -> set[str]:
+    paths = before["paths"] | after["paths"]
+    missing = {"kind": "missing"}
+    return {
+        path
+        for path in paths
+        if before["worktree"].get(path, missing) != after["worktree"].get(path, missing)
+    }
+
+
+def assert_repo_unchanged(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    stage: str,
+) -> None:
+    paths = sorted(changed_paths_between(before, after))
+    index_changed = before["index"] != after["index"]
+    control_changed = before["git_control"] != after["git_control"]
+    if paths or index_changed or control_changed:
+        detail = []
+        if paths:
+            detail.append("paths=" + ", ".join(paths))
+        if index_changed:
+            detail.append("Git index changed")
+        if control_changed:
+            detail.append("Git control metadata changed")
+        raise PipelineError(
+            f"{stage} was required to be repository-read-only but changed state: "
+            + "; ".join(detail),
+            6,
+        )
+
+
+def untracked_manifest(
+    repo: Path,
+    only_paths: set[str] | None = None,
+) -> list[dict[str, Any]]:
+    raw = run_bytes(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        repo,
+    )
+    ignored = run_bytes(
+        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
+        repo,
+    )
+    manifest: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in (raw + ignored).split(b"\x00"):
+        if not item:
+            continue
+        path = normalize_repo_path(os.fsdecode(item))
+        if path in seen:
+            continue
+        seen.add(path)
+        if only_paths is not None and path not in only_paths:
+            continue
+        entry = {"path": path, **file_fingerprint(repo / path)}
+        manifest.append(entry)
+    return manifest
+
+
+def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
+    chunks: list[str] = []
+    for entry in manifest:
+        path = entry["path"]
+        result = subprocess.run(
+            [
+                "git",
+                "diff",
+                "--no-index",
+                "--binary",
+                "--full-index",
+                "--no-ext-diff",
+                "--",
+                "/dev/null",
+                path,
+            ],
+            cwd=repo,
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        if result.returncode not in (0, 1):
+            raise PipelineError(
+                f"could not capture untracked delta for {path}: "
+                + result.stderr.decode("utf-8", errors="backslashreplace").strip(),
+            )
+        chunks.append(result.stdout.decode("utf-8", errors="backslashreplace"))
+    return "".join(chunks)
+
+
+def capture_delta(
+    repo: Path,
+    run_dir: Path,
+    prefix: str,
+    introduced_paths: set[str],
+    status_raw: bytes,
+) -> dict[str, Any]:
+    status_text = status_raw.decode("utf-8", errors="backslashreplace").replace("\x00", "\n")
+    staged = run_text_exact(
+        ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
+        repo,
+    )
+    unstaged = run_text_exact(
+        ["git", "diff", "--binary", "--full-index", "--no-ext-diff"],
+        repo,
+    )
+    combined = run_text_exact(
+        ["git", "diff", "HEAD", "--binary", "--full-index", "--no-ext-diff"],
+        repo,
+    )
+    manifest = untracked_manifest(repo, introduced_paths)
+    untracked = untracked_patch(repo, manifest)
+    (run_dir / f"{prefix}-status.txt").write_text(status_text, encoding="utf-8")
+    (run_dir / f"{prefix}-staged.patch").write_text(staged, encoding="utf-8")
+    (run_dir / f"{prefix}-unstaged.patch").write_text(unstaged, encoding="utf-8")
+    (run_dir / f"{prefix}-head-to-worktree.patch").write_text(combined, encoding="utf-8")
+    (run_dir / f"{prefix}-untracked.patch").write_text(untracked, encoding="utf-8")
+    write_json(run_dir / f"{prefix}-untracked.json", manifest)
+    summary = {
+        "artifacts": {
+            "status": f"{prefix}-status.txt",
+            "staged_patch": f"{prefix}-staged.patch",
+            "unstaged_patch": f"{prefix}-unstaged.patch",
+            "head_to_worktree_patch": f"{prefix}-head-to-worktree.patch",
+            "untracked_patch": f"{prefix}-untracked.patch",
+            "untracked_manifest": f"{prefix}-untracked.json",
+        },
+        "status": status_text,
+        "changed_paths": sorted(parse_status_paths(status_raw)),
+        "introduced_paths": sorted(introduced_paths),
+        "untracked": manifest,
+        "staged_patch": staged,
+        "unstaged_patch": unstaged,
+        "head_to_worktree_patch": combined,
+        "untracked_patch": untracked,
+    }
+    return summary
+
+
+def compact_delta(delta: dict[str, Any]) -> str:
+    payload = json.dumps(delta, ensure_ascii=False, indent=2)
+    if len(payload) <= MAX_DELTA_PROMPT_CHARS:
+        return payload
+    head = payload[: MAX_DELTA_PROMPT_CHARS // 2]
+    tail = payload[-MAX_DELTA_PROMPT_CHARS // 2 :]
+    return (
+        head
+        + "\n... DELTA TRUNCATED IN PROMPT; FULL REPOSITORY STATE REMAINS INSPECTABLE ...\n"
+        + tail
+    )
+
+
+def enforce_repository_contract(
+    *,
+    repo: Path,
+    run_dir: Path,
+    prefix: str,
+    baseline: dict[str, Any],
+    allowed_rules: list[tuple[str, bool]],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    current = capture_repo_state(repo)
+    introduced = changed_paths_between(baseline, current)
+    delta = capture_delta(repo, run_dir, prefix, introduced, current["status_raw"])
+    if current["index"] != baseline["index"]:
+        raise PipelineError(
+            f"Git index changed during the pipeline; inspect {run_dir / (prefix + '-staged.patch')}",
+            6,
+        )
+    if current["git_control"] != baseline["git_control"]:
+        raise PipelineError("Git control metadata changed during the pipeline", 6)
+    outside = sorted(path for path in introduced if not path_is_allowed(path, allowed_rules))
+    if outside:
+        raise PipelineError(
+            "repository paths changed outside the approved contract: " + ", ".join(outside),
+            6,
+        )
+    return delta, current
+
+
+def terminate_process_group(process: subprocess.Popen[str]) -> str:
+    try:
+        os.killpg(process.pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pass
+    try:
+        output, _ = process.communicate(timeout=5)
+        return output or ""
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        output, _ = process.communicate()
+        return output or ""
+
+
+def run_managed(
+    argv: list[str],
+    *,
+    cwd: Path,
+    timeout: int,
+    input_text: str | None = None,
+) -> tuple[int, str, bool]:
+    environment = os.environ.copy()
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    process = subprocess.Popen(
+        argv,
+        cwd=cwd,
+        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        start_new_session=True,
+        env=environment,
+    )
+    try:
+        output, _ = process.communicate(input=input_text, timeout=timeout)
+        return process.returncode, output or "", False
+    except subprocess.TimeoutExpired:
+        output = terminate_process_group(process)
+        return 124, output, True
+    except BaseException:
+        if process.poll() is None:
+            terminate_process_group(process)
+        raise
+
+
+@contextmanager
+def repository_lock(repo: Path) -> Iterator[Path]:
+    common_raw = run_checked(["git", "rev-parse", "--git-common-dir"], repo)
+    common_dir = Path(common_raw)
+    if not common_dir.is_absolute():
+        common_dir = (repo / common_dir).resolve()
+    lock_path = common_dir / "codex-high-assurance.lock"
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    handle = os.fdopen(descriptor, "r+", encoding="utf-8")
+    try:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            handle.seek(0)
+            owner = handle.read().strip() or "unknown owner"
+            raise PipelineError(
+                f"another high-assurance pipeline holds {lock_path}: {owner}",
+                7,
+            ) from exc
+        handle.seek(0)
+        handle.truncate()
+        handle.write(f"pid={os.getpid()} acquired={datetime.now(timezone.utc).isoformat()}\n")
+        handle.flush()
+        os.fchmod(handle.fileno(), 0o600)
+        yield lock_path
+    finally:
+        try:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        finally:
+            handle.close()
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Run evidence -> diagnosis -> one writer -> verification -> review.",
+    )
+    parser.add_argument("--repo", required=True, type=Path, help="Git repository root")
+    parser.add_argument("--task", required=True, type=Path, help="UTF-8 task Markdown file")
+    parser.add_argument(
+        "--verify",
+        action="append",
+        required=True,
+        help="Verification command parsed without a shell; repeat for multiple commands",
+    )
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="Allow a dirty worktree after recording its baseline (clean is safer)",
+    )
+    parser.add_argument(
+        "--max-repair-cycles",
+        type=int,
+        choices=(0, 1),
+        default=1,
+        help="Maximum targeted repair cycles after verification or review failure",
+    )
+    parser.add_argument(
+        "--run-root",
+        type=Path,
+        default=None,
+        help="Artifact root; defaults to $CODEX_HOME/runs/high-assurance",
+    )
+    parser.add_argument("--codex-bin", default="codex", help="Codex executable")
+    parser.add_argument("--stage-timeout", type=int, default=3600)
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args()
+
+
+def run_checked(argv: list[str], cwd: Path) -> str:
+    result = subprocess.run(
+        argv,
+        cwd=cwd,
+        check=False,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+    )
+    if result.returncode != 0:
+        raise PipelineError(
+            f"command failed ({result.returncode}): {shlex.join(argv)}\n{result.stdout}",
+        )
+    return result.stdout.strip()
+
+
+def load_role(codex_home: Path, stage: str) -> dict[str, Any]:
+    path = codex_home / "agents" / ROLE_FILES[stage]
+    if not path.is_file():
+        raise PipelineError(f"missing role file: {path}")
+    with path.open("rb") as handle:
+        role = tomllib.load(handle)
+    for key in (
+        "model",
+        "model_reasoning_effort",
+        "sandbox_mode",
+        "developer_instructions",
+    ):
+        if not role.get(key):
+            raise PipelineError(f"{path}: missing {key}")
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", role["model"]):
+        raise PipelineError(f"{path}: invalid model slug")
+    if role["model_reasoning_effort"] not in VALID_REASONING_EFFORTS:
+        raise PipelineError(f"{path}: unsupported reasoning effort")
+    if role["sandbox_mode"] not in VALID_SANDBOX_MODES:
+        raise PipelineError(f"{path}: unsafe or unsupported sandbox mode")
+    if role["sandbox_mode"] != ROLE_SANDBOXES[stage]:
+        raise PipelineError(
+            f"{path}: {stage} must use sandbox_mode={ROLE_SANDBOXES[stage]!r}",
+        )
+    return role
+
+
+def write_json(path: Path, value: Any) -> None:
+    path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def best_effort_command(argv: list[str], cwd: Path) -> str:
+    try:
+        result = subprocess.run(
+            argv,
+            cwd=cwd,
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"unavailable: {exc}"
+    output = result.stdout.strip()
+    return output if result.returncode == 0 else f"unavailable ({result.returncode}): {output}"
+
+
+def read_json(path: Path) -> dict[str, Any]:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PipelineError(f"invalid structured stage output {path}: {exc}") from exc
+    if not isinstance(value, dict):
+        raise PipelineError(f"stage output must be a JSON object: {path}")
+    return value
+
+
+def run_stage(
+    *,
+    args: argparse.Namespace,
+    repo: Path,
+    run_dir: Path,
+    stage_name: str,
+    artifact_prefix: str,
+    role: dict[str, Any],
+    schema: dict[str, Any],
+    prompt: str,
+) -> dict[str, Any]:
+    schema_path = run_dir / f"{artifact_prefix}-schema.json"
+    output_path = run_dir / f"{artifact_prefix}.json"
+    log_path = run_dir / f"{artifact_prefix}.log"
+
+    command = [
+        args.codex_bin,
+        "exec",
+        "--strict-config",
+        "--ignore-user-config",
+        "--ephemeral",
+        "-C",
+        str(repo),
+        "-m",
+        role["model"],
+        "-s",
+        role["sandbox_mode"],
+        "-c",
+        f'model_reasoning_effort="{role["model_reasoning_effort"]}"',
+        "-c",
+        'approval_policy="never"',
+        "-c",
+        "sandbox_workspace_write.network_access=false",
+        "-c",
+        "developer_instructions="
+        + json.dumps(role["developer_instructions"], ensure_ascii=False),
+        "--output-schema",
+        str(schema_path),
+        "-o",
+        str(output_path),
+    ]
+    for feature in COMMON_DISABLED_FEATURES:
+        command.extend(("--disable", feature))
+    command.append("-")
+
+    print(
+        f"[{stage_name}] {role['model']} / {role['model_reasoning_effort']} / "
+        f"{role['sandbox_mode']}",
+        flush=True,
+    )
+    if args.dry_run:
+        print(f"  {shlex.join(command)}", flush=True)
+        return {"dry_run": True}
+
+    write_json(schema_path, schema)
+    effective_prompt = "RUNNER STAGE INSTRUCTIONS:\n" + prompt
+    try:
+        return_code, output, timed_out = run_managed(
+            command,
+            cwd=repo,
+            timeout=args.stage_timeout,
+            input_text=effective_prompt,
+        )
+    except OSError as exc:
+        raise PipelineError(f"could not start {stage_name}: {exc}") from exc
+
+    log_path.write_text(output, encoding="utf-8")
+    if timed_out:
+        raise PipelineError(
+            f"{stage_name} timed out after {args.stage_timeout}s; its process group was terminated",
+        )
+    if return_code != 0:
+        raise PipelineError(
+            f"{stage_name} failed with exit code {return_code}; see {log_path}",
+        )
+    if not output_path.is_file():
+        raise PipelineError(f"{stage_name} produced no output: {output_path}")
+    return read_json(output_path)
+
+
+def verification_commands(args: argparse.Namespace) -> list[list[str]]:
+    commands = [["git", "diff", "HEAD", "--check"]]
+    for raw in args.verify:
+        argv = shlex.split(raw)
+        if not argv:
+            raise PipelineError("--verify must not be empty")
+        commands.append(argv)
+    return commands
+
+
+def run_verification(
+    *,
+    repo: Path,
+    run_dir: Path,
+    prefix: str,
+    commands: list[list[str]],
+    dry_run: bool,
+    timeout_seconds: int,
+) -> tuple[bool, list[dict[str, Any]]]:
+    records: list[dict[str, Any]] = []
+    for argv in commands:
+        print(f"[verify] {shlex.join(argv)}", flush=True)
+        if dry_run:
+            records.append({"command": shlex.join(argv), "exit_code": None, "output": "dry-run"})
+            continue
+        try:
+            return_code, output, timed_out = run_managed(
+                argv,
+                cwd=repo,
+                timeout=timeout_seconds,
+            )
+            if timed_out:
+                output = (
+                    f"verification timed out after {timeout_seconds}s; "
+                    "its process group was terminated\n" + output
+                )
+        except OSError as exc:
+            return_code = 127
+            output = f"could not start verification command: {exc}"
+        records.append(
+            {
+                "command": shlex.join(argv),
+                "exit_code": return_code,
+                "output": output,
+            }
+        )
+    write_json(run_dir / f"{prefix}.json", records)
+    return all(item["exit_code"] in (0, None) for item in records), records
+
+
+def compact_verification(records: list[dict[str, Any]]) -> str:
+    compact: list[dict[str, Any]] = []
+    for record in records:
+        output = record.get("output", "")
+        compact.append(
+            {
+                "command": record.get("command"),
+                "exit_code": record.get("exit_code"),
+                "output_tail": output[-12000:],
+            }
+        )
+    return json.dumps(compact, ensure_ascii=False, indent=2)
+
+
+def run_pipeline_locked(
+    args: argparse.Namespace,
+    repo: Path,
+    task_path: Path,
+) -> int:
+    ensure_supported_repository_topology(repo)
+    baseline = capture_repo_state(repo)
+    baseline_status = baseline["status_raw"].decode(
+        "utf-8",
+        errors="backslashreplace",
+    ).replace("\x00", "\n").rstrip()
+    if baseline["status_raw"] and not args.allow_dirty:
+        raise PipelineError(
+            "worktree is dirty; use a clean worktree or pass --allow-dirty after reviewing the baseline",
+        )
+
+    codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
+    roles = {stage: load_role(codex_home, stage) for stage in ROLE_FILES}
+    role_hashes = {
+        stage: file_sha256(codex_home / "agents" / filename)
+        for stage, filename in ROLE_FILES.items()
+    }
+    policy_payload = json.dumps(role_hashes, sort_keys=True).encode("utf-8")
+    policy_hash = hashlib.sha256(policy_payload).hexdigest()
+    requested_run_root = (
+        args.run_root.expanduser()
+        if args.run_root
+        else codex_home / "runs" / "high-assurance"
+    )
+    if requested_run_root.is_symlink():
+        raise PipelineError(f"artifact root must not be a symlink: {requested_run_root}")
+    run_root = requested_run_root.resolve()
+    if run_root == repo or run_root.is_relative_to(repo):
+        raise PipelineError("artifact root must be outside the target repository")
+    timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    short_sha = run_checked(["git", "rev-parse", "--short", "HEAD"], repo)
+    run_dir = run_root / f"{timestamp}-{short_sha}-{os.urandom(4).hex()}"
+    if not args.dry_run:
+        run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
+        run_dir.chmod(0o700)
+
+    task = task_path.read_text(encoding="utf-8")
+    baseline_diff = run_text_exact(
+        ["git", "diff", "--binary", "--full-index", "--no-ext-diff"],
+        repo,
+    )
+    baseline_cached_diff = run_text_exact(
+        ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
+        repo,
+    )
+    baseline_untracked = untracked_manifest(repo)
+    commands = verification_commands(args)
+    metadata = {
+        "runner_version": RUNNER_VERSION,
+        "runner_sha256": file_sha256(Path(__file__)),
+        "codex_version": best_effort_command([args.codex_bin, "--version"], repo),
+        "policy_hash": policy_hash,
+        "role_file_sha256": role_hashes,
+        "repo": str(repo),
+        "git_sha": run_checked(["git", "rev-parse", "HEAD"], repo),
+        "baseline_status": baseline_status,
+        "baseline_untracked": baseline_untracked,
+        "task_file": str(task_path),
+        "roles": {
+            stage: {
+                "model": role["model"],
+                "reasoning": role["model_reasoning_effort"],
+                "sandbox": role["sandbox_mode"],
+            }
+            for stage, role in roles.items()
+        },
+        "verify": [shlex.join(command) for command in commands],
+    }
+    if not args.dry_run:
+        write_json(run_dir / "00-metadata.json", metadata)
+        (run_dir / "00-task.md").write_text(task, encoding="utf-8")
+        (run_dir / "00-baseline-status.txt").write_text(
+            baseline_status + ("\n" if baseline_status else ""),
+            encoding="utf-8",
+        )
+        (run_dir / "00-baseline.patch").write_text(baseline_diff, encoding="utf-8")
+        (run_dir / "00-baseline-cached.patch").write_text(
+            baseline_cached_diff,
+            encoding="utf-8",
+        )
+        write_json(run_dir / "00-baseline-untracked.json", baseline_untracked)
+    else:
+        print(json.dumps(metadata, ensure_ascii=False, indent=2), flush=True)
+
+    evidence_prompt = textwrap.dedent(
+        f"""
+        Act only as the evidence stage for a high-assurance code change.
+        Do not modify files. Do not call MCP, apps, browsers, or remote services.
+        Inspect repository instructions, relevant source, tests, and local git state.
+        Distinguish facts, inference, and unknowns. Do not choose the final fix.
+
+        TASK:
+        {task}
+        """
+    ).strip()
+    evidence = run_stage(
+        args=args,
+        repo=repo,
+        run_dir=run_dir,
+        stage_name="evidence",
+        artifact_prefix="01-evidence",
+        role=roles["evidence"],
+        schema=EVIDENCE_SCHEMA,
+        prompt=evidence_prompt,
+    )
+    if args.dry_run:
+        run_stage(
+            args=args,
+            repo=repo,
+            run_dir=run_dir,
+            stage_name="diagnosis",
+            artifact_prefix="02-diagnosis",
+            role=roles["diagnosis"],
+            schema=DIAGNOSIS_SCHEMA,
+            prompt="dry-run",
+        )
+        run_stage(
+            args=args,
+            repo=repo,
+            run_dir=run_dir,
+            stage_name="implementation",
+            artifact_prefix="03-implementation",
+            role=roles["implementation"],
+            schema=IMPLEMENTATION_SCHEMA,
+            prompt="dry-run",
+        )
+        for command in commands:
+            print(f"[verify] {shlex.join(command)}", flush=True)
+        run_stage(
+            args=args,
+            repo=repo,
+            run_dir=run_dir,
+            stage_name="review",
+            artifact_prefix="05-review",
+            role=roles["review"],
+            schema=REVIEW_SCHEMA,
+            prompt="dry-run",
+        )
+        return 0
+
+    validate_evidence(evidence)
+    assert_repo_unchanged(baseline, capture_repo_state(repo), "evidence stage")
+
+    diagnosis_prompt = textwrap.dedent(
+        f"""
+        Act as the independent root-cause gate. Do not modify files and do not call
+        external tools. Recheck material evidence against the repository. Return GO
+        only when the root cause and a focused, testable change contract are supported.
+        allowed_paths must contain exact repo-relative paths or directory/** prefixes;
+        include both endpoints of a move or rename. Do not use ambiguous glob syntax.
+
+        TASK:
+        {task}
+
+        EVIDENCE:
+        {json.dumps(evidence, ensure_ascii=False, indent=2)}
+        """
+    ).strip()
+    diagnosis = run_stage(
+        args=args,
+        repo=repo,
+        run_dir=run_dir,
+        stage_name="diagnosis",
+        artifact_prefix="02-diagnosis",
+        role=roles["diagnosis"],
+        schema=DIAGNOSIS_SCHEMA,
+        prompt=diagnosis_prompt,
+    )
+    assert_repo_unchanged(baseline, capture_repo_state(repo), "diagnosis stage")
+    allowed_rules = validate_diagnosis(diagnosis)
+    if diagnosis.get("decision") != "GO":
+        raise PipelineError(f"diagnosis returned NO_GO; see {run_dir / '02-diagnosis.json'}", 2)
+
+    previous_failure = ""
+    for attempt in range(args.max_repair_cycles + 1):
+        label = "implementation" if attempt == 0 else f"repair-{attempt}"
+        prefix_number = 3 + attempt * 3
+        stage_baseline = capture_repo_state(repo)
+        implementation_prompt = textwrap.dedent(
+            f"""
+            Act as the sole write stage. Implement only the approved change contract.
+            Preserve unrelated work. Do not perform external writes, releases, deploys,
+            credential changes, destructive operations, or scope expansion. Add focused
+            regression coverage and run relevant local checks. Stop as blocked if the
+            proper fix exceeds the contract. Do not stage, unstage, or otherwise change
+            the Git index. Do not create or modify ignored caches, build output, or other
+            generated files; disable such caches when running local checks. Report exactly
+            the files changed during this stage.
+
+            TASK:
+            {task}
+
+            APPROVED DIAGNOSIS AND CHANGE CONTRACT:
+            {json.dumps(diagnosis, ensure_ascii=False, indent=2)}
+
+            TARGETED FAILURE TO REPAIR (empty on first implementation):
+            {previous_failure}
+            """
+        ).strip()
+        implementation = run_stage(
+            args=args,
+            repo=repo,
+            run_dir=run_dir,
+            stage_name=label,
+            artifact_prefix=f"{prefix_number:02d}-{label}",
+            role=roles["implementation"],
+            schema=IMPLEMENTATION_SCHEMA,
+            prompt=implementation_prompt,
+        )
+        post_implementation_state = capture_repo_state(repo)
+        if post_implementation_state["index"] != stage_baseline["index"]:
+            raise PipelineError(f"{label} changed the Git index", 6)
+        if post_implementation_state["git_control"] != stage_baseline["git_control"]:
+            raise PipelineError(f"{label} changed Git control metadata", 6)
+        stage_changed_paths = changed_paths_between(stage_baseline, post_implementation_state)
+        validate_implementation(implementation, allowed_rules, stage_changed_paths)
+        if implementation.get("status") != "completed":
+            raise PipelineError(f"{label} returned blocked", 3)
+
+        delta, post_implementation_state = enforce_repository_contract(
+            repo=repo,
+            run_dir=run_dir,
+            prefix=f"{prefix_number:02d}-post-{label}-delta",
+            baseline=baseline,
+            allowed_rules=allowed_rules,
+        )
+
+        verified, verification = run_verification(
+            repo=repo,
+            run_dir=run_dir,
+            prefix=f"{prefix_number + 1:02d}-verification",
+            commands=commands,
+            dry_run=False,
+            timeout_seconds=args.stage_timeout,
+        )
+        post_verification_state = capture_repo_state(repo)
+        assert_repo_unchanged(
+            post_implementation_state,
+            post_verification_state,
+            "deterministic verification",
+        )
+        delta, post_verification_state = enforce_repository_contract(
+            repo=repo,
+            run_dir=run_dir,
+            prefix=f"{prefix_number + 1:02d}-post-verification-delta",
+            baseline=baseline,
+            allowed_rules=allowed_rules,
+        )
+        if not delta["introduced_paths"]:
+            raise PipelineError(
+                "semantic gate failed: completed pipeline has no net repository change",
+                8,
+            )
+        if not verified:
+            previous_failure = "DETERMINISTIC VERIFICATION FAILED:\n" + compact_verification(
+                verification
+            )
+            if attempt < args.max_repair_cycles:
+                continue
+            raise PipelineError(
+                f"verification failed after {attempt} repair cycle(s); see {run_dir}",
+                4,
+            )
+
+        review_prompt = textwrap.dedent(
+            f"""
+            Act as an independent final reviewer. Do not modify files and do not call
+            external tools. Inspect the actual current diff and repository state. Check
+            the original task, approved contract, implementation, and raw deterministic
+            verification. Any BLOCKER or HIGH finding requires FAIL.
+
+            TASK:
+            {task}
+
+            APPROVED DIAGNOSIS:
+            {json.dumps(diagnosis, ensure_ascii=False, indent=2)}
+
+            IMPLEMENTATION REPORT:
+            {json.dumps(implementation, ensure_ascii=False, indent=2)}
+
+            VERIFICATION:
+            {compact_verification(verification)}
+
+            MACHINE-CAPTURED COMPLETE GIT DELTA:
+            {compact_delta(delta)}
+            """
+        ).strip()
+        review = run_stage(
+            args=args,
+            repo=repo,
+            run_dir=run_dir,
+            stage_name="review",
+            artifact_prefix=f"{prefix_number + 2:02d}-review",
+            role=roles["review"],
+            schema=REVIEW_SCHEMA,
+            prompt=review_prompt,
+        )
+        post_review_state = capture_repo_state(repo)
+        assert_repo_unchanged(post_verification_state, post_review_state, "review stage")
+        delta, _ = enforce_repository_contract(
+            repo=repo,
+            run_dir=run_dir,
+            prefix=f"{prefix_number + 2:02d}-post-review-delta",
+            baseline=baseline,
+            allowed_rules=allowed_rules,
+        )
+        validate_review(review)
+        if review.get("verdict") == "PASS":
+            summary = {
+                "result": "PASS",
+                "run_dir": str(run_dir),
+                "repair_cycles": attempt,
+                "changed_paths": delta["introduced_paths"],
+                "allowed_paths": diagnosis["change_contract"]["allowed_paths"],
+                "git_index_unchanged": True,
+                "git_status": delta["status"],
+                "git_diff_stat": run_checked(["git", "diff", "HEAD", "--stat"], repo),
+                "untracked": delta["untracked"],
+                "delta_artifacts": delta["artifacts"],
+            }
+            write_json(run_dir / "result.json", summary)
+            print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
+            return 0
+
+        previous_failure = "INDEPENDENT REVIEW FAILED:\n" + json.dumps(
+            review,
+            ensure_ascii=False,
+            indent=2,
+        )
+        if attempt >= args.max_repair_cycles:
+            raise PipelineError(
+                f"review failed after {attempt} repair cycle(s); see {run_dir}",
+                5,
+            )
+
+    raise PipelineError("unreachable pipeline state")
+
+
+def main() -> int:
+    os.umask(0o077)
+    args = parse_args()
+    if args.stage_timeout <= 0:
+        raise PipelineError("--stage-timeout must be positive")
+    repo = args.repo.expanduser().resolve()
+    task_path = args.task.expanduser().resolve()
+    if not repo.is_dir():
+        raise PipelineError(f"repository does not exist: {repo}")
+    if not task_path.is_file():
+        raise PipelineError(f"task file does not exist: {task_path}")
+    git_root = Path(run_checked(["git", "rev-parse", "--show-toplevel"], repo)).resolve()
+    if git_root != repo:
+        raise PipelineError(f"--repo must be the repository root: {git_root}")
+    with repository_lock(repo):
+        return run_pipeline_locked(args, repo, task_path)
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except KeyboardInterrupt:
+        print("ERROR: interrupted; active process group was terminated", file=sys.stderr)
+        raise SystemExit(130)
+    except PipelineError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        raise SystemExit(exc.exit_code)

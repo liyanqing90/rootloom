@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 820" role="img" aria-labelledby="title desc">
+  <title id="title">Rootloom architecture</title>
+  <desc id="desc">A layered architecture from contextual guidance through workflow routing and runtime controls to deterministic proof.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="32" y1="20" x2="1364" y2="804" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FAF9FD"/><stop offset="0.55" stop-color="#F6F6FB"/><stop offset="1" stop-color="#EEF8F4"/>
+    </linearGradient>
+    <linearGradient id="flow" x1="112" y1="0" x2="1286" y2="0" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#6D5EF7"/><stop offset="0.5" stop-color="#9A8EFF"/><stop offset="1" stop-color="#39B98F"/>
+    </linearGradient>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse"><path d="M40 0H0V40" fill="none" stroke="#D8D5E3" stroke-opacity=".32"/></pattern>
+    <filter id="shadow" x="-20%" y="-25%" width="140%" height="170%"><feDropShadow dx="0" dy="10" stdDeviation="14" flood-color="#211D3D" flood-opacity=".10"/></filter>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto"><path d="M0 0l10 5-10 5z" fill="#8172F6"/></marker>
+  </defs>
+  <rect width="1400" height="820" rx="34" fill="url(#canvas)"/><rect width="1400" height="820" rx="34" fill="url(#grid)"/>
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="62" y="58" fill="#6D5EF7" font-size="13" font-weight="760" letter-spacing="2.7">ROOTLOOM · ARCHITECTURE</text>
+    <text x="62" y="105" fill="#211D3D" font-size="35" font-weight="790" letter-spacing="-.9">Put each guarantee in the layer that can enforce it</text>
+    <text x="62" y="138" fill="#746E87" font-size="17">Context guides judgment. Native controls constrain execution. Tests and CI prove outcomes.</text>
+
+    <g font-size="11" font-weight="760" letter-spacing="1.5">
+      <rect x="62" y="169" width="197" height="30" rx="15" fill="#EFEAFF"/><text x="160" y="189" text-anchor="middle" fill="#6D5EF7">MODEL-VISIBLE GUIDANCE</text>
+      <rect x="602" y="169" width="176" height="30" rx="15" fill="#FFF3E4"/><text x="690" y="189" text-anchor="middle" fill="#B77322">NATIVE CONTROLS</text>
+      <rect x="1110" y="169" width="218" height="30" rx="15" fill="#E8F7F1"/><text x="1219" y="189" text-anchor="middle" fill="#278C6B">DETERMINISTIC EVIDENCE</text>
+    </g>
+    <path d="M270 184H584" stroke="url(#flow)" stroke-width="3" marker-end="url(#arrow)"/><path d="M790 184H1092" stroke="url(#flow)" stroke-width="3" marker-end="url(#arrow)"/>
+
+    <g filter="url(#shadow)"><rect x="62" y="230" width="1276" height="468" rx="28" fill="#FFFFFF" fill-opacity=".84" stroke="#DEDBE8"/></g>
+
+    <g>
+      <rect x="90" y="262" width="270" height="182" rx="22" fill="#F4F1FF" stroke="#CFC8FF"/>
+      <circle cx="126" cy="302" r="18" fill="#6D5EF7"/><text x="126" y="308" text-anchor="middle" fill="#FFFFFF" font-size="17" font-weight="800">1</text>
+      <text x="158" y="306" fill="#211D3D" font-size="18" font-weight="760">Context</text>
+      <text x="112" y="348" fill="#514B66" font-size="14">Global AGENTS.md</text><text x="112" y="378" fill="#514B66" font-size="14">Project + nested AGENTS.md</text><text x="112" y="408" fill="#514B66" font-size="14">Source · schemas · tests · CI</text>
+      <text x="112" y="430" fill="#6D5EF7" font-size="10.5" font-weight="720">LEAN · HIERARCHICAL · EVIDENCE-CITED</text>
+
+      <rect x="390" y="262" width="270" height="182" rx="22" fill="#F4F1FF" stroke="#CFC8FF"/>
+      <circle cx="426" cy="302" r="18" fill="#7D70FF"/><text x="426" y="308" text-anchor="middle" fill="#FFFFFF" font-size="17" font-weight="800">2</text>
+      <text x="458" y="306" fill="#211D3D" font-size="18" font-weight="760">Workflow</text>
+      <text x="412" y="348" fill="#514B66" font-size="14">Operating Skills</text><text x="412" y="378" fill="#514B66" font-size="14">Risk routing + ExecPlans</text><text x="412" y="408" fill="#514B66" font-size="14">Optional custom Agents</text>
+      <text x="412" y="430" fill="#6D5EF7" font-size="10.5" font-weight="720">PROGRESSIVE DISCLOSURE · ONE WRITER</text>
+
+      <rect x="690" y="262" width="270" height="182" rx="22" fill="#FFF7EC" stroke="#F2D2A9"/>
+      <circle cx="726" cy="302" r="18" fill="#E99B42"/><text x="726" y="308" text-anchor="middle" fill="#FFFFFF" font-size="17" font-weight="800">3</text>
+      <text x="758" y="306" fill="#211D3D" font-size="18" font-weight="760">Runtime control</text>
+      <text x="712" y="348" fill="#514B66" font-size="14">Optional limits + profile</text><text x="712" y="378" fill="#514B66" font-size="14">Sandbox + approval mode</text><text x="712" y="408" fill="#514B66" font-size="14">Rules + gated Hooks</text>
+      <text x="712" y="430" fill="#B77322" font-size="10.5" font-weight="720">CONCURRENT CAP · COMMAND POLICY</text>
+
+      <rect x="990" y="262" width="320" height="182" rx="22" fill="#ECF8F3" stroke="#B8E3D3"/>
+      <circle cx="1026" cy="302" r="18" fill="#39B98F"/><text x="1026" y="308" text-anchor="middle" fill="#FFFFFF" font-size="17" font-weight="800">4</text>
+      <text x="1058" y="306" fill="#211D3D" font-size="18" font-weight="760">Executable proof</text>
+      <text x="1012" y="348" fill="#514B66" font-size="14">Deterministic staged runner</text><text x="1012" y="378" fill="#514B66" font-size="14">Focused checks + full validation</text><text x="1012" y="408" fill="#514B66" font-size="14">Independent review + CI</text>
+      <text x="1012" y="430" fill="#278C6B" font-size="10.5" font-weight="720">STATE SNAPSHOTS · STRUCTURED GATES</text>
+    </g>
+
+    <g stroke="#8172F6" stroke-width="2.6" fill="none" marker-end="url(#arrow)"><path d="M360 353H381"/><path d="M660 353H681"/><path d="M960 353H981"/></g>
+
+    <rect x="90" y="478" width="1220" height="182" rx="22" fill="#F9F9FC" stroke="#DFDCE8"/>
+    <text x="116" y="514" fill="#211D3D" font-size="16" font-weight="760">Enforcement boundary</text>
+    <g font-size="13.5">
+      <circle cx="120" cy="550" r="5" fill="#6D5EF7"/><text x="138" y="555" fill="#514B66">AGENTS.md and Skills guide model behavior; they are not an unbypassable state machine.</text>
+      <circle cx="120" cy="584" r="5" fill="#E99B42"/><text x="138" y="589" fill="#514B66">Delegation control is optional; max_threads is concurrent and SubagentStart cannot cancel a child.</text>
+      <circle cx="120" cy="618" r="5" fill="#39B98F"/><text x="138" y="623" fill="#514B66">The runner hard-gates stage order and local diff scope; OS, credentials, branches, and CI remain external controls.</text>
+    </g>
+
+    <g font-size="11" font-weight="680">
+      <rect x="62" y="736" width="174" height="38" rx="19" fill="#EFEAFF"/><text x="149" y="760" text-anchor="middle" fill="#6D5EF7">plan-first setup</text>
+      <rect x="252" y="736" width="201" height="38" rx="19" fill="#EFEAFF"/><text x="352" y="760" text-anchor="middle" fill="#6D5EF7">automatic project context</text>
+      <rect x="469" y="736" width="174" height="38" rx="19" fill="#FFF3E4"/><text x="556" y="760" text-anchor="middle" fill="#B77322">commit ≠ push</text>
+      <rect x="659" y="736" width="198" height="38" rx="19" fill="#FFF3E4"/><text x="758" y="760" text-anchor="middle" fill="#B77322">optional delegation control</text>
+      <rect x="873" y="736" width="208" height="38" rx="19" fill="#E8F7F1"/><text x="977" y="760" text-anchor="middle" fill="#278C6B">deterministic strict route</text>
+      <rect x="1097" y="736" width="231" height="38" rx="19" fill="#E8F7F1"/><text x="1212" y="760" text-anchor="middle" fill="#278C6B">MCP only when capability needs it</text>
+    </g>
+  </g>
+</svg>

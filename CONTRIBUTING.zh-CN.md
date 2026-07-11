@@ -1,0 +1,96 @@
+# 参与贡献
+
+感谢你帮助改进 Rootloom。本项目偏好范围清晰、基于证据的修改，不鼓励宽泛自动化和推测式抽象。
+
+English: [CONTRIBUTING.md](CONTRIBUTING.md)
+
+## 创建 Issue 前
+
+- 搜索已有 Issue 和 Discussion。
+- 可复现缺陷请使用 Bug 模板。
+- 提供 Codex 版本、操作系统、Python 版本、probe 输出，以及能够展示问题的最小安全仓库样例。
+- 移除 Token、私有路径、专有源码和其他敏感数据。
+
+安全漏洞请按照 [SECURITY.md](SECURITY.md) 私下报告，不要使用公开 Issue。
+
+## 开发环境
+
+需要 Git、Python 3.11+ 和 `make`：
+
+```bash
+git clone https://github.com/liyanqing90/rootloom.git
+cd rootloom
+make check
+```
+
+运行时和测试都不依赖 Python 标准库之外的包。
+
+## 目录结构
+
+```text
+.agents/plugins/marketplace.json       Git marketplace 目录
+plugins/rootloom/       可安装 Codex 插件
+  .codex-plugin/plugin.json            插件元数据
+  assets/system/                       可安装的全局指导、Agents、profile 与 Rules
+  hooks/                               SessionStart 播种与 SubagentStart 行为审计
+  skills/                              Setup、指导、实施、审查、风险与高保障流程
+tests/                                 单元与真实集成检查
+scripts/validate_repo.py               仓库契约校验
+docs/                                  设计和排障文档
+assets/                                README 配图
+```
+
+## 设计规则
+
+修改必须保持以下不变量：
+
+1. 自动启动行为保持确定性和本地执行。
+2. 不安全或模糊状态应跳过，不能覆盖。
+3. 无托管标记的指导始终归用户所有。
+4. 扫描器陈述必须由可检查的仓库证据支持。
+5. 扫描期间绝不执行仓库代码。
+6. 遍历范围、文件数量、文件大小和嵌套深度保持有界。
+7. 除非有经过评审的强需求，运行时只使用 Python 标准库。
+8. 语义判断保留在 Skills 中，不进入确定性自动核心。
+9. 全局 setup 必须先计划、事务化、备份并拒绝冲突。
+10. Hooks 不得宣称超过当前事件 API 的执行强度。
+11. 本地 `git commit` 必须与远程发布和破坏性 Git 操作分开治理。
+
+## 修改流程
+
+1. 创建范围清晰的分支。
+2. 行为变化应新增或更新回归测试。
+3. 安装方式、公共行为或用户配置变化时同步更新中英文 README。
+4. 架构或排障契约变化时更新相应文档。
+5. 运行 `make check`。
+6. 检查最终 Diff 中是否包含秘密、临时文件、生成噪声或无关修改。
+
+提交信息应简短并使用祈使语气，例如：
+
+```text
+Handle Cargo workspace module boundaries
+```
+
+## 测试原则
+
+优先使用真实临时 Git 仓库和行为断言。避免网络请求、任意 sleep、依赖偶然空白的快照，以及能够用小型文件系统样例替代的 Mock。
+
+手动真实冒烟测试要求本机 Codex 已登录。它会把当前 checkout 安装进可丢弃的 `CODEX_HOME`，不会修改用户主配置：
+
+```bash
+make smoke
+```
+
+该测试依赖已登录的 Codex，并会执行一次真实模型回合，因此不能进入普通 CI。Hook 信任只在可丢弃测试目录中绕过。
+
+## Pull Request
+
+PR 应说明：
+
+- 可观察问题或改进；
+- 所属边界和设计选择；
+- 用户可见或兼容性影响；
+- 实际执行的验证；
+- 剩余风险或明确不支持的情况。
+
+提交贡献即表示你同意按照本项目 MIT 许可证授权该贡献。

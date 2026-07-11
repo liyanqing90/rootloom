@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 280" role="img" aria-labelledby="title desc">
+  <title id="title">Rootloom</title>
+  <desc id="desc">Rootloom wordmark and its roots, five frames, branching fiber, and verification symbol.</desc>
+  <defs>
+    <linearGradient id="mark-bg" x1="25" y1="18" x2="205" y2="212" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#17162B"/><stop offset=".58" stop-color="#211D3D"/><stop offset="1" stop-color="#0C2D30"/>
+    </linearGradient>
+    <linearGradient id="mark-fiber" x1="71" y1="202" x2="151" y2="30" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#58D8B1"/><stop offset=".55" stop-color="#8A78FF"/><stop offset="1" stop-color="#B5A9FF"/>
+    </linearGradient>
+  </defs>
+  <rect width="1040" height="280" rx="40" fill="#FFFFFF"/>
+  <g transform="translate(32 28)">
+    <rect width="224" height="224" rx="52" fill="url(#mark-bg)"/>
+    <g fill="#292541" stroke="#665E87" stroke-width="1.8">
+      <rect x="64" y="63" width="96" height="16" rx="7"/><rect x="64" y="85" width="96" height="16" rx="7"/>
+      <rect x="64" y="107" width="96" height="16" rx="7"/><rect x="64" y="129" width="96" height="16" rx="7"/>
+      <rect x="64" y="151" width="96" height="16" rx="7"/>
+    </g>
+    <g fill="none" stroke="url(#mark-fiber)" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M78 194c19-9 27-14 34-24 9-12-10-17 0-27 9-9-10-14 0-23 9-9-10-14 0-23 9-9-9-14 1-23 8-7 1-14 1-20" stroke-width="5"/>
+      <path d="M114 55 83 39M115 54V28M116 55l32-16M111 171 75 195M113 172v29M115 171l34 23" stroke-width="2.6"/>
+    </g>
+    <g fill="#75E0BE" stroke="#D9FFF2" stroke-width="1.5"><circle cx="83" cy="39" r="4"/><circle cx="115" cy="28" r="4"/><circle cx="148" cy="39" r="4"/><circle cx="75" cy="195" r="4"/><circle cx="113" cy="201" r="4"/><circle cx="149" cy="194" r="4"/></g>
+    <g transform="translate(164 34)"><rect width="32" height="32" rx="10" fill="#332C46" stroke="#FFB45D" stroke-width="2"/><path d="m8 17 6 6 11-14" fill="none" stroke="#FFC676" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/></g>
+  </g>
+  <g font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+    <text x="300" y="139" fill="#1D1935" font-size="82" font-weight="790" letter-spacing="-3.2">Rootloom</text>
+    <text x="304" y="183" fill="#6E6782" font-size="21" font-weight="620">Reliable Codex engineering, woven from the roots up.</text>
+    <text x="304" y="224" fill="#8A78FF" font-size="15" font-weight="750" letter-spacing="2.8">GUIDANCE · WORKFLOWS · AGENTS · PROOF</text>
+  </g>
+</svg>

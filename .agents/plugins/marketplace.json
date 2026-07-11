@@ -1,0 +1,20 @@
+{
+  "name": "rootloom",
+  "interface": {
+    "displayName": "Rootloom"
+  },
+  "plugins": [
+    {
+      "name": "rootloom",
+      "source": {
+        "source": "local",
+        "path": "./plugins/rootloom"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

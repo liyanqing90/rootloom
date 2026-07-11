@@ -1,0 +1,47 @@
+{
+  "name": "rootloom",
+  "version": "1.0.0",
+  "description": "Reliable Codex engineering, woven from project truth to verified delivery.",
+  "author": {
+    "name": "liyanqing",
+    "url": "https://github.com/liyanqing90"
+  },
+  "homepage": "https://github.com/liyanqing90/rootloom#readme",
+  "repository": "https://github.com/liyanqing90/rootloom",
+  "license": "MIT",
+  "keywords": [
+    "rootloom",
+    "codex",
+    "agents-md",
+    "project-guidance",
+    "automation",
+    "hooks",
+    "skills",
+    "subagents",
+    "code-review"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Rootloom",
+    "shortDescription": "Reliable Codex engineering, woven from the roots up.",
+    "longDescription": "Rootloom weaves repository guidance, reusable workflows, command Rules, model-routed agents, lifecycle audits, and deterministic delivery gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
+    "developerName": "liyanqing",
+    "category": "Productivity",
+    "capabilities": [
+      "Automation",
+      "Write",
+      "Review",
+      "Orchestration"
+    ],
+    "websiteURL": "https://github.com/liyanqing90/rootloom",
+    "brandColor": "#8A78FF",
+    "composerIcon": "./assets/icon.svg",
+    "logo": "./assets/logo.svg",
+    "logoDark": "./assets/logo-dark.svg",
+    "defaultPrompt": [
+      "Choose and set up the right Rootloom capability layer safely.",
+      "Seed and refine AGENTS.md guidance for this repository.",
+      "Run a controlled high-assurance coding change."
+    ]
+  }
+}

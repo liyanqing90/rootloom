@@ -1,0 +1,7 @@
+interface:
+  display_name: "High-assurance coding change"
+  short_description: "Model-routed diagnosis, one writer, independent review"
+  default_prompt: "Use $high-assurance-coding-change to diagnose and implement this change with one writer and independent verification."
+
+policy:
+  allow_implicit_invocation: false

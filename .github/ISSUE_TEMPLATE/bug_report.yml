@@ -1,0 +1,52 @@
+name: Bug report
+description: Report reproducible incorrect or unsafe behavior.
+title: "[Bug]: "
+labels: [bug, triage]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Remove credentials, proprietary source, personal data, and private paths before submitting. Security vulnerabilities belong in a private Security Advisory.
+  - type: checkboxes
+    attributes:
+      label: Preflight
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security vulnerability.
+          required: true
+        - label: I removed sensitive repository content and credentials.
+          required: true
+  - type: input
+    attributes:
+      label: Codex version
+      placeholder: codex-cli 0.x.y
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Python and operating system
+      placeholder: Python 3.13.5, macOS 15.5
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Observable behavior
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Minimal reproduction
+      description: Include safe fixture files, exact commands, and the smallest sequence that reproduces the issue.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Probe or validation output
+      description: Redact private paths and sensitive content.
+      render: json
+  - type: textarea
+    attributes:
+      label: Additional context

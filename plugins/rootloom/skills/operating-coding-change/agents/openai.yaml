@@ -1,0 +1,6 @@
+interface:
+  display_name: "Operating Coding Change"
+  short_description: "Implement focused changes with root-cause evidence"
+  default_prompt: "Use $operating-coding-change to implement this repository change with focused scope and proportional verification."
+policy:
+  allow_implicit_invocation: true
