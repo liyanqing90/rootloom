@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: release authorized; publication in progress
+- State: published
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security and execution safety
@@ -68,12 +68,20 @@ Prevent automated acceptance when the strict Runner's sole writer creates or mod
 
 ## Rollout, rollback, authorization, and residual risk
 
-- Local changes are reversible. The user explicitly authorized publishing `main`, an annotated `v1.2.3` tag, and the GitHub Release in the Codex task on 2026-07-12; verified publication evidence must be appended afterward.
+- Local changes are reversible. The user explicitly authorized publishing `main`, an annotated `v1.2.3` tag, and the GitHub Release in the Codex task on 2026-07-12; verified publication evidence is recorded below.
 - Before publication, revert the focused patch if compatibility fails; after publication, use a forward patch and never rewrite the tag.
 - The post-write gate can reject acceptance but cannot prevent or restore a protected mutation; failure may require operator filesystem recovery.
 - Human review can confirm only the deletion path and intent, not the former protected content because the Runner deliberately did not read or back it up.
 - Other processes can mutate the repository between checkpoints; the repository lock coordinates Rootloom runners, not arbitrary external writers.
 - Full incremental hashing, setup crash recovery, platform matrix expansion, authenticated model smoke, and semantic test-artifact binding remain 1.3 work.
+
+### Publication record
+
+- Release commit: `fe1ee944e1b34ce43041d71c3e0515b66d46dbea`.
+- Annotated tag: `v1.2.3`, dereferenced to the release commit.
+- Release: <https://github.com/liyanqing90/rootloom/releases/tag/v1.2.3>, published as a final release rather than a draft or prerelease.
+- Release CI: <https://github.com/liyanqing90/rootloom/actions/runs/29179292848>, conclusion `success` for the release commit.
+- Publication evidence is appended on `main` in a documentation-only follow-up; the immutable release tag remains on the tested code commit.
 
 ## Decision log
 
