@@ -134,7 +134,10 @@ def setup_lock(codex_home: Path) -> Iterator[Path]:
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
     locked = False
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
+        elif os.name != "nt":  # pragma: no cover - unknown non-POSIX runtime
+            raise RuntimeError("setup lock permissions cannot be hardened on this platform")
         if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
             import msvcrt
 

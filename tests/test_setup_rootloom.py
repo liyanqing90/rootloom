@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -263,6 +264,7 @@ class RootloomSetupTests(unittest.TestCase):
             setup.recover(self.codex_home)
         self.assertEqual(target.read_bytes(), expected)
 
+    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
     def test_recovery_rejects_mode_drift_before_mutation(self) -> None:
         result = setup.apply_plan(
             self.codex_home,
@@ -281,6 +283,7 @@ class RootloomSetupTests(unittest.TestCase):
         self.assertEqual(state_path.read_bytes(), installed_state)
         self.assertEqual(setup.file_mode(agents), 0o644)
 
+    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
     def test_rollback_restores_original_file_mode(self) -> None:
         agents = self.codex_home / "AGENTS.md"
         agents.write_text("# User policy\n", encoding="utf-8")
@@ -348,6 +351,7 @@ class RootloomSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "changed after setup"):
             setup.rollback(self.codex_home)
 
+    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
     def test_rollback_refuses_post_setup_mode_drift(self) -> None:
         setup.apply_plan(
             self.codex_home,

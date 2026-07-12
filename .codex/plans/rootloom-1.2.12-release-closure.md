@@ -104,6 +104,8 @@ Success requires:
 - 2026-07-13 — Recovery v2 deliberately rejects unpublished v1 nonterminal journals because they do not bind the Manifest that enumerates mutation targets.
 - 2026-07-13 — Adjacent-path challenge found and closed three additional ownership gaps: Artifact hashing now uses stable directory-relative no-follow descriptors; recovery binds before/after modes; ordinary v2 rollback verifies its committed Manifest binding and refuses mode drift.
 - 2026-07-13 — Local release verification passed: repository contract validation, 50 repository tests, 82 Runner tests with `ResourceWarning` promoted to error, Codex CLI `0.144.0-alpha.4` compatibility smoke, Python compilation, workflow YAML parse, and diff check.
+- 2026-07-13 — First remote run `29213020462` correctly blocked publication: Windows portable tests exposed unconditional POSIX-only `os.fchmod` calls in the pre-existing setup and guidance lock paths. Tagging remained paused; both locks now retain descriptor chmod on POSIX and enter their existing `msvcrt` branch on Windows.
+- 2026-07-13 — Post-fix local gates passed again: 50 repository tests, 82 Runner tests, compatibility smoke, repository validator, and diff check. Exact POSIX-mode assertions are explicitly scoped away from Windows rather than pretending ACL semantics equal `fchmod`.
 
 ## Durable decision records
 

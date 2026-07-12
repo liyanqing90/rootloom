@@ -17,6 +17,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add a fingerprinted isolation-launcher interface with a required-mode preflight, drift-bound Human Review decisions, and phase-journaled setup orphan recovery.
 - Journal rollback before its first mutation and bind every recovery Journal to its complete Manifest. Recovery and ordinary v2 rollback verify that binding; recovery then allowlists unique managed targets and validates all backup/state bytes, hashes, before/after modes, and current before/after state before writing.
 - Bind Human Review to the canonical final Result core, hash reviewed Artifacts through stable directory-relative no-follow descriptors, create terminal records through no-follow descriptors, fsync the decision record, and atomically replace the reconstructable summary without following a destination symlink.
+- Enter the existing `msvcrt` lock branches on native Windows without calling the unavailable POSIX-only `os.fchmod`; POSIX platforms still harden lock descriptors to mode `0600`.
 
 ### Changed
 
@@ -31,6 +32,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Add detached delayed-mutation, all-model-stage lifecycle rejection, successful and zero-progress short-write, complete untracked-batch rollback, raw/effective exit-code, and partial NDJSON-append compensation regressions.
 - Add state-budget, digest-cache invalidation, structured-output, isolation, Human Review Result drift, apply/rollback interruption recovery, superseded-terminal-journal, Manifest/backup/mode tamper, unknown-target, no-follow terminal-file, and full-capacity Artifact regressions; expand CI contracts to Linux, macOS, and portable Windows scopes.
 - Add fail-before/pass-after regressions for competing hypotheses, contradiction provenance, rejected alternatives, challenged PASS, and the consolidated state limits. The release suite contains 50 repository tests and 82 focused Runner tests.
+- Exercise portable setup, guidance, and Hook contracts on Windows CI so platform-only lock failures block publication.
 
 ## [1.2.11] - 2026-07-12
 
