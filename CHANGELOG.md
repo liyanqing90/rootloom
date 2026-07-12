@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.10] - 2026-07-12
+
+### Security
+
+- Replace unbounded merged-output buffering with selector-based streaming and an 8 MiB default per-command byte budget. Only a bounded tail is retained; exceeding the budget terminates the original process group and returns a stable output-limit failure.
+- Bound cumulative deterministic-verification retention to 32 MiB by default, reject batches above 64 commands, and cap the model-facing verification summary at 120,000 characters.
+- Run deterministic verification with a minimal environment allowlist instead of inheriting every host variable. Additional existing variables require repeatable explicit `--verify-env NAME` authorization, and artifacts record names only.
+
+### Changed
+
+- Add `--max-command-output-bytes` and structured managed-command fields for observed/retained bytes, truncation, output-limit failure, drain cutoff, and detached-descendant risk.
+- Add `--max-verification-output-bytes`, persist structured `*-command.json` sidecars for model stages, and propagate batch-budget state into repair and Review prompts.
+- Improve stage and verification timeout diagnostics so they describe original process-group cleanup without implying complete descendant isolation.
+- Clean the original process group on exceptional exits even when its direct parent has already exited.
+- The strict high-assurance runner is now version 2.12.
+
+### Tests
+
+- Add real log-storm termination, bounded-tail, stdin/stdout streaming, minimal-environment, explicit environment opt-in, post-parent-exit interruption cleanup, verification-batch budgeting, command-count and prompt bounding, model-stage sidecars, compact Reviewer-state propagation, and structured detached-drain regressions. The focused Runner suite now contains 57 tests.
+
 ## [1.2.9] - 2026-07-12
 
 ### Security
@@ -208,7 +228,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.9...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.10...HEAD
+[1.2.10]: https://github.com/liyanqing90/rootloom/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...v1.2.7

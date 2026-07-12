@@ -386,9 +386,20 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.11"',
+            'RUNNER_VERSION = "2.12"',
+            "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
+            "DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES",
+            "MAX_VERIFICATION_COMMANDS",
+            "MAX_VERIFICATION_PROMPT_CHARS",
+            "COMMAND_OUTPUT_LIMIT_EXIT",
+            "ManagedResult",
+            "managed_result_metadata",
+            "OutputTailBuffer",
+            "build_verification_environment",
+            '"--max-command-output-bytes"',
+            '"--max-verification-output-bytes"',
+            '"--verify-env"',
             "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
-            "drain_process_output",
             "metadata_only_floor",
             "protected_metadata_paths",
             "intrinsic_protected_paths",

@@ -212,11 +212,19 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --task /absolute/path/to/task.md \
   --sensitive-path 'private/**' \
   --bind-verification-path verify-1:scripts/acceptance.sh \
+  --max-command-output-bytes 8388608 \
+  --max-verification-output-bytes 33554432 \
   --verify 'make focused-test' \
   --verify 'make check'
 ```
 
 Runner 读取同一组四个 Agent TOML，并强制仓库锁、干净基线、只读阶段快照、唯一写代理、精确允许路径、Git index 不变、结构化输出、确定性验证、独立评审和最多一次修复循环。它会在 Writer 前为检测到的验证入口建立指纹，在每条验证命令执行前复查该命令的入口，并在命令结束后立即确认仓库未变化。绑定范围包括直接执行的仓库脚本、按命令关联的 `--bind-verification-path` 稳定性依赖、`make` 文件、JavaScript package manifest、pytest 配置文件、后续可能取得优先级的缺失常见候选，以及仓库内每个 symlink 路径组件与最终目标内容。操作方绑定和直接脚本必须解析为已存在的普通文件。存在多条用户验证命令时使用 `verify-N:path`；只有一条用户命令时才兼容裸路径写法。它支持 Linux、macOS 与 WSL，不支持原生 Windows。进程组清理和输出 drain 均有界，但创建新 session 的后代仍可逃离原组；不可信命令需要容器、cgroup 或等价作业隔离。产物为私有，并且必须位于目标仓库之外。
+
+每条模型或验证命令默认拥有 8 MiB 合并输出预算。捕获只保留有界 tail；超限会终止原进程组，并结构化记录观察/保留字节数、截断、drain cutoff 和 detached 后代风险。模型阶段会把这些字段写入相邻的 `*-command.json` sidecar。只有在评估内存与产物成本后，才应通过 `--max-command-output-bytes` 设置其他正整数预算。
+
+每批确定性验证还拥有 32 MiB 保留输出总预算和 64 条命令硬上限。`--max-verification-output-bytes` 可以调低或调高正整数批次预算；命令数量上限固定。提供给修复与 Review 阶段的紧凑验证摘要最多 120,000 字符，完整但有界的私有机器记录仍会保留。异常退出会在直接父进程已经结束时继续清理原进程组。这些是本地 Runner 边界，不是对创建新 session 后代的宿主级隔离。
+
+验证命令默认只接收最小可移植环境（存在时的 `PATH`、`HOME`、locale、临时目录、终端、用户与 `CI` 变量），并固定 `PYTHONDONTWRITEBYTECODE=1`。额外既有变量必须通过可重复的 `--verify-env NAME` 显式授权；产物只记录变量名，不记录值。这能减少意外继承凭据，但不是输出脱敏或文件访问隔离；不要传递生产 secret，不可信命令应在隔离环境运行。
 
 已知疑似密钥名称会在任何内容指纹前被归为元数据。仓库专有名称可重复传入 `--sensitive-path path` 或 `--sensitive-path 'directory/**'`；如果所有未跟踪 dotfile 都应元数据化，可启用 `--redact-untracked-dotfiles`。这些控制只脱敏自动产物和随 Prompt 提供的数据，不能阻止具有仓库读取能力的 Evidence、Diagnosis、Implementation 或 Review 阶段主动打开文件。需要访问隔离时，应使用不含 secret 的 worktree 或 OS/container 挂载边界。
 

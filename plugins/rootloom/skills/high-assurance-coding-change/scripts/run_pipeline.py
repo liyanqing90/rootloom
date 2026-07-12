@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timezone
 import hashlib
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 from pathlib import PurePosixPath
 import re
+import selectors
 import shlex
 import signal
 import subprocess
@@ -56,8 +58,29 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.11"
+COMMAND_OUTPUT_LIMIT_EXIT = 126
+DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
+DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES = 32 * 1024 * 1024
+MAX_VERIFICATION_COMMANDS = 64
+MAX_VERIFICATION_PROMPT_CHARS = 120_000
+OUTPUT_READ_CHUNK_BYTES = 64 * 1024
+RUNNER_VERSION = "2.12"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
+VERIFICATION_ENV_ALLOWLIST = (
+    "CI",
+    "HOME",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "LOGNAME",
+    "PATH",
+    "SHELL",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "TEMP",
+    "USER",
+)
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -1786,36 +1809,119 @@ def wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
     return True
 
 
-def close_process_output_streams(process: subprocess.Popen[str]) -> None:
-    for stream in (process.stdout, process.stderr):
-        if stream is None or stream.closed:
-            continue
-        try:
-            stream.close()
-        except OSError:
-            pass
+class ManagedResult:
+    __slots__ = (
+        "exit_code",
+        "output",
+        "timed_out",
+        "leftover_process_group",
+        "output_bytes_observed",
+        "output_bytes_retained",
+        "output_truncated",
+        "output_limit_exceeded",
+        "output_drain_timed_out",
+        "detached_descendant_possible",
+    )
+
+    def __init__(
+        self,
+        *,
+        exit_code: int,
+        output: str,
+        timed_out: bool,
+        leftover_process_group: bool,
+        output_bytes_observed: int,
+        output_bytes_retained: int,
+        output_truncated: bool,
+        output_limit_exceeded: bool,
+        output_drain_timed_out: bool,
+        detached_descendant_possible: bool,
+    ) -> None:
+        self.exit_code = exit_code
+        self.output = output
+        self.timed_out = timed_out
+        self.leftover_process_group = leftover_process_group
+        self.output_bytes_observed = output_bytes_observed
+        self.output_bytes_retained = output_bytes_retained
+        self.output_truncated = output_truncated
+        self.output_limit_exceeded = output_limit_exceeded
+        self.output_drain_timed_out = output_drain_timed_out
+        self.detached_descendant_possible = detached_descendant_possible
+
+    def __iter__(self) -> Iterator[Any]:
+        """Preserve the former four-value unpacking contract during migration."""
+
+        yield self.exit_code
+        yield self.output
+        yield self.timed_out
+        yield self.leftover_process_group
 
 
-def drain_process_output(
-    process: subprocess.Popen[str],
-    timeout: float = PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS,
-) -> str:
+def managed_result_metadata(result: ManagedResult) -> dict[str, Any]:
+    return {
+        "exit_code": result.exit_code,
+        "leftover_process_group": result.leftover_process_group,
+        "timed_out": result.timed_out,
+        "output_bytes_observed": result.output_bytes_observed,
+        "output_bytes_retained": result.output_bytes_retained,
+        "output_truncated": result.output_truncated,
+        "output_limit_exceeded": result.output_limit_exceeded,
+        "output_drain_timed_out": result.output_drain_timed_out,
+        "detached_descendant_possible": result.detached_descendant_possible,
+    }
+
+
+class OutputTailBuffer:
+    def __init__(self, limit: int) -> None:
+        if limit <= 0:
+            raise PipelineError("command output byte limit must be positive", 9)
+        self.limit = limit
+        self.observed = 0
+        self.retained = 0
+        self._chunks: deque[bytes] = deque()
+
+    def append(self, chunk: bytes) -> None:
+        if not chunk:
+            return
+        self.observed += len(chunk)
+        self.retained += len(chunk)
+        self._chunks.append(chunk)
+        while self.retained > self.limit:
+            excess = self.retained - self.limit
+            first = self._chunks[0]
+            if len(first) <= excess:
+                self._chunks.popleft()
+                self.retained -= len(first)
+                continue
+            self._chunks[0] = first[excess:]
+            self.retained -= excess
+
+    def text(self) -> str:
+        raw = b"".join(self._chunks)
+        text = raw.decode("utf-8", errors="replace")
+        encoded = text.encode("utf-8")
+        if len(encoded) <= self.limit:
+            return text
+        return encoded[-self.limit :].decode("utf-8", errors="ignore")
+
+
+def close_selector_stream(
+    selector: selectors.BaseSelector,
+    stream: Any,
+) -> None:
+    if stream is None or stream.closed:
+        return
     try:
-        output, _ = process.communicate(timeout=timeout)
-        return output or ""
-    except subprocess.TimeoutExpired as exc:
-        partial = exc.output or ""
-        if isinstance(partial, bytes):
-            partial = partial.decode("utf-8", errors="backslashreplace")
-        close_process_output_streams(process)
-        return str(partial) + (
-            "\nmanaged command output pipe remained open after process-group "
-            "cleanup; local capture was closed at its deadline and a detached "
-            "descendant may still be running\n"
-        )
+        selector.unregister(stream)
+    except (KeyError, ValueError):
+        pass
+    try:
+        stream.close()
+    except OSError:
+        pass
 
 
-def terminate_process_group(process: subprocess.Popen[str]) -> str:
+def terminate_process_group(process: subprocess.Popen[bytes]) -> None:
     process_group_id = process.pid
     process_group_signalable = True
     try:
@@ -1861,10 +1967,8 @@ def terminate_process_group(process: subprocess.Popen[str]) -> str:
                 9,
             )
 
-    return drain_process_output(process)
 
-
-def ensure_process_group_finished(process: subprocess.Popen[str]) -> bool:
+def ensure_process_group_finished(process: subprocess.Popen[bytes]) -> bool:
     if not process_group_exists(process.pid):
         return False
     terminate_process_group(process)
@@ -1877,38 +1981,159 @@ def run_managed(
     cwd: Path,
     timeout: int,
     input_text: str | None = None,
-) -> tuple[int, str, bool, bool]:
-    environment = os.environ.copy()
-    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    max_output_bytes: int = DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+    environment: dict[str, str] | None = None,
+) -> ManagedResult:
+    if timeout <= 0:
+        raise PipelineError("managed command timeout must be positive", 9)
+    if max_output_bytes <= 0:
+        raise PipelineError("command output byte limit must be positive", 9)
+    command_environment = dict(os.environ if environment is None else environment)
+    command_environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    input_bytes = input_text.encode("utf-8") if input_text is not None else None
     process = subprocess.Popen(
         argv,
         cwd=cwd,
-        stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+        stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        bufsize=0,
         start_new_session=True,
-        env=environment,
+        env=command_environment,
     )
+    assert process.stdout is not None
+    selector = selectors.DefaultSelector()
+    os.set_blocking(process.stdout.fileno(), False)
+    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+    stdout_open = True
+    stdin_open = input_bytes is not None
+    input_offset = 0
+    if stdin_open:
+        assert process.stdin is not None
+        os.set_blocking(process.stdin.fileno(), False)
+        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+
+    output = OutputTailBuffer(max_output_bytes)
+    command_deadline = time.monotonic() + timeout
+    drain_deadline: float | None = None
+    timed_out = False
+    output_limit_exceeded = False
+    output_drain_timed_out = False
+    cleanup_started = False
+    leftover_process_group = False
+
     try:
-        output, _ = process.communicate(input=input_text, timeout=timeout)
-        return_code = process.returncode
-        leftover_process_group = ensure_process_group_finished(process)
-        if leftover_process_group:
-            output = (output or "") + (
-                "\nmanaged command left a live process group; leftover children "
-                "were terminated\n"
-            )
-            if return_code == 0:
-                return_code = 125
-        return return_code, output or "", False, leftover_process_group
-    except subprocess.TimeoutExpired:
-        output = terminate_process_group(process)
-        return 124, output, True, False
-    except BaseException:
+        while True:
+            now = time.monotonic()
+            if not cleanup_started and output.observed > max_output_bytes:
+                output_limit_exceeded = True
+            if not cleanup_started and now >= command_deadline:
+                timed_out = True
+            if not cleanup_started and (timed_out or output_limit_exceeded):
+                if stdin_open:
+                    close_selector_stream(selector, process.stdin)
+                    stdin_open = False
+                terminate_process_group(process)
+                cleanup_started = True
+                drain_deadline = time.monotonic() + PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS
+
+            if cleanup_started and drain_deadline is not None and now >= drain_deadline:
+                if stdout_open:
+                    output_drain_timed_out = True
+                    close_selector_stream(selector, process.stdout)
+                    stdout_open = False
+                break
+
+            if not cleanup_started and process.poll() is not None and not stdout_open:
+                break
+            if cleanup_started and not stdout_open:
+                break
+
+            active_deadline = drain_deadline if cleanup_started else command_deadline
+            assert active_deadline is not None
+            wait = max(0.0, min(0.1, active_deadline - time.monotonic()))
+            for key, mask in selector.select(wait):
+                if key.data == "stdout" and mask & selectors.EVENT_READ:
+                    try:
+                        chunk = os.read(process.stdout.fileno(), OUTPUT_READ_CHUNK_BYTES)
+                    except BlockingIOError:
+                        continue
+                    if chunk:
+                        output.append(chunk)
+                    else:
+                        close_selector_stream(selector, process.stdout)
+                        stdout_open = False
+                elif key.data == "stdin" and mask & selectors.EVENT_WRITE:
+                    assert process.stdin is not None and input_bytes is not None
+                    try:
+                        written = os.write(
+                            process.stdin.fileno(),
+                            input_bytes[input_offset : input_offset + OUTPUT_READ_CHUNK_BYTES],
+                        )
+                    except BlockingIOError:
+                        written = 0
+                    except BrokenPipeError:
+                        written = 0
+                        close_selector_stream(selector, process.stdin)
+                        stdin_open = False
+                    input_offset += written
+                    if input_offset >= len(input_bytes):
+                        close_selector_stream(selector, process.stdin)
+                        stdin_open = False
+
         if process.poll() is None:
+            process.wait(timeout=2)
+        if not cleanup_started:
+            leftover_process_group = ensure_process_group_finished(process)
+    except BaseException:
+        if process_group_exists(process.pid):
             terminate_process_group(process)
+        elif process.poll() is None:
+            process.kill()
+            process.wait(timeout=2)
         raise
+    finally:
+        close_selector_stream(selector, process.stdin)
+        close_selector_stream(selector, process.stdout)
+        selector.close()
+
+    exit_code = process.returncode if process.returncode is not None else 1
+    if timed_out:
+        exit_code = 124
+    elif output_limit_exceeded:
+        exit_code = COMMAND_OUTPUT_LIMIT_EXIT
+    elif leftover_process_group and exit_code == 0:
+        exit_code = 125
+
+    output_text = output.text()
+    if output_limit_exceeded:
+        output_text += (
+            f"\nmanaged command exceeded output limit of {max_output_bytes} bytes; "
+            "only the bounded tail was retained and the process group was terminated\n"
+        )
+    if output_drain_timed_out:
+        output_text += (
+            "\nmanaged command output pipe remained open after process-group cleanup; "
+            "local capture was closed at its deadline and a detached descendant may "
+            "still be running\n"
+        )
+    if leftover_process_group:
+        output_text += (
+            "\nmanaged command left a live process group; leftover children were "
+            "terminated\n"
+        )
+    return ManagedResult(
+        exit_code=exit_code,
+        output=output_text,
+        timed_out=timed_out,
+        leftover_process_group=leftover_process_group,
+        output_bytes_observed=output.observed,
+        output_bytes_retained=output.retained,
+        output_truncated=output.observed > output.retained,
+        output_limit_exceeded=output_limit_exceeded,
+        output_drain_timed_out=output_drain_timed_out,
+        detached_descendant_possible=output_drain_timed_out,
+    )
 
 
 def ensure_supported_runner_platform() -> None:
@@ -1986,6 +2211,34 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
     parser.add_argument("--stage-timeout", type=int, default=3600)
+    parser.add_argument(
+        "--max-command-output-bytes",
+        type=int,
+        default=DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+        help=(
+            "Terminate a model or verification command after observed merged output "
+            f"exceeds this per-command byte budget (default: {DEFAULT_MAX_COMMAND_OUTPUT_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--max-verification-output-bytes",
+        type=int,
+        default=DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES,
+        help=(
+            "Cap retained merged output across one deterministic-verification batch "
+            f"(default: {DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--verify-env",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help=(
+            "Pass one additional existing host environment variable to verification; "
+            "repeatable; names are recorded but values are not"
+        ),
+    )
     parser.add_argument(
         "--max-ignored-paths",
         type=int,
@@ -2127,6 +2380,7 @@ def run_stage(
     schema_path = run_dir / f"{artifact_prefix}-schema.json"
     output_path = run_dir / f"{artifact_prefix}.json"
     log_path = run_dir / f"{artifact_prefix}.log"
+    command_result_path = run_dir / f"{artifact_prefix}-command.json"
 
     command = [
         args.codex_bin,
@@ -2169,24 +2423,60 @@ def run_stage(
 
     write_json(schema_path, schema)
     effective_prompt = "RUNNER STAGE INSTRUCTIONS:\n" + prompt
+    start_error: OSError | None = None
     try:
-        return_code, output, timed_out, _ = run_managed(
+        result = run_managed(
             command,
             cwd=repo,
             timeout=args.stage_timeout,
             input_text=effective_prompt,
+            max_output_bytes=args.max_command_output_bytes,
         )
     except OSError as exc:
-        raise PipelineError(f"could not start {stage_name}: {exc}") from exc
-
-    log_path.write_text(output, encoding="utf-8")
-    if timed_out:
-        raise PipelineError(
-            f"{stage_name} timed out after {args.stage_timeout}s; its process group was terminated",
+        start_error = exc
+        result = ManagedResult(
+            exit_code=127,
+            output=f"could not start {stage_name}: {exc}",
+            timed_out=False,
+            leftover_process_group=False,
+            output_bytes_observed=0,
+            output_bytes_retained=0,
+            output_truncated=False,
+            output_limit_exceeded=False,
+            output_drain_timed_out=False,
+            detached_descendant_possible=False,
         )
-    if return_code != 0:
+
+    log_path.write_text(result.output, encoding="utf-8")
+    write_json(
+        command_result_path,
+        {
+            "stage": stage_name,
+            "output_log": log_path.name,
+            **managed_result_metadata(result),
+        },
+    )
+    if start_error is not None:
+        raise PipelineError(result.output) from start_error
+    if result.output_limit_exceeded:
         raise PipelineError(
-            f"{stage_name} failed with exit code {return_code}; see {log_path}",
+            f"{stage_name} exceeded the {args.max_command_output_bytes}-byte command "
+            f"output limit; see {log_path}",
+            9,
+        )
+    if result.timed_out:
+        detached_note = (
+            "; detached descendant possible because output drain hit its deadline"
+            if result.detached_descendant_possible
+            else ""
+        )
+        raise PipelineError(
+            f"{stage_name} timed out after {args.stage_timeout}s; original process-group "
+            f"cleanup completed{detached_note}; see {log_path}",
+        )
+    if result.exit_code != 0:
+        raise PipelineError(
+            f"{stage_name} failed with exit code {result.exit_code}; see {log_path}",
         )
     if not output_path.is_file():
         raise PipelineError(f"{stage_name} produced no output: {output_path}")
@@ -2200,6 +2490,12 @@ def verification_commands(args: argparse.Namespace) -> list[dict[str, Any]]:
         if not argv:
             raise PipelineError("--verify must not be empty")
         commands.append(argv)
+    if len(commands) > MAX_VERIFICATION_COMMANDS:
+        raise PipelineError(
+            "verification command count exceeds the supported batch limit of "
+            f"{MAX_VERIFICATION_COMMANDS}",
+            9,
+        )
     return [
         {
             "id": BUILTIN_DIFF_CHECK_ID if index == 0 else f"verify-{index}",
@@ -2207,6 +2503,31 @@ def verification_commands(args: argparse.Namespace) -> list[dict[str, Any]]:
         }
         for index, argv in enumerate(commands)
     ]
+
+
+def build_verification_environment(
+    extra_names: list[str],
+    source: dict[str, str] | None = None,
+) -> dict[str, str]:
+    source_environment = os.environ if source is None else source
+    requested: set[str] = set()
+    for name in extra_names:
+        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+            raise PipelineError(f"invalid --verify-env name: {name!r}", 9)
+        if name not in source_environment:
+            raise PipelineError(
+                f"--verify-env requested an unset variable: {name}",
+                9,
+            )
+        requested.add(name)
+    names = set(VERIFICATION_ENV_ALLOWLIST) | requested
+    environment = {
+        name: source_environment[name]
+        for name in sorted(names)
+        if name in source_environment
+    }
+    environment["PYTHONDONTWRITEBYTECODE"] = "1"
+    return environment
 
 
 def run_verification(
@@ -2220,8 +2541,14 @@ def run_verification(
     expected_state: dict[str, Any],
     state_supplier: Callable[[], dict[str, Any]],
     entrypoints: dict[str, dict[str, Any]],
+    environment: dict[str, str],
+    max_output_bytes: int,
+    max_total_output_bytes: int,
 ) -> tuple[bool, list[dict[str, Any]]]:
+    if max_total_output_bytes <= 0:
+        raise PipelineError("verification output byte limit must be positive", 9)
     records: list[dict[str, Any]] = []
+    retained_output_bytes = 0
     for command in commands:
         command_id = command["id"]
         argv = command["argv"]
@@ -2236,6 +2563,31 @@ def run_verification(
                 }
             )
             continue
+        remaining_output_bytes = max_total_output_bytes - retained_output_bytes
+        if remaining_output_bytes <= 0:
+            records.append(
+                {
+                    "id": command_id,
+                    "command": shlex.join(argv),
+                    "exit_code": COMMAND_OUTPUT_LIMIT_EXIT,
+                    "output": (
+                        "verification command was not run because the batch retained-"
+                        f"output budget of {max_total_output_bytes} bytes was exhausted"
+                    ),
+                    "leftover_process_group": False,
+                    "timed_out": False,
+                    "output_bytes_observed": 0,
+                    "output_bytes_retained": 0,
+                    "output_truncated": False,
+                    "output_limit_exceeded": False,
+                    "output_drain_timed_out": False,
+                    "detached_descendant_possible": False,
+                    "verification_output_budget_exceeded": True,
+                }
+            )
+            write_json(run_dir / f"{prefix}.json", records)
+            break
+        effective_output_limit = min(max_output_bytes, remaining_output_bytes)
         before = state_supplier()
         assert_repo_unchanged(
             expected_state,
@@ -2249,27 +2601,48 @@ def run_verification(
             {command_id},
         )
         try:
-            return_code, output, timed_out, leftover_process_group = run_managed(
+            result = run_managed(
                 argv,
                 cwd=repo,
                 timeout=timeout_seconds,
+                max_output_bytes=effective_output_limit,
+                environment=environment,
             )
-            if timed_out:
+            output = result.output
+            if result.timed_out:
                 output = (
                     f"verification timed out after {timeout_seconds}s; "
-                    "its process group was terminated\n" + output
+                    "original process-group cleanup completed; inspect structured "
+                    "drain state for detached-descendant risk\n" + output
                 )
         except OSError as exc:
-            return_code = 127
+            result = ManagedResult(
+                exit_code=127,
+                output=f"could not start verification command: {exc}",
+                timed_out=False,
+                leftover_process_group=False,
+                output_bytes_observed=0,
+                output_bytes_retained=0,
+                output_truncated=False,
+                output_limit_exceeded=False,
+                output_drain_timed_out=False,
+                detached_descendant_possible=False,
+            )
             output = f"could not start verification command: {exc}"
-            leftover_process_group = False
+        retained_output_bytes += result.output_bytes_retained
+        verification_output_budget_exceeded = (
+            effective_output_limit < max_output_bytes
+            and result.output_limit_exceeded
+        )
         records.append(
             {
                 "id": command_id,
                 "command": shlex.join(argv),
-                "exit_code": return_code,
                 "output": output,
-                "leftover_process_group": leftover_process_group,
+                **managed_result_metadata(result),
+                "verification_output_budget_exceeded": (
+                    verification_output_budget_exceeded
+                ),
             }
         )
         write_json(run_dir / f"{prefix}.json", records)
@@ -2279,6 +2652,8 @@ def run_verification(
             after,
             f"verification command {command_id}",
         )
+        if verification_output_budget_exceeded:
+            break
     write_json(run_dir / f"{prefix}.json", records)
     return all(item["exit_code"] in (0, None) for item in records), records
 
@@ -2314,10 +2689,33 @@ def compact_verification(records: list[dict[str, Any]]) -> str:
                 "command": record.get("command"),
                 "exit_code": record.get("exit_code"),
                 "leftover_process_group": record.get("leftover_process_group", False),
+                "timed_out": record.get("timed_out", False),
+                "output_bytes_observed": record.get("output_bytes_observed", 0),
+                "output_bytes_retained": record.get("output_bytes_retained", 0),
+                "output_truncated": record.get("output_truncated", False),
+                "output_limit_exceeded": record.get("output_limit_exceeded", False),
+                "output_drain_timed_out": record.get("output_drain_timed_out", False),
+                "detached_descendant_possible": record.get(
+                    "detached_descendant_possible",
+                    False,
+                ),
+                "verification_output_budget_exceeded": record.get(
+                    "verification_output_budget_exceeded",
+                    False,
+                ),
                 "output_tail": output[-12000:],
             }
         )
-    return json.dumps(compact, ensure_ascii=False, indent=2)
+    payload = json.dumps(compact, ensure_ascii=False, indent=2)
+    if len(payload) <= MAX_VERIFICATION_PROMPT_CHARS:
+        return payload
+    marker = (
+        "\n... verification summary truncated to the model prompt budget; "
+        f"full machine records remain in the private artifact ({len(payload)} chars) ...\n"
+    )
+    available = MAX_VERIFICATION_PROMPT_CHARS - len(marker)
+    head_size = available // 2
+    return payload[:head_size] + marker + payload[-(available - head_size) :]
 
 
 def run_pipeline_locked(
@@ -2326,6 +2724,11 @@ def run_pipeline_locked(
     task_path: Path,
 ) -> int:
     ensure_supported_repository_topology(repo)
+    if args.max_command_output_bytes <= 0:
+        raise PipelineError("--max-command-output-bytes must be positive", 9)
+    if args.max_verification_output_bytes <= 0:
+        raise PipelineError("--max-verification-output-bytes must be positive", 9)
+    verification_environment = build_verification_environment(args.verify_env)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
     allowed_protected_deletions = normalize_protected_deletions(
         args.allow_protected_path_delete
@@ -2419,6 +2822,12 @@ def run_pipeline_locked(
         "baseline_redacted_untracked_metadata": baseline_redacted_untracked,
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "max_ignored_paths": args.max_ignored_paths,
+        "max_command_output_bytes": args.max_command_output_bytes,
+        "max_verification_output_bytes": args.max_verification_output_bytes,
+        "max_verification_commands": MAX_VERIFICATION_COMMANDS,
+        "max_verification_prompt_chars": MAX_VERIFICATION_PROMPT_CHARS,
+        "verification_environment_names": sorted(verification_environment),
+        "explicit_verification_environment_names": sorted(set(args.verify_env)),
         "sensitive_paths": args.sensitive_path,
         "bound_verification_paths": {
             command_id: sorted(paths)
@@ -2672,6 +3081,9 @@ def run_pipeline_locked(
             expected_state=post_implementation_state,
             state_supplier=lambda: capture_state(check_topology=True),
             entrypoints=verification_entrypoints,
+            environment=verification_environment,
+            max_output_bytes=args.max_command_output_bytes,
+            max_total_output_bytes=args.max_verification_output_bytes,
         )
         post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(

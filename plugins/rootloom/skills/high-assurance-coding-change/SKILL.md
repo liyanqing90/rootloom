@@ -39,11 +39,24 @@ python3 <skill-dir>/scripts/run_pipeline.py \
   --repo /absolute/path/to/repo \
   --task /absolute/path/to/task.md \
   --sensitive-path 'private/**' \
+  --max-command-output-bytes 8388608 \
+  --max-verification-output-bytes 33554432 \
   --verify 'your focused test command' \
   --verify 'your broader verification command'
 ```
 
 The runner reads model, reasoning, and sandbox settings from the same four custom-agent TOML files. It requires a clean worktree by default, uses structured stage outputs, disables user config/plugins/apps for every stage, blocks network in the workspace-write sandbox, and allows at most one targeted repair cycle. Verification commands are parsed without a shell; place pipelines or compound commands in a repository-owned script. Detected verification entrypoints are fingerprinted before the writer and rechecked per command for directly executed repository scripts, command-scoped `--bind-verification-path verify-N:path` stability dependencies, `make` files, JavaScript package manifests, pytest configuration files, missing common candidates, and every repository-internal symlink component plus final target content. Explicit harnesses must be existing regular files, and ignored or sensitive-untracked harnesses are rejected before content access. Pytest positional selectors are not executable entrypoints. This is an entrypoint stability gate, not complete command semantic parsing or proof that a command uses every bound dependency.
+
+Merged command output is streamed into a bounded tail with an 8 MiB default per-command
+budget. `--max-command-output-bytes` accepts another positive budget. Exceeding it
+terminates the original process group and records structured output metadata.
+Model stages persist a `*-command.json` sidecar. Verification additionally has a 32 MiB
+retained-output batch budget, a fixed 64-command ceiling, and a 120,000-character
+model-prompt summary ceiling. `--max-verification-output-bytes` changes the positive
+batch byte budget.
+Verification receives a minimal environment; repeat `--verify-env NAME` only for an
+existing variable that the command genuinely requires. Names are recorded, values are
+not. Model stages retain the parent environment for Codex authentication compatibility.
 
 Known secret-like visible-untracked paths are classified before content fingerprinting. Every path protected at the baseline remains metadata-only for the complete run, even after ignore configuration changes, and declassification of an existing protected path is rejected before Delta capture. Add repeatable exact-path or `directory/**` rules with `--sensitive-path`; use `--redact-untracked-dotfiles` when every untracked dotfile should remain metadata-only. Built-in matching is finite. These options protect runner-generated artifacts and prompts, not repository file access: all four model stages can still read files. Use a secret-free worktree or OS/container isolation when deny-read behavior is required.
 

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 from pathlib import Path
 import shlex
@@ -1150,6 +1151,9 @@ class RunnerGateTests(unittest.TestCase):
                 expected_state=expected,
                 state_supplier=lambda: runner.capture_repo_state(self.repo),
                 entrypoints=entrypoints,
+                environment=runner.build_verification_environment([], {}),
+                max_output_bytes=runner.DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+                max_total_output_bytes=runner.DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES,
             )
         self.assertIn("verification command verify-1", str(caught.exception))
         self.assertFalse(marker.exists())
@@ -1251,7 +1255,7 @@ class RunnerGateTests(unittest.TestCase):
 
         started = time.monotonic()
         try:
-            return_code, output, timed_out, leftover = runner.run_managed(
+            result = runner.run_managed(
                 [
                     sys.executable,
                     str(parent),
@@ -1264,11 +1268,13 @@ class RunnerGateTests(unittest.TestCase):
                 timeout=1,
             )
             elapsed = time.monotonic() - started
-            self.assertEqual(return_code, 124)
-            self.assertTrue(timed_out)
-            self.assertFalse(leftover)
+            self.assertEqual(result.exit_code, 124)
+            self.assertTrue(result.timed_out)
+            self.assertFalse(result.leftover_process_group)
+            self.assertTrue(result.output_drain_timed_out)
+            self.assertTrue(result.detached_descendant_possible)
             self.assertLess(elapsed, 5)
-            self.assertIn("output pipe remained open", output)
+            self.assertIn("output pipe remained open", result.output)
             self.assertFalse(done.exists())
         finally:
             stop.write_text("stop", encoding="utf-8")
@@ -1276,6 +1282,269 @@ class RunnerGateTests(unittest.TestCase):
             while not done.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
         self.assertTrue(done.exists())
+
+    def test_output_limit_terminates_log_storm_with_bounded_tail(self) -> None:
+        marker = self.root / "output-limit-command-finished"
+        limit = 128 * 1024
+        command = (
+            "import os, pathlib, sys; "
+            "chunk=b'x'*65536; "
+            "[(os.write(1, chunk)) for _ in range(512)]; "
+            "pathlib.Path(sys.argv[1]).write_text('finished')"
+        )
+        started = time.monotonic()
+        result = runner.run_managed(
+            [sys.executable, "-c", command, str(marker)],
+            cwd=self.root,
+            timeout=10,
+            max_output_bytes=limit,
+        )
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(result.exit_code, runner.COMMAND_OUTPUT_LIMIT_EXIT)
+        self.assertTrue(result.output_limit_exceeded)
+        self.assertTrue(result.output_truncated)
+        self.assertGreater(result.output_bytes_observed, limit)
+        self.assertLessEqual(result.output_bytes_retained, limit)
+        self.assertIn("exceeded output limit", result.output)
+        self.assertFalse(marker.exists())
+
+    def test_managed_input_round_trip_and_minimal_verification_environment(self) -> None:
+        source = {
+            "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+            "HOME": str(self.root),
+            "LANG": "C.UTF-8",
+            "ROOTLOOM_FAKE_SECRET": "must-not-pass",
+            "ROOTLOOM_ALLOWED": "allowed-value",
+        }
+        environment = runner.build_verification_environment(
+            ["ROOTLOOM_ALLOWED"],
+            source,
+        )
+        self.assertNotIn("ROOTLOOM_FAKE_SECRET", environment)
+        self.assertEqual(environment["ROOTLOOM_ALLOWED"], "allowed-value")
+        with self.assertRaises(runner.PipelineError):
+            runner.build_verification_environment(["INVALID-NAME"], source)
+        with self.assertRaises(runner.PipelineError):
+            runner.build_verification_environment(["MISSING"], source)
+
+        command = (
+            "import json, os, sys; "
+            "payload=sys.stdin.read(); "
+            "print(json.dumps({'payload': payload, 'environment': dict(os.environ)}))"
+        )
+        result = runner.run_managed(
+            [sys.executable, "-c", command],
+            cwd=self.root,
+            timeout=5,
+            input_text="round-trip",
+            environment=environment,
+        )
+        payload = json.loads(result.output)
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(payload["payload"], "round-trip")
+        self.assertNotIn("ROOTLOOM_FAKE_SECRET", payload["environment"])
+        self.assertEqual(
+            payload["environment"]["ROOTLOOM_ALLOWED"],
+            "allowed-value",
+        )
+
+    def test_interrupt_after_parent_exit_cleans_original_process_group(self) -> None:
+        parent_exited = self.root / "parent-exited"
+        child_done = self.root / "interrupt-child-survived"
+        child = self.root / "interrupt_child.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "time.sleep(1)\n"
+            "pathlib.Path(sys.argv[1]).write_text('survived')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "interrupt_parent.py"
+        parent.write_text(
+            "import pathlib, subprocess, sys\n"
+            "subprocess.Popen([sys.executable, sys.argv[1], sys.argv[2]], "
+            "stdin=subprocess.DEVNULL)\n"
+            "pathlib.Path(sys.argv[3]).write_text('exited')\n",
+            encoding="utf-8",
+        )
+        real_selector = runner.selectors.DefaultSelector
+
+        class InterruptingSelector:
+            def __init__(self) -> None:
+                self.delegate = real_selector()
+
+            def register(self, *args: object, **kwargs: object) -> object:
+                return self.delegate.register(*args, **kwargs)
+
+            def unregister(self, *args: object, **kwargs: object) -> object:
+                return self.delegate.unregister(*args, **kwargs)
+
+            def select(self, timeout: float | None = None) -> object:
+                if parent_exited.exists():
+                    time.sleep(0.15)
+                    raise KeyboardInterrupt
+                return self.delegate.select(timeout)
+
+            def close(self) -> None:
+                self.delegate.close()
+
+        with mock.patch.object(
+            runner.selectors,
+            "DefaultSelector",
+            InterruptingSelector,
+        ):
+            with self.assertRaises(KeyboardInterrupt):
+                runner.run_managed(
+                    [
+                        sys.executable,
+                        str(parent),
+                        str(child),
+                        str(child_done),
+                        str(parent_exited),
+                    ],
+                    cwd=self.root,
+                    timeout=5,
+                )
+        time.sleep(1.1)
+        self.assertFalse(child_done.exists())
+
+    def test_verification_batch_output_budget_stops_remaining_commands(self) -> None:
+        marker = self.root / "third-verification-ran"
+        commands = [
+            {
+                "id": "verify-1",
+                "argv": [sys.executable, "-c", "import os; os.write(1, b'x' * 100)"],
+            },
+            {
+                "id": "verify-2",
+                "argv": [sys.executable, "-c", "import os; os.write(1, b'y' * 100)"],
+            },
+            {
+                "id": "verify-3",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')",
+                    str(marker),
+                ],
+            },
+        ]
+        expected = runner.capture_repo_state(self.repo)
+        verified, records = runner.run_verification(
+            repo=self.repo,
+            run_dir=self.run_dir,
+            prefix="verification-budget",
+            commands=commands,
+            dry_run=False,
+            timeout_seconds=5,
+            expected_state=expected,
+            state_supplier=lambda: runner.capture_repo_state(self.repo),
+            entrypoints={},
+            environment=runner.build_verification_environment([], {}),
+            max_output_bytes=128,
+            max_total_output_bytes=150,
+        )
+        self.assertFalse(verified)
+        self.assertEqual(len(records), 2)
+        self.assertEqual(
+            sum(record["output_bytes_retained"] for record in records),
+            150,
+        )
+        self.assertTrue(records[-1]["verification_output_budget_exceeded"])
+        self.assertFalse(marker.exists())
+
+    def test_verification_batch_rejects_more_than_command_ceiling(self) -> None:
+        args = mock.Mock(verify=["true"] * runner.MAX_VERIFICATION_COMMANDS)
+        with self.assertRaises(runner.PipelineError):
+            runner.verification_commands(args)
+
+    def test_model_stage_persists_structured_command_sidecar_on_failure(self) -> None:
+        args = mock.Mock(
+            dry_run=False,
+            codex_bin="codex",
+            stage_timeout=5,
+            max_command_output_bytes=128,
+        )
+        result = runner.ManagedResult(
+            exit_code=runner.COMMAND_OUTPUT_LIMIT_EXIT,
+            output="bounded tail\n",
+            timed_out=False,
+            leftover_process_group=False,
+            output_bytes_observed=192,
+            output_bytes_retained=128,
+            output_truncated=True,
+            output_limit_exceeded=True,
+            output_drain_timed_out=False,
+            detached_descendant_possible=False,
+        )
+        role = {
+            "model": "test-model",
+            "model_reasoning_effort": "high",
+            "sandbox_mode": "read-only",
+            "developer_instructions": "test",
+        }
+        with mock.patch.object(runner, "run_managed", return_value=result):
+            with self.assertRaises(runner.PipelineError):
+                runner.run_stage(
+                    args=args,
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    stage_name="evidence",
+                    artifact_prefix="01-evidence",
+                    role=role,
+                    schema={},
+                    prompt="inspect",
+                )
+        sidecar = json.loads(
+            (self.run_dir / "01-evidence-command.json").read_text(encoding="utf-8")
+        )
+        self.assertEqual(sidecar["stage"], "evidence")
+        self.assertEqual(sidecar["output_bytes_observed"], 192)
+        self.assertEqual(sidecar["output_bytes_retained"], 128)
+        self.assertTrue(sidecar["output_limit_exceeded"])
+
+    def test_compact_verification_preserves_structured_output_state(self) -> None:
+        compact = json.loads(
+            runner.compact_verification(
+                [
+                    {
+                        "id": "verify-1",
+                        "command": "python noisy_test.py",
+                        "exit_code": runner.COMMAND_OUTPUT_LIMIT_EXIT,
+                        "output": "x" * 13000,
+                        "leftover_process_group": False,
+                        "timed_out": False,
+                        "output_bytes_observed": 9_000_000,
+                        "output_bytes_retained": 8_388_608,
+                        "output_truncated": True,
+                        "output_limit_exceeded": True,
+                        "output_drain_timed_out": True,
+                        "detached_descendant_possible": True,
+                    }
+                ]
+            )
+        )[0]
+        self.assertEqual(compact["exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
+        self.assertEqual(compact["output_bytes_observed"], 9_000_000)
+        self.assertEqual(compact["output_bytes_retained"], 8_388_608)
+        self.assertTrue(compact["output_truncated"])
+        self.assertTrue(compact["output_limit_exceeded"])
+        self.assertTrue(compact["output_drain_timed_out"])
+        self.assertTrue(compact["detached_descendant_possible"])
+        self.assertEqual(len(compact["output_tail"]), 12000)
+
+    def test_compact_verification_has_a_global_prompt_limit(self) -> None:
+        records = [
+            {
+                "id": f"verify-{index}",
+                "command": "python noisy_test.py",
+                "exit_code": 0,
+                "output": "x" * 12000,
+            }
+            for index in range(runner.MAX_VERIFICATION_COMMANDS)
+        ]
+        compact = runner.compact_verification(records)
+        self.assertLessEqual(len(compact), runner.MAX_VERIFICATION_PROMPT_CHARS)
+        self.assertIn("verification summary truncated", compact)
 
     def test_successful_command_with_leftover_child_fails_closed(self) -> None:
         marker = self.root / "leftover-child"
