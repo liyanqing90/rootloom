@@ -6,6 +6,23 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.8] - 2026-07-12
+
+### Security
+
+- Preserve every baseline ignored or sensitive-untracked path as metadata-only for the complete high-assurance run. Changes to `.gitignore`, `.git/info/exclude`, or current sensitivity classification can no longer make protected content readable or patchable in later snapshots.
+- Reject attempts to declassify an existing baseline-protected path even when its metadata did not otherwise change.
+- Poll managed process groups directly during cleanup and escalate from SIGTERM to SIGKILL when descendants remain, including children that ignore SIGTERM after the direct parent exits.
+
+### Changed
+
+- Repository state now records the effective monotonic `metadata_only_paths` boundary, and standalone contract enforcement derives that boundary from its baseline automatically.
+- The strict high-assurance runner is now version 2.10.
+
+### Tests
+
+- Added regressions for protected-path declassification through `.gitignore` and `.git/info/exclude`, pre-delta content-read prevention, SIGTERM-ignoring descendant cleanup, and direct timed-out processes that ignore SIGTERM.
+
 ## [1.2.7] - 2026-07-12
 
 ### Security
@@ -176,7 +193,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...HEAD
+[1.2.8]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...v1.2.5

@@ -152,7 +152,7 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 - a repository lock and private artifact directory;
 - clean baseline and Git state snapshots;
 - full content fingerprints for tracked and ordinary visible-untracked deliverables;
-- pre-fingerprint classification and metadata-only capture for every ignored path plus known or caller-configured sensitive visible-untracked path, with no content hash and with those contents excluded from artifacts and reviewer prompts;
+- pre-fingerprint classification and metadata-only capture for every ignored path plus known or caller-configured sensitive visible-untracked path, with a baseline-derived monotonic floor that prevents later declassification, no content hash, and those contents excluded from artifacts and reviewer prompts;
 - default rejection of any writer change to those metadata-only paths before Delta capture; an exact pre-authorized deletion is the only exception and forces a nonzero human-review-required outcome;
 - an explicit fail-closed ignored-path enumeration budget;
 - no mutation by evidence, diagnosis, or review stages;
@@ -162,7 +162,7 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 - structured semantic gates for GO, completion, PASS, and findings;
 - topology checks at startup, after every writer, after deterministic verification, and after final review, without repeating the full traversal after read-only stages;
 - at most one targeted repair cycle;
-- process-group termination on timeout, interruption, successful parent exit, or failed parent exit when children remain.
+- process-group termination on timeout, interruption, successful parent exit, or failed parent exit when children remain, with SIGTERM-to-SIGKILL escalation and explicit group-exit confirmation.
 
 This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, the selected verification command is adequate, or the change is safe in production. Built-in sensitive-name detection is finite; custom exact/recursive rules and opt-in dotfile redaction close repository-specific gaps. Verification entrypoint fingerprinting consumes the repository's ignored/sensitive classification and rejects a protected harness before content access. It covers direct and common entrypoints plus command-scoped operator stability dependencies, but it is not a generic parser for hidden CLI path references or proof that a command semantically uses a bound dependency. Pytest positional paths are treated as selection scope, not executable entrypoints. Every verification command is bracketed by entrypoint and repository-state checks, so a mutating command stops the batch before the next command runs. Artifact redaction is not file-access isolation because every model stage still receives a readable repository sandbox. An authorized protected deletion can prove only path removal, not the old content, and therefore cannot receive automated acceptance; Rootloom keeps that case deletion-only so protected content cannot be mixed into ordinary deltas through a rename or move in the same run. The strict runner supports Linux, macOS, and WSL. Native Windows is explicitly rejected because repository locking and process-group termination use POSIX semantics.
 

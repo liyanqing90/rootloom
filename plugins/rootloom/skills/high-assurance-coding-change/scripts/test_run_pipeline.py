@@ -417,6 +417,100 @@ class RunnerGateTests(unittest.TestCase):
                 allowed_rules=runner.normalize_allowed_paths([".env.new"]),
             )
 
+    def test_baseline_ignored_path_stays_metadata_only_after_gitignore_change(self) -> None:
+        gitignore = self.repo / ".gitignore"
+        gitignore.write_text("private/runtime.conf\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore private runtime")
+        protected = self.repo / "private" / "runtime.conf"
+        protected.parent.mkdir()
+        protected.write_text("SECRET=before\n", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+
+        gitignore.write_text("", encoding="utf-8")
+        original_fingerprint = runner.file_fingerprint
+
+        def reject_protected_content(path: Path) -> dict[str, object]:
+            if path == protected:
+                raise AssertionError("baseline protected content was hashed")
+            return original_fingerprint(path)
+
+        with (
+            mock.patch.object(
+                runner,
+                "file_fingerprint",
+                side_effect=reject_protected_content,
+            ),
+            mock.patch.object(runner, "capture_delta") as capture,
+        ):
+            current = runner.capture_repo_state(
+                self.repo,
+                metadata_only_floor=runner.protected_metadata_paths(baseline),
+            )
+            self.assertEqual(
+                current["worktree"]["private/runtime.conf"]["kind"],
+                "file-metadata",
+            )
+            with self.assertRaises(runner.PipelineError) as entrypoint:
+                runner._entrypoint_fingerprint(
+                    self.repo,
+                    "private/runtime.conf",
+                    current,
+                )
+            self.assertIn("baseline protected metadata-only", str(entrypoint.exception))
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.enforce_repository_contract(
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    prefix="gitignore-declassification",
+                    baseline=baseline,
+                    allowed_rules=runner.normalize_allowed_paths(
+                        [".gitignore", "private/runtime.conf"]
+                    ),
+                )
+
+        capture.assert_not_called()
+        self.assertIn("declassified baseline protected", str(caught.exception))
+
+    def test_baseline_excluded_path_stays_metadata_only_after_git_control_change(self) -> None:
+        exclude = self.repo / ".git" / "info" / "exclude"
+        exclude.write_text("private/runtime.conf\n", encoding="utf-8")
+        protected = self.repo / "private" / "runtime.conf"
+        protected.parent.mkdir()
+        protected.write_text("SECRET=before\n", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+
+        exclude.write_text("", encoding="utf-8")
+        protected.write_text("SECRET=after\n", encoding="utf-8")
+        original_fingerprint = runner.file_fingerprint
+
+        def reject_protected_content(path: Path) -> dict[str, object]:
+            if path == protected:
+                raise AssertionError("baseline protected content was hashed")
+            return original_fingerprint(path)
+
+        with (
+            mock.patch.object(
+                runner,
+                "file_fingerprint",
+                side_effect=reject_protected_content,
+            ),
+            mock.patch.object(runner, "capture_delta") as capture,
+        ):
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.enforce_repository_contract(
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    prefix="exclude-declassification",
+                    baseline=baseline,
+                    allowed_rules=runner.normalize_allowed_paths(
+                        ["private/runtime.conf"]
+                    ),
+                )
+
+        capture.assert_not_called()
+        self.assertIn("Git control metadata changed", str(caught.exception))
+
     def test_protected_delete_authorization_is_exact_used_and_requires_human_review(self) -> None:
         for unsafe in ("private/**", "private/", "*.env"):
             with self.subTest(unsafe=unsafe), self.assertRaises(runner.PipelineError):
@@ -1110,6 +1204,21 @@ class RunnerGateTests(unittest.TestCase):
         time.sleep(0.75)
         self.assertFalse(marker.exists())
 
+    def test_timeout_reaps_direct_process_that_ignores_sigterm(self) -> None:
+        command = (
+            "import signal, time; "
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+            "time.sleep(20)"
+        )
+        return_code, _, timed_out, leftover = runner.run_managed(
+            [sys.executable, "-c", command],
+            cwd=self.root,
+            timeout=1,
+        )
+        self.assertEqual(return_code, 124)
+        self.assertTrue(timed_out)
+        self.assertFalse(leftover)
+
     def test_successful_command_with_leftover_child_fails_closed(self) -> None:
         marker = self.root / "leftover-child"
         child = self.root / "linger.py"
@@ -1140,6 +1249,52 @@ class RunnerGateTests(unittest.TestCase):
         self.assertTrue(leftover)
         self.assertIn("left a live process group", output)
         time.sleep(0.5)
+        self.assertFalse(marker.exists())
+
+    def test_leftover_child_ignoring_sigterm_is_killed(self) -> None:
+        ready = self.root / "sigterm-ignored-ready"
+        marker = self.root / "sigterm-ignored-survived"
+        child = self.root / "ignore_sigterm.py"
+        child.write_text(
+            "import pathlib, signal, sys, time\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "pathlib.Path(sys.argv[1]).write_text('ready')\n"
+            "time.sleep(8)\n"
+            "pathlib.Path(sys.argv[2]).write_text('survived')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "success_with_stubborn_child.py"
+        parent.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "ready = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 3\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0 if ready.exists() else 2)\n",
+            encoding="utf-8",
+        )
+        return_code, output, timed_out, leftover = runner.run_managed(
+            [
+                sys.executable,
+                str(parent),
+                str(child),
+                str(ready),
+                str(marker),
+            ],
+            cwd=self.root,
+            timeout=5,
+        )
+        self.assertEqual(return_code, 125)
+        self.assertFalse(timed_out)
+        self.assertTrue(leftover)
+        self.assertIn("left a live process group", output)
+        time.sleep(0.75)
         self.assertFalse(marker.exists())
 
     def test_failed_command_with_leftover_child_preserves_failure_and_cleans_up(self) -> None:

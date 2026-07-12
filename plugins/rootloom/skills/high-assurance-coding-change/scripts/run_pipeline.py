@@ -17,6 +17,7 @@ import signal
 import subprocess
 import sys
 import textwrap
+import time
 import tomllib
 from typing import Any, Callable, Iterator
 
@@ -55,7 +56,7 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.9"
+RUNNER_VERSION = "2.10"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -503,6 +504,9 @@ def _protected_entrypoint_reason(state: dict[str, Any], path: str) -> str | None
         for protected in state[field]:
             if normalized == protected or normalized.startswith(protected + "/"):
                 return label
+    for protected in state.get("metadata_only_paths", set()):
+        if normalized == protected or normalized.startswith(protected + "/"):
+            return "baseline protected metadata-only"
     return None
 
 
@@ -1346,6 +1350,7 @@ def capture_repo_state(
     max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
     sensitive_rules: list[tuple[str, bool]] | None = None,
     redact_untracked_dotfiles: bool = False,
+    metadata_only_floor: set[str] | None = None,
     check_topology: bool = True,
 ) -> dict[str, Any]:
     if check_topology:
@@ -1377,12 +1382,18 @@ def capture_repo_state(
         max_paths=max_ignored_paths,
         budget_name="ignored",
     ) - visible_paths
-    content_paths = tracked_paths | (untracked_paths - sensitive_untracked_paths)
+    metadata_only_paths = (
+        ignored_paths
+        | sensitive_untracked_paths
+        | set(metadata_only_floor or set())
+    )
+    content_paths = (tracked_paths | untracked_paths) - metadata_only_paths
+    present_metadata_only_paths = metadata_only_paths & (visible_paths | ignored_paths)
     worktree = {path: file_fingerprint(repo / path) for path in content_paths}
     worktree.update(
         {
             path: file_metadata_fingerprint(repo / path)
-            for path in ignored_paths | sensitive_untracked_paths
+            for path in present_metadata_only_paths
         }
     )
     return {
@@ -1391,6 +1402,7 @@ def capture_repo_state(
         "ignored_paths": ignored_paths,
         "untracked_paths": untracked_paths,
         "sensitive_untracked_paths": sensitive_untracked_paths,
+        "metadata_only_paths": metadata_only_paths,
         "worktree": worktree,
         "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
         "git_control": git_control_state(repo),
@@ -1441,6 +1453,22 @@ def metadata_manifest(
     ]
 
 
+def protected_metadata_paths(state: dict[str, Any]) -> set[str]:
+    """Return every path whose content is forbidden to the current run."""
+
+    return (
+        set(state.get("metadata_only_paths", set()))
+        | set(state["ignored_paths"])
+        | set(state["sensitive_untracked_paths"])
+    )
+
+
+def intrinsic_protected_paths(state: dict[str, Any]) -> set[str]:
+    """Return paths protected by the current snapshot without its baseline floor."""
+
+    return set(state["ignored_paths"]) | set(state["sensitive_untracked_paths"])
+
+
 def state_untracked_manifests(
     state: dict[str, Any],
     only_paths: set[str] | None = None,
@@ -1448,9 +1476,9 @@ def state_untracked_manifests(
     selected = set(state["untracked_paths"])
     if only_paths is not None:
         selected &= only_paths
-    sensitive = selected & state["sensitive_untracked_paths"]
-    ordinary = selected - sensitive
-    return metadata_manifest(state, ordinary), metadata_manifest(state, sensitive)
+    metadata_only = selected & protected_metadata_paths(state)
+    ordinary = selected - metadata_only
+    return metadata_manifest(state, ordinary), metadata_manifest(state, metadata_only)
 
 
 def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
@@ -1569,12 +1597,7 @@ def validate_protected_changes(
     introduced_paths: set[str],
     allowed_deletions: set[str],
 ) -> set[str]:
-    protected_paths = (
-        baseline["ignored_paths"]
-        | current["ignored_paths"]
-        | baseline["sensitive_untracked_paths"]
-        | current["sensitive_untracked_paths"]
-    )
+    protected_paths = protected_metadata_paths(baseline) | protected_metadata_paths(current)
     changed_protected = introduced_paths & protected_paths
     missing = {"kind": "missing"}
     approved_deletions: set[str] = set()
@@ -1618,7 +1641,7 @@ def validate_protected_deletion_preflight(
     allowed_deletions: set[str],
 ) -> None:
     missing = {"kind": "missing"}
-    protected_paths = baseline["ignored_paths"] | baseline["sensitive_untracked_paths"]
+    protected_paths = protected_metadata_paths(baseline)
     invalid: list[str] = []
     for path in sorted(allowed_deletions):
         validate_repo_path_symlink_boundary(repo, path, "protected deletion")
@@ -1687,6 +1710,7 @@ def enforce_repository_contract(
         max_ignored_paths=max_ignored_paths,
         sensitive_rules=sensitive_rules,
         redact_untracked_dotfiles=redact_untracked_dotfiles,
+        metadata_only_floor=protected_metadata_paths(baseline),
         check_topology=check_topology,
     )
     introduced = changed_paths_between(baseline, current)
@@ -1697,6 +1721,19 @@ def enforce_repository_contract(
         )
     if current["git_control"] != baseline["git_control"]:
         raise PipelineError("Git control metadata changed during the pipeline", 6)
+    missing = {"kind": "missing"}
+    declassified = sorted(
+        path
+        for path in protected_metadata_paths(baseline)
+        if current["worktree"].get(path, missing) != missing
+        and path not in intrinsic_protected_paths(current)
+    )
+    if declassified:
+        raise PipelineError(
+            "writer declassified baseline protected metadata-only paths: "
+            + ", ".join(declassified),
+            9,
+        )
     outside = sorted(path for path in introduced if not path_is_allowed(path, allowed_rules))
     if outside:
         raise PipelineError(
@@ -1713,8 +1750,8 @@ def enforce_repository_contract(
         baseline["ignored_paths"] | current["ignored_paths"]
     )
     redacted_untracked_paths = introduced & (
-        baseline["sensitive_untracked_paths"]
-        | current["sensitive_untracked_paths"]
+        (protected_metadata_paths(baseline) | protected_metadata_paths(current))
+        - (baseline["ignored_paths"] | current["ignored_paths"])
     )
     delta = capture_delta(
         repo,
@@ -1729,27 +1766,69 @@ def enforce_repository_contract(
     return delta, current
 
 
-def terminate_process_group(process: subprocess.Popen[str]) -> str:
+def process_group_exists(process_group_id: int) -> bool:
     try:
-        os.killpg(process.pid, signal.SIGTERM)
+        os.killpg(process_group_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while process_group_exists(process_group_id):
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+    return True
+
+
+def terminate_process_group(process: subprocess.Popen[str]) -> str:
+    process_group_id = process.pid
+    try:
+        os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
         pass
+
+    # Reap the direct child promptly when possible. Process-group existence checks
+    # can otherwise observe that exited child as a zombie and mistake it for a live
+    # descendant. Do not wait on stdout here: descendants may still hold the pipe.
     try:
-        output, _ = process.communicate(timeout=5)
-        return output or ""
+        process.wait(timeout=0.25)
     except subprocess.TimeoutExpired:
+        pass
+
+    if not wait_for_process_group_exit(process_group_id, 5):
         try:
-            os.killpg(process.pid, signal.SIGKILL)
+            os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:
             pass
-        output, _ = process.communicate()
-        return output or ""
+        except PermissionError as exc:
+            raise PipelineError(
+                f"could not SIGKILL managed command process group {process_group_id}",
+                9,
+            ) from exc
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired as exc:
+            raise PipelineError(
+                f"managed command process {process.pid} survived SIGKILL",
+                9,
+            ) from exc
+        if not wait_for_process_group_exit(process_group_id, 2):
+            raise PipelineError(
+                f"managed command process group {process_group_id} survived SIGKILL",
+                9,
+            )
+
+    output, _ = process.communicate()
+    return output or ""
 
 
 def ensure_process_group_finished(process: subprocess.Popen[str]) -> bool:
-    try:
-        os.killpg(process.pid, 0)
-    except ProcessLookupError:
+    if not process_group_exists(process.pid):
         return False
     terminate_process_group(process)
     return True
@@ -2220,16 +2299,20 @@ def run_pipeline_locked(
         max_repair_cycles=args.max_repair_cycles,
     )
 
+    metadata_only_floor: set[str] | None = None
+
     def capture_state(*, check_topology: bool = False) -> dict[str, Any]:
         return capture_repo_state(
             repo,
             max_ignored_paths=args.max_ignored_paths,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
+            metadata_only_floor=metadata_only_floor,
             check_topology=check_topology,
         )
 
     baseline = capture_state()
+    metadata_only_floor = protected_metadata_paths(baseline)
     baseline_status = baseline["status_raw"].decode(
         "utf-8",
         errors="backslashreplace",
