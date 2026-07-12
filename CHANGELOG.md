@@ -6,6 +6,22 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.5] - 2026-07-12
+
+### Security
+
+- Bind detected verification entrypoints across the write stage. Explicit repository-relative verification path tokens, `make` files, JavaScript package manifests, and pytest configuration files are fingerprinted before the writer and must remain unchanged before deterministic verification runs.
+- Re-run allowed-path and verification-command symlink checks after every writer or repair writer, before verification executes.
+- Reject protected deletion mode when `--allow-dirty` is enabled or repair cycles are configured; deletion-only runs now require a clean baseline and `--max-repair-cycles 0`.
+
+### Changed
+
+- Clarify that verification command path detection covers explicit/common entrypoints and is not a generic shell or CLI semantic parser.
+
+### Tests
+
+- Added regression coverage for writer-created verification symlink replacement, writer-modified Makefile/package/pytest harness files, and protected deletion runtime option rejection.
+
 ## [1.2.4] - 2026-07-12
 
 ### Security
@@ -124,7 +140,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...HEAD
+[1.2.5]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/liyanqing90/rootloom/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/liyanqing90/rootloom/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/liyanqing90/rootloom/compare/v1.2.1...v1.2.2

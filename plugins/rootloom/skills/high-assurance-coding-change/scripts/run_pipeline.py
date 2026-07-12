@@ -55,7 +55,7 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.6"
+RUNNER_VERSION = "2.7"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -484,6 +484,87 @@ def validate_verification_command_boundaries(
                 normalized,
                 f"verification command {command['id']}",
             )
+
+
+def _repo_path_from_token(token: str) -> str | None:
+    if token.startswith("-") or token.startswith("/") or "://" in token:
+        return None
+    if "/" not in token:
+        return None
+    try:
+        return normalize_repo_path(token, contract=True)
+    except PipelineError:
+        return None
+
+
+def discover_verification_entrypoints(
+    repo: Path,
+    commands: list[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    paths: dict[str, set[str]] = {}
+
+    def add(command_id: str, path: str) -> None:
+        paths.setdefault(command_id, set()).add(path)
+
+    for command in commands:
+        command_id = command["id"]
+        argv = command["argv"]
+        if not argv:
+            continue
+        executable = Path(argv[0]).name
+        for token in argv:
+            normalized = _repo_path_from_token(token)
+            if normalized is not None:
+                add(command_id, normalized)
+        if executable == "make":
+            for candidate in ("GNUmakefile", "makefile", "Makefile"):
+                if (repo / candidate).exists() or (repo / candidate).is_symlink():
+                    add(command_id, candidate)
+        elif executable in {"npm", "pnpm", "yarn", "bun"}:
+            for candidate in ("package.json", "pnpm-workspace.yaml"):
+                if (repo / candidate).exists() or (repo / candidate).is_symlink():
+                    add(command_id, candidate)
+        elif executable == "pytest":
+            for candidate in (
+                "pyproject.toml",
+                "pytest.ini",
+                "tox.ini",
+                "setup.cfg",
+            ):
+                if (repo / candidate).exists() or (repo / candidate).is_symlink():
+                    add(command_id, candidate)
+
+    return {
+        command_id: {
+            path: file_fingerprint(repo / path)
+            for path in sorted(command_paths)
+        }
+        for command_id, command_paths in sorted(paths.items())
+    }
+
+
+def validate_verification_entrypoints_unchanged(
+    repo: Path,
+    baseline: dict[str, dict[str, Any]],
+) -> None:
+    changed: list[str] = []
+    for command_id, paths in baseline.items():
+        for path, expected in paths.items():
+            validate_repo_path_symlink_boundary(
+                repo,
+                path,
+                f"verification command {command_id}",
+            )
+            actual = file_fingerprint(repo / path)
+            if actual != expected:
+                changed.append(f"{command_id}:{path}")
+    if changed:
+        raise PipelineError(
+            "verification entrypoint changed after baseline capture; use a "
+            "writer-immutable acceptance harness or split the task: "
+            + ", ".join(changed),
+            9,
+        )
 
 
 def validate_evidence(value: dict[str, Any]) -> None:
@@ -1365,6 +1446,27 @@ def validate_protected_deletion_preflight(
         )
 
 
+def validate_protected_deletion_runtime_options(
+    *,
+    allowed_deletions: set[str],
+    allow_dirty: bool,
+    max_repair_cycles: int,
+) -> None:
+    if not allowed_deletions:
+        return
+    if allow_dirty:
+        raise PipelineError(
+            "protected deletion mode requires a clean worktree; --allow-dirty is not supported",
+            9,
+        )
+    if max_repair_cycles != 0:
+        raise PipelineError(
+            "protected deletion mode is deletion-only and does not support repair cycles; "
+            "set --max-repair-cycles 0",
+            9,
+        )
+
+
 def completion_outcome(protected_deletions: list[str]) -> tuple[str, int]:
     if protected_deletions:
         return "HUMAN_REVIEW_REQUIRED", HUMAN_REVIEW_REQUIRED_EXIT
@@ -1864,6 +1966,11 @@ def run_pipeline_locked(
     allowed_protected_deletions = normalize_protected_deletions(
         args.allow_protected_path_delete
     )
+    validate_protected_deletion_runtime_options(
+        allowed_deletions=allowed_protected_deletions,
+        allow_dirty=args.allow_dirty,
+        max_repair_cycles=args.max_repair_cycles,
+    )
 
     def capture_state(*, check_topology: bool = False) -> dict[str, Any]:
         return capture_repo_state(
@@ -1921,6 +2028,7 @@ def run_pipeline_locked(
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
     validate_verification_command_boundaries(repo, commands)
+    verification_entrypoints = discover_verification_entrypoints(repo, commands)
     metadata = {
         "runner_version": RUNNER_VERSION,
         "runner_sha256": file_sha256(Path(__file__)),
@@ -1950,6 +2058,7 @@ def run_pipeline_locked(
             {"id": command["id"], "command": shlex.join(command["argv"])}
             for command in commands
         ],
+        "verification_entrypoints": verification_entrypoints,
     }
     if not args.dry_run:
         write_json(run_dir / "00-metadata.json", metadata)
@@ -2136,6 +2245,9 @@ def run_pipeline_locked(
             prompt=implementation_prompt,
         )
         post_implementation_state = capture_state(check_topology=True)
+        validate_allowed_path_boundaries(repo, allowed_rules)
+        validate_verification_command_boundaries(repo, commands)
+        validate_verification_entrypoints_unchanged(repo, verification_entrypoints)
         if post_implementation_state["index"] != stage_baseline["index"]:
             raise PipelineError(f"{label} changed the Git index", 6)
         if post_implementation_state["git_control"] != stage_baseline["git_control"]:
@@ -2158,6 +2270,9 @@ def run_pipeline_locked(
             allowed_protected_deletions=allowed_protected_deletions,
         )
 
+        validate_allowed_path_boundaries(repo, allowed_rules)
+        validate_verification_command_boundaries(repo, commands)
+        validate_verification_entrypoints_unchanged(repo, verification_entrypoints)
         verified, verification = run_verification(
             repo=repo,
             run_dir=run_dir,

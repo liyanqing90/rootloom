@@ -93,7 +93,11 @@ codex execpolicy check --pretty \
 
 ## 严格 Runner 以退出码 10 和 `HUMAN_REVIEW_REQUIRED` 结束
 
-这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。必须由人确认精确删除并决定是否接受工作树修改；自动化不得把退出码 10 转成成功。
+这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。必须由人确认精确删除并决定是否接受工作树修改；自动化不得把退出码 10 转成成功。
+
+## 严格 Runner 拒绝 verification entrypoint 变化
+
+Runner 会在 Writer 前为检测到的验证入口建立指纹，并在确定性验证前再次检查。如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置，或 `--verify` 使用的显式仓库相对脚本，任务会在执行验证前停止。应使用外部可信 harness，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
 
 如果 Runner 报告的是未授权 protected 路径变化，说明它在 Writer 返回后停止了验收，sandbox 并未预防文件系统修改。应人工检查并恢复该路径；Rootloom 不会读取或备份 ignored/敏感内容用于自动回滚。
 

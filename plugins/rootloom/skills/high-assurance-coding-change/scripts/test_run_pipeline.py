@@ -706,6 +706,68 @@ class RunnerGateTests(unittest.TestCase):
             )
         self.assertIn("outside the repository", str(verification.exception))
 
+    def test_verification_entrypoint_rejects_writer_replaced_symlink(self) -> None:
+        script = self.repo / "scripts" / "check.sh"
+        script.parent.mkdir()
+        script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["scripts/check.sh"]}],
+        )
+        outside = self.root / "outside-check.sh"
+        outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        script.unlink()
+        script.symlink_to(outside)
+
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+        self.assertIn("outside the repository", str(caught.exception))
+
+    def test_verification_entrypoint_rejects_writer_modified_harness_files(self) -> None:
+        makefile = self.repo / "Makefile"
+        package = self.repo / "package.json"
+        pytest_config = self.repo / "pyproject.toml"
+        makefile.write_text("check:\n\ttrue\n", encoding="utf-8")
+        package.write_text('{"scripts":{"test":"node test.js"}}\n', encoding="utf-8")
+        pytest_config.write_text("[tool.pytest.ini_options]\n", encoding="utf-8")
+        commands = [
+            {"id": "verify-1", "argv": ["make", "check"]},
+            {"id": "verify-2", "argv": ["npm", "test"]},
+            {"id": "verify-3", "argv": ["pytest"]},
+        ]
+        baseline = runner.discover_verification_entrypoints(self.repo, commands)
+        self.assertIn("Makefile", baseline["verify-1"])
+        self.assertIn("package.json", baseline["verify-2"])
+        self.assertIn("pyproject.toml", baseline["verify-3"])
+
+        makefile.write_text("check:\n\t@echo passed\n", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+        self.assertIn("verify-1:Makefile", str(caught.exception))
+
+    def test_protected_deletion_mode_rejects_dirty_and_repair_cycles(self) -> None:
+        with self.assertRaises(runner.PipelineError) as dirty:
+            runner.validate_protected_deletion_runtime_options(
+                allowed_deletions={".env"},
+                allow_dirty=True,
+                max_repair_cycles=0,
+            )
+        self.assertIn("clean worktree", str(dirty.exception))
+
+        with self.assertRaises(runner.PipelineError) as repair:
+            runner.validate_protected_deletion_runtime_options(
+                allowed_deletions={".env"},
+                allow_dirty=False,
+                max_repair_cycles=1,
+            )
+        self.assertIn("does not support repair cycles", str(repair.exception))
+
+        runner.validate_protected_deletion_runtime_options(
+            allowed_deletions={".env"},
+            allow_dirty=False,
+            max_repair_cycles=0,
+        )
+
     def test_timeout_terminates_spawned_process_group(self) -> None:
         marker = self.root / "grandchild-survived"
         child = self.root / "child.py"

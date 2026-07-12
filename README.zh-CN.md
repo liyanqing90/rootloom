@@ -215,11 +215,11 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --verify 'make check'
 ```
 
-Runner 读取同一组四个 Agent TOML，并强制仓库锁、干净基线、只读阶段快照、唯一写代理、精确允许路径、Git index 不变、结构化输出、确定性验证、独立评审和最多一次修复循环。它支持 Linux、macOS 与 WSL，不支持原生 Windows。产物为私有，并且必须位于目标仓库之外。
+Runner 读取同一组四个 Agent TOML，并强制仓库锁、干净基线、只读阶段快照、唯一写代理、精确允许路径、Git index 不变、结构化输出、确定性验证、独立评审和最多一次修复循环。它还会在 Writer 前为检测到的验证入口建立指纹，并在验证执行前拒绝显式仓库相对验证路径、`make` 文件、JavaScript package manifest 和 pytest 配置文件被 Writer 修改。它支持 Linux、macOS 与 WSL，不支持原生 Windows。产物为私有，并且必须位于目标仓库之外。
 
 已知疑似密钥名称会在任何内容指纹前被归为元数据。仓库专有名称可重复传入 `--sensitive-path path` 或 `--sensitive-path 'directory/**'`；如果所有未跟踪 dotfile 都应元数据化，可启用 `--redact-untracked-dotfiles`。这些控制只脱敏自动产物和随 Prompt 提供的数据，不能阻止具有仓库读取能力的 Evidence、Diagnosis、Implementation 或 Review 阶段主动打开文件。需要访问隔离时，应使用不含 secret 的 worktree 或 OS/container 挂载边界。
 
-metadata-only 路径同时受到验收保护：Writer 返回后，即使 Diagnosis 的 `allowed_paths` 包含它们，Runner 也会拒绝任何检测到的 ignored 或敏感 visible-untracked 创建、修改或删除。这是写后机器门禁，不是 OS 级写入预防或回滚；失败任务可能留下 protected 文件系统变化，需要操作方恢复。确需删除时，必须为每个文件显式传入 `--allow-protected-path-delete path`；目录与 glob 会被拒绝，路径会在 Writer 启动前完成预检，旧内容不会被读取或备份，并且该任务会变成 deletion-only：普通代码修改、rename、move 或 visible 文件创建都必须拆到另一次任务。模型评审成功后仍以 `HUMAN_REVIEW_REQUIRED` 退出码 10 停止，而不会自动 PASS。Topology 会在启动、每次 Writer 后、确定性验证后和最终 Review 后复查。
+metadata-only 路径同时受到验收保护：Writer 返回后，即使 Diagnosis 的 `allowed_paths` 包含它们，Runner 也会拒绝任何检测到的 ignored 或敏感 visible-untracked 创建、修改或删除。这是写后机器门禁，不是 OS 级写入预防或回滚；失败任务可能留下 protected 文件系统变化，需要操作方恢复。确需删除时，必须为每个文件显式传入 `--allow-protected-path-delete path`；目录与 glob 会被拒绝，路径会在 Writer 启动前完成预检，`--allow-dirty` 和 repair cycle 会被拒绝，旧内容不会被读取或备份，并且该任务会变成 deletion-only：普通代码修改、rename、move 或 visible 文件创建都必须拆到另一次任务。模型评审成功后仍以 `HUMAN_REVIEW_REQUIRED` 退出码 10 停止，而不会自动 PASS。Topology 会在启动、每次 Writer 后、确定性验证后和最终 Review 后复查。
 
 完整边界见[架构](docs/architecture.zh-CN.md)。
 
@@ -237,7 +237,7 @@ metadata-only 路径同时受到验收保护：Writer 返回后，即使 Diagnos
 
 只有当某个自定义角色确实需要外部事实来源——内部文档、Issue、可观测性或部署——才应为这个窄角色配置 MCP 和工具审批。对关键证据记录环境、观察时间或时间窗、稳定产物/查询/Trace 引用、新鲜度/脱敏与事实/推断状态，而不是为了架构清单完整让所有编码任务继承一个集成。
 
-严格 Runner 保持离线。应在运行前收集已授权的运行时证据，只传入受限且脱敏的材料。事实与复现必须引用稳定来源 ID；这只能证明引用完整，不能证明所引路径、测试、行号或陈述真实。仓库快照只对已跟踪文件和普通可见未跟踪交付物做内容哈希；ignored 路径以及已知或显式配置的敏感可见未跟踪路径会先完成分类，只记录不含内容哈希的元数据，绝不进入 Runner patch 或 Reviewer 提示。内置名称匹配是有限清单，不可能发现所有 secret。ignored 枚举超过可配置预算时会关闭式失败。每项诊断验证要求还必须映射到成功的机器命令 ID，并且至少包含一条用户提供的验证命令，不能只依赖 `git diff --check`；这证明执行关联，不证明所选命令在语义上充分。
+严格 Runner 保持离线。应在运行前收集已授权的运行时证据，只传入受限且脱敏的材料。事实与复现必须引用稳定来源 ID；这只能证明引用完整，不能证明所引路径、测试、行号或陈述真实。仓库快照只对已跟踪文件和普通可见未跟踪交付物做内容哈希；ignored 路径以及已知或显式配置的敏感可见未跟踪路径会先完成分类，只记录不含内容哈希的元数据，绝不进入 Runner patch 或 Reviewer 提示。内置名称匹配是有限清单，不可能发现所有 secret。ignored 枚举超过可配置预算时会关闭式失败。每项诊断验证要求还必须映射到成功的机器命令 ID，并且至少包含一条用户提供的验证命令，不能只依赖 `git diff --check`；这证明执行关联，并为常见命令形式证明检测到的入口稳定，但不证明所选命令在语义上充分，也不证明隐藏参数路径都被解析。
 
 ## 安全模型
 
