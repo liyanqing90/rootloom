@@ -6,6 +6,28 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.11] - 2026-07-12
+
+### Security
+
+- Start original process-group cleanup and the one-second output drain as soon as the direct parent exits with stdout still open, so a quiet detached descriptor holder cannot consume the remaining stage timeout or repository-lock lease.
+- Stream staged, unstaged, `HEAD`-to-worktree, and ordinary-untracked binary patches into bounded private artifacts. Complete Delta capture now fails closed before Review when the 32 MiB aggregate or 8 MiB untracked-patch default is exceeded.
+- Govern deterministic-verification persistence by actual serialized NDJSON bytes with a 64 MiB default, including explicit UTF-8, JSON-record, and cumulative artifact byte accounting.
+- Apply one shared stage deadline and the parent-exit drain to each complete Runner-owned Git capture, disable repository textconv drivers, restore partial artifacts after every capture failure, and keep only fixed-size patch excerpts in model-facing memory.
+- Count JSON string escape bytes before materializing verification records and preflight the worst-case minimum record before executing each command, preventing rejected serialization expansion and unrecorded command execution.
+
+### Changed
+
+- Add `--max-delta-bytes`, `--max-untracked-patch-bytes`, and `--max-verification-artifact-bytes` as positive additive Runner controls.
+- Replace repeated aggregate verification JSON rewrites with append-only NDJSON plus a small summary index, eliminating O(n²) persistence as command count grows.
+- Version private verification and Delta record formats explicitly as `ndjson-v1` and `complete-patch-with-bounded-prompt-excerpt-v1`.
+- Preserve the direct parent's exit code after a quiet detached child holds stdout; structured drain-cutoff and detached-descendant fields continue to expose the incomplete containment boundary.
+- The Rootloom plugin is now version 1.2.11 and the strict high-assurance runner is version 2.13.
+
+### Tests
+
+- Add long-stage-timeout detached-pipe, Runner-owned capture timeout/drain/shared-deadline, textconv suppression, selector/write-failure compensation, streamed tracked/untracked Delta limit and excerpt, append-only NDJSON, preflight, exact JSON-byte prediction, and full-command-budget control-character expansion regressions. The focused Runner suite now contains 71 tests.
+
 ## [1.2.10] - 2026-07-12
 
 ### Security
@@ -228,7 +250,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.10...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.11...HEAD
+[1.2.11]: https://github.com/liyanqing90/rootloom/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/liyanqing90/rootloom/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...v1.2.8

@@ -61,10 +61,14 @@ HUMAN_REVIEW_REQUIRED_EXIT = 10
 COMMAND_OUTPUT_LIMIT_EXIT = 126
 DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES = 32 * 1024 * 1024
+DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_DELTA_BYTES = 32 * 1024 * 1024
+DEFAULT_MAX_UNTRACKED_PATCH_BYTES = 8 * 1024 * 1024
+MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.12"
+RUNNER_VERSION = "2.13"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -1505,36 +1509,270 @@ def state_untracked_manifests(
     return metadata_manifest(state, ordinary), metadata_manifest(state, metadata_only)
 
 
-def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
-    chunks: list[str] = []
+def stream_command_artifact(
+    argv: list[str],
+    *,
+    repo: Path,
+    destination: Path,
+    max_bytes: int,
+    timeout_seconds: float,
+    append: bool = False,
+    accepted_exit_codes: set[int] | None = None,
+) -> int:
+    """Stream stdout to one private artifact and fail before crossing max_bytes."""
+
+    if max_bytes < 0:
+        raise PipelineError("artifact byte limit must not be negative", 9)
+    if timeout_seconds <= 0:
+        raise PipelineError("artifact command timeout must be positive", 9)
+    accepted = accepted_exit_codes or {0}
+    starting_size = destination.stat().st_size if append and destination.exists() else 0
+    flags = os.O_WRONLY | os.O_CREAT | (os.O_APPEND if append else os.O_TRUNC)
+    descriptor = os.open(destination, flags, 0o600)
+    try:
+        process = subprocess.Popen(
+            argv,
+            cwd=repo,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=0,
+            start_new_session=True,
+        )
+    except BaseException:
+        os.close(descriptor)
+        raise
+    assert process.stdout is not None and process.stderr is not None
+    selector: selectors.BaseSelector | None = None
+    descriptor_open = True
+    stderr = OutputTailBuffer(64 * 1024)
+    written = 0
+    exceeded = False
+    timed_out = False
+    output_drain_timed_out = False
+    command_deadline = time.monotonic() + timeout_seconds
+    drain_deadline: float | None = None
+
+    def restore_artifact() -> None:
+        try:
+            os.truncate(destination, starting_size)
+        except OSError as exc:
+            raise PipelineError(
+                f"could not restore partial artifact after capture failure: {destination}",
+                9,
+            ) from exc
+
+    try:
+        selector = selectors.DefaultSelector()
+        artifact_handle = os.fdopen(
+            descriptor,
+            "ab" if append else "wb",
+            buffering=0,
+        )
+        descriptor_open = False
+        with artifact_handle as artifact:
+            for stream, label in ((process.stdout, "stdout"), (process.stderr, "stderr")):
+                os.set_blocking(stream.fileno(), False)
+                selector.register(stream, selectors.EVENT_READ, label)
+            while selector.get_map() or process.poll() is None:
+                now = time.monotonic()
+                if process.poll() is None and now >= command_deadline:
+                    timed_out = True
+                    if process_group_exists(process.pid):
+                        terminate_process_group(process)
+                    else:
+                        process.kill()
+                        process.wait(timeout=2)
+                    break
+                if (
+                    process.poll() is not None
+                    and selector.get_map()
+                    and drain_deadline is None
+                ):
+                    if process_group_exists(process.pid):
+                        terminate_process_group(process)
+                    drain_deadline = (
+                        time.monotonic() + PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS
+                    )
+                if drain_deadline is not None and now >= drain_deadline:
+                    output_drain_timed_out = True
+                    break
+                if not selector.get_map():
+                    time.sleep(min(0.05, max(0.0, command_deadline - now)))
+                    continue
+                active_deadline = (
+                    min(command_deadline, drain_deadline)
+                    if drain_deadline is not None
+                    else command_deadline
+                )
+                wait = max(0.0, min(0.1, active_deadline - time.monotonic()))
+                for key, mask in selector.select(wait):
+                    if not mask & selectors.EVENT_READ:
+                        continue
+                    stream = key.fileobj
+                    try:
+                        chunk = os.read(stream.fileno(), OUTPUT_READ_CHUNK_BYTES)
+                    except BlockingIOError:
+                        continue
+                    if not chunk:
+                        close_selector_stream(selector, stream)
+                        continue
+                    if key.data == "stderr":
+                        stderr.append(chunk)
+                        continue
+                    remaining = max_bytes - written
+                    if len(chunk) > remaining:
+                        if remaining > 0:
+                            artifact.write(chunk[:remaining])
+                            written += remaining
+                        exceeded = True
+                        terminate_process_group(process)
+                        break
+                    artifact.write(chunk)
+                    written += len(chunk)
+                if exceeded:
+                    break
+    except BaseException as exc:
+        cleanup_error: BaseException | None = None
+        try:
+            if process_group_exists(process.pid):
+                terminate_process_group(process)
+            elif process.poll() is None:
+                process.kill()
+                process.wait(timeout=2)
+        except BaseException as caught_cleanup_error:
+            cleanup_error = caught_cleanup_error
+        restore_error: PipelineError | None = None
+        try:
+            restore_artifact()
+        except PipelineError as caught_restore_error:
+            restore_error = caught_restore_error
+        if restore_error is not None:
+            raise restore_error from exc
+        if cleanup_error is not None:
+            raise PipelineError(
+                f"artifact command cleanup failed: {shlex.join(argv)}",
+                9,
+            ) from cleanup_error
+        raise
+    finally:
+        if descriptor_open:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+        if selector is not None:
+            close_selector_stream(selector, process.stdout)
+            close_selector_stream(selector, process.stderr)
+            selector.close()
+        else:
+            for stream in (process.stdout, process.stderr):
+                try:
+                    stream.close()
+                except OSError:
+                    pass
+
+    if timed_out or output_drain_timed_out or exceeded:
+        restore_artifact()
+        if timed_out:
+            detail = f"artifact command timed out after {timeout_seconds}s"
+        elif output_drain_timed_out:
+            detail = "artifact command output pipe remained open after parent exit"
+        else:
+            detail = "artifact byte budget was exceeded"
+        raise PipelineError(
+            f"{detail} while running {shlex.join(argv)}; Delta is incomplete and "
+            "automated review was refused",
+            9,
+        )
+    if process.returncode not in accepted:
+        restore_artifact()
+        raise PipelineError(
+            f"could not capture artifact with {shlex.join(argv)} "
+            f"(exit {process.returncode}): {stderr.text().strip()}",
+        )
+    return written
+
+
+def remaining_deadline_seconds(deadline: float, context: str) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise PipelineError(f"{context} deadline expired before capture completed", 9)
+    return remaining
+
+
+def read_artifact_excerpt(
+    path: Path,
+    max_bytes: int = MAX_DELTA_PATCH_EXCERPT_BYTES,
+) -> tuple[str, bool]:
+    if max_bytes <= 0:
+        raise PipelineError("artifact excerpt byte limit must be positive", 9)
+    size = path.stat().st_size
+    with path.open("rb") as artifact:
+        if size <= max_bytes:
+            raw = artifact.read(max_bytes)
+            return raw.decode("utf-8", errors="replace"), False
+        head_size = max_bytes // 2
+        tail_size = max_bytes - head_size
+        head = artifact.read(head_size)
+        artifact.seek(-tail_size, os.SEEK_END)
+        tail = artifact.read(tail_size)
+    marker = (
+        f"\n... PATCH PROMPT EXCERPT OMITTED {size - max_bytes} BYTES; "
+        "COMPLETE PRIVATE ARTIFACT RETAINED ...\n"
+    )
+    return (
+        head.decode("utf-8", errors="replace")
+        + marker
+        + tail.decode("utf-8", errors="replace"),
+        True,
+    )
+
+
+def stream_untracked_patch(
+    repo: Path,
+    manifest: list[dict[str, Any]],
+    destination: Path,
+    max_bytes: int,
+    deadline: float,
+) -> int:
+    destination.write_bytes(b"")
+    total = 0
     for entry in manifest:
         if str(entry.get("kind", "")).endswith("-metadata"):
             raise PipelineError("refusing to patch a metadata-only untracked path", 9)
         path = entry["path"]
-        result = subprocess.run(
-            [
-                "git",
-                "diff",
-                "--no-index",
-                "--binary",
-                "--full-index",
-                "--no-ext-diff",
-                "--",
-                os.devnull,
-                path,
-            ],
-            cwd=repo,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if result.returncode not in (0, 1):
-            raise PipelineError(
-                f"could not capture untracked delta for {path}: "
-                + result.stderr.decode("utf-8", errors="backslashreplace").strip(),
+        try:
+            written = stream_command_artifact(
+                [
+                    "git",
+                    "diff",
+                    "--no-index",
+                    "--binary",
+                    "--full-index",
+                    "--no-ext-diff",
+                    "--no-textconv",
+                    "--",
+                    os.devnull,
+                    path,
+                ],
+                repo=repo,
+                destination=destination,
+                max_bytes=max_bytes - total,
+                timeout_seconds=remaining_deadline_seconds(
+                    deadline,
+                    "untracked Delta capture",
+                ),
+                append=True,
+                accepted_exit_codes={0, 1},
             )
-        chunks.append(result.stdout.decode("utf-8", errors="backslashreplace"))
-    return "".join(chunks)
+        except PipelineError as exc:
+            raise PipelineError(
+                f"could not fully capture untracked delta for {path}: {exc}",
+                exc.exit_code,
+            ) from exc
+        total += written
+    return total
 
 
 def capture_delta(
@@ -1545,33 +1783,89 @@ def capture_delta(
     current: dict[str, Any],
     ignored_changed_paths: set[str],
     redacted_untracked_paths: set[str],
+    max_delta_bytes: int = DEFAULT_MAX_DELTA_BYTES,
+    max_untracked_patch_bytes: int = DEFAULT_MAX_UNTRACKED_PATCH_BYTES,
+    timeout_seconds: int = 3600,
 ) -> dict[str, Any]:
+    if max_delta_bytes <= 0 or max_untracked_patch_bytes <= 0:
+        raise PipelineError("Delta byte limits must be positive", 9)
+    capture_deadline = time.monotonic() + timeout_seconds
     status_raw = current["status_raw"]
     status_text = status_raw.decode("utf-8", errors="backslashreplace").replace("\x00", "\n")
-    staged = run_text_exact(
-        ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
-        repo,
-    )
-    unstaged = run_text_exact(
-        ["git", "diff", "--binary", "--full-index", "--no-ext-diff"],
-        repo,
-    )
-    combined = run_text_exact(
-        ["git", "diff", "HEAD", "--binary", "--full-index", "--no-ext-diff"],
-        repo,
-    )
     visible_manifest, _ = state_untracked_manifests(
         current,
         introduced_paths,
     )
     ignored_manifest = metadata_manifest(current, ignored_changed_paths)
     redacted_manifest = metadata_manifest(current, redacted_untracked_paths)
-    untracked = untracked_patch(repo, visible_manifest)
+    patch_specs = (
+        (
+            "staged_patch",
+            run_dir / f"{prefix}-staged.patch",
+            [
+                "git", "diff", "--cached", "--binary", "--full-index",
+                "--no-ext-diff", "--no-textconv",
+            ],
+        ),
+        (
+            "unstaged_patch",
+            run_dir / f"{prefix}-unstaged.patch",
+            [
+                "git", "diff", "--binary", "--full-index", "--no-ext-diff",
+                "--no-textconv",
+            ],
+        ),
+        (
+            "head_to_worktree_patch",
+            run_dir / f"{prefix}-head-to-worktree.patch",
+            [
+                "git", "diff", "HEAD", "--binary", "--full-index",
+                "--no-ext-diff", "--no-textconv",
+            ],
+        ),
+    )
+    delta_bytes = 0
+    patch_text: dict[str, str] = {}
+    patch_prompt_state: dict[str, dict[str, Any]] = {}
+    for key, path, command in patch_specs:
+        written = stream_command_artifact(
+            command,
+            repo=repo,
+            destination=path,
+            max_bytes=max_delta_bytes - delta_bytes,
+            timeout_seconds=remaining_deadline_seconds(
+                capture_deadline,
+                "Delta capture",
+            ),
+        )
+        delta_bytes += written
+        excerpt, truncated = read_artifact_excerpt(path)
+        patch_text[key] = excerpt
+        patch_prompt_state[key] = {
+            "artifact_bytes": written,
+            "excerpt_utf8_bytes": len(excerpt.encode("utf-8")),
+            "truncated": truncated,
+        }
+    untracked_path = run_dir / f"{prefix}-untracked.patch"
+    untracked_limit = min(
+        max_untracked_patch_bytes,
+        max_delta_bytes - delta_bytes,
+    )
+    untracked_bytes = stream_untracked_patch(
+        repo,
+        visible_manifest,
+        untracked_path,
+        untracked_limit,
+        capture_deadline,
+    )
+    delta_bytes += untracked_bytes
+    untracked, untracked_truncated = read_artifact_excerpt(untracked_path)
+    patch_prompt_state["untracked_patch"] = {
+        "artifact_bytes": untracked_bytes,
+        "excerpt_utf8_bytes": len(untracked.encode("utf-8")),
+        "truncated": untracked_truncated,
+    }
     (run_dir / f"{prefix}-status.txt").write_text(status_text, encoding="utf-8")
-    (run_dir / f"{prefix}-staged.patch").write_text(staged, encoding="utf-8")
-    (run_dir / f"{prefix}-unstaged.patch").write_text(unstaged, encoding="utf-8")
-    (run_dir / f"{prefix}-head-to-worktree.patch").write_text(combined, encoding="utf-8")
-    (run_dir / f"{prefix}-untracked.patch").write_text(untracked, encoding="utf-8")
     write_json(run_dir / f"{prefix}-untracked.json", visible_manifest)
     write_json(run_dir / f"{prefix}-ignored-metadata.json", ignored_manifest)
     write_json(run_dir / f"{prefix}-redacted-untracked-metadata.json", redacted_manifest)
@@ -1593,9 +1887,14 @@ def capture_delta(
         "visible_untracked": visible_manifest,
         "ignored_metadata": ignored_manifest,
         "redacted_untracked_metadata": redacted_manifest,
-        "staged_patch": staged,
-        "unstaged_patch": unstaged,
-        "head_to_worktree_patch": combined,
+        "delta_bytes": delta_bytes,
+        "untracked_patch_bytes": untracked_bytes,
+        "delta_complete": True,
+        "delta_schema_version": 1,
+        "patch_prompt_excerpts": patch_prompt_state,
+        "staged_patch": patch_text["staged_patch"],
+        "unstaged_patch": patch_text["unstaged_patch"],
+        "head_to_worktree_patch": patch_text["head_to_worktree_patch"],
         "untracked_patch": untracked,
     }
     return summary
@@ -1728,6 +2027,9 @@ def enforce_repository_contract(
     redact_untracked_dotfiles: bool = False,
     check_topology: bool = True,
     allowed_protected_deletions: set[str] | None = None,
+    max_delta_bytes: int = DEFAULT_MAX_DELTA_BYTES,
+    max_untracked_patch_bytes: int = DEFAULT_MAX_UNTRACKED_PATCH_BYTES,
+    timeout_seconds: int = 3600,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     current = capture_repo_state(
         repo,
@@ -1785,6 +2087,9 @@ def enforce_repository_contract(
         current,
         ignored_changed_paths,
         redacted_untracked_paths,
+        max_delta_bytes=max_delta_bytes,
+        max_untracked_patch_bytes=max_untracked_patch_bytes,
+        timeout_seconds=timeout_seconds,
     )
     delta["protected_deletions"] = sorted(approved_deletions)
     return delta, current
@@ -2029,11 +2334,21 @@ def run_managed(
                 output_limit_exceeded = True
             if not cleanup_started and now >= command_deadline:
                 timed_out = True
-            if not cleanup_started and (timed_out or output_limit_exceeded):
+            parent_exited_with_open_output = (
+                not cleanup_started
+                and process.poll() is not None
+                and stdout_open
+            )
+            if not cleanup_started and (
+                timed_out or output_limit_exceeded or parent_exited_with_open_output
+            ):
                 if stdin_open:
                     close_selector_stream(selector, process.stdin)
                     stdin_open = False
-                terminate_process_group(process)
+                if process_group_exists(process.pid):
+                    if parent_exited_with_open_output:
+                        leftover_process_group = True
+                    terminate_process_group(process)
                 cleanup_started = True
                 drain_deadline = time.monotonic() + PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS
 
@@ -2227,6 +2542,33 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Cap retained merged output across one deterministic-verification batch "
             f"(default: {DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--max-verification-artifact-bytes",
+        type=int,
+        default=DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES,
+        help=(
+            "Cap actual NDJSON bytes written by one deterministic-verification batch "
+            f"(default: {DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--max-delta-bytes",
+        type=int,
+        default=DEFAULT_MAX_DELTA_BYTES,
+        help=(
+            "Fail closed before Review when complete staged, unstaged, HEAD, and "
+            f"untracked patches exceed this byte budget (default: {DEFAULT_MAX_DELTA_BYTES})"
+        ),
+    )
+    parser.add_argument(
+        "--max-untracked-patch-bytes",
+        type=int,
+        default=DEFAULT_MAX_UNTRACKED_PATCH_BYTES,
+        help=(
+            "Fail closed when complete ordinary-untracked binary patches exceed this "
+            f"byte budget (default: {DEFAULT_MAX_UNTRACKED_PATCH_BYTES})"
         ),
     )
     parser.add_argument(
@@ -2530,6 +2872,154 @@ def build_verification_environment(
     return environment
 
 
+def json_string_content_byte_length(value: str) -> int:
+    """Return the exact UTF-8 byte length of a JSON string's escaped content."""
+
+    total = 0
+    for character in value:
+        codepoint = ord(character)
+        if character in {'"', "\\"} or character in "\b\f\n\r\t":
+            total += 2
+        elif codepoint < 0x20 or 0xD800 <= codepoint <= 0xDFFF:
+            total += 6
+        else:
+            total += len(character.encode("utf-8"))
+    return total
+
+
+def json_string_tail_within_bytes(value: str, max_content_bytes: int) -> str:
+    if max_content_bytes <= 0:
+        return ""
+    used = 0
+    index = len(value)
+    while index > 0:
+        character = value[index - 1]
+        cost = json_string_content_byte_length(character)
+        if used + cost > max_content_bytes:
+            break
+        used += cost
+        index -= 1
+    return value[index:]
+
+
+def encode_ndjson_value(value: dict[str, Any]) -> bytes:
+    return (
+        json.dumps(value, ensure_ascii=False, separators=(",", ":")) + "\n"
+    ).encode("utf-8", errors="backslashreplace")
+
+
+def verification_record_line(
+    record: dict[str, Any],
+    *,
+    max_bytes: int,
+    artifact_bytes_written: int,
+    force_truncated: bool = False,
+    output_utf8_bytes_hint: int | None = None,
+) -> tuple[dict[str, Any], bytes]:
+    """Serialize one NDJSON record without expanding rejected output first."""
+
+    if max_bytes <= 0:
+        raise PipelineError("verification artifact byte budget is exhausted", 9)
+    original = dict(record)
+    original_output = str(original.get("output", ""))
+    original_output_utf8_bytes = (
+        output_utf8_bytes_hint
+        if output_utf8_bytes_hint is not None
+        else len(original_output.encode("utf-8", errors="backslashreplace"))
+    )
+
+    def prepare(output: str, truncated: bool) -> tuple[dict[str, Any], int]:
+        candidate = dict(original)
+        candidate["output"] = ""
+        candidate["record_schema_version"] = 1
+        candidate["output_utf8_bytes"] = original_output_utf8_bytes
+        candidate["artifact_output_utf8_bytes"] = len(
+            output.encode("utf-8", errors="backslashreplace")
+        )
+        candidate["artifact_output_truncated"] = truncated
+        if truncated:
+            candidate["command_exit_code"] = candidate.get("exit_code")
+            candidate["exit_code"] = COMMAND_OUTPUT_LIMIT_EXIT
+            candidate["verification_artifact_budget_exceeded"] = True
+        else:
+            candidate["verification_artifact_budget_exceeded"] = False
+        candidate["record_json_bytes"] = 0
+        candidate["artifact_bytes_written_total"] = artifact_bytes_written
+        content_bytes = json_string_content_byte_length(output)
+        predicted_size = 0
+        for _ in range(8):
+            base_size = len(encode_ndjson_value(candidate))
+            predicted_size = base_size + content_bytes
+            total = artifact_bytes_written + predicted_size
+            if (
+                candidate["record_json_bytes"] == predicted_size
+                and candidate["artifact_bytes_written_total"] == total
+            ):
+                break
+            candidate["record_json_bytes"] = predicted_size
+            candidate["artifact_bytes_written_total"] = total
+        return candidate, predicted_size
+
+    def materialize(
+        candidate: dict[str, Any],
+        output: str,
+        predicted_size: int,
+    ) -> tuple[dict[str, Any], bytes]:
+        candidate["output"] = output
+        payload = encode_ndjson_value(candidate)
+        if len(payload) != predicted_size:
+            raise PipelineError("verification JSON byte prediction drifted", 9)
+        return candidate, payload
+
+    if not force_truncated:
+        full_record, full_size = prepare(original_output, False)
+        if full_size <= max_bytes:
+            return materialize(full_record, original_output, full_size)
+
+    empty_record, empty_size = prepare("", True)
+    if empty_size > max_bytes:
+        raise PipelineError(
+            "verification artifact byte budget is too small for required structured metadata",
+            9,
+        )
+    output = json_string_tail_within_bytes(
+        original_output,
+        max_bytes - empty_size,
+    )
+    truncated_record, truncated_size = prepare(output, True)
+    while truncated_size > max_bytes and output:
+        output = output[1:]
+        truncated_record, truncated_size = prepare(output, True)
+    if truncated_size > max_bytes:
+        raise PipelineError(
+            "verification artifact byte budget is too small for required structured metadata",
+            9,
+        )
+    return materialize(truncated_record, output, truncated_size)
+
+
+def empty_verification_record(
+    command_id: str,
+    argv: list[str],
+    byte_hint: int = 0,
+) -> dict[str, Any]:
+    return {
+        "id": command_id,
+        "command": shlex.join(argv),
+        "output": "",
+        "exit_code": COMMAND_OUTPUT_LIMIT_EXIT,
+        "leftover_process_group": False,
+        "timed_out": False,
+        "output_bytes_observed": byte_hint + OUTPUT_READ_CHUNK_BYTES,
+        "output_bytes_retained": byte_hint,
+        "output_truncated": False,
+        "output_limit_exceeded": False,
+        "output_drain_timed_out": False,
+        "detached_descendant_possible": False,
+        "verification_output_budget_exceeded": False,
+    }
+
+
 def run_verification(
     *,
     repo: Path,
@@ -2544,11 +3034,36 @@ def run_verification(
     environment: dict[str, str],
     max_output_bytes: int,
     max_total_output_bytes: int,
+    max_artifact_bytes: int = DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES,
 ) -> tuple[bool, list[dict[str, Any]]]:
     if max_total_output_bytes <= 0:
         raise PipelineError("verification output byte limit must be positive", 9)
+    if max_artifact_bytes <= 0:
+        raise PipelineError("verification artifact byte limit must be positive", 9)
     records: list[dict[str, Any]] = []
     retained_output_bytes = 0
+    artifact_bytes_written = 0
+    ndjson_path = run_dir / f"{prefix}.ndjson"
+    summary_path = run_dir / f"{prefix}-summary.json"
+    if not dry_run:
+        ndjson_path.write_bytes(b"")
+
+    def persist_record(record: dict[str, Any]) -> dict[str, Any]:
+        nonlocal artifact_bytes_written
+        remaining = max_artifact_bytes - artifact_bytes_written
+        persisted, payload = verification_record_line(
+            record,
+            max_bytes=remaining,
+            artifact_bytes_written=artifact_bytes_written,
+        )
+        with ndjson_path.open("ab") as artifact:
+            artifact.write(payload)
+        artifact_bytes_written += len(payload)
+        if artifact_bytes_written != persisted["artifact_bytes_written_total"]:
+            raise PipelineError("verification artifact byte accounting drifted", 9)
+        records.append(persisted)
+        return persisted
+
     for command in commands:
         command_id = command["id"]
         argv = command["argv"]
@@ -2564,8 +3079,28 @@ def run_verification(
             )
             continue
         remaining_output_bytes = max_total_output_bytes - retained_output_bytes
+        preflight_output_bytes = (
+            min(max_output_bytes, remaining_output_bytes)
+            if remaining_output_bytes > 0
+            else 0
+        )
+        verification_record_line(
+            empty_verification_record(
+                command_id,
+                argv,
+                preflight_output_bytes,
+            ),
+            max_bytes=max_artifact_bytes - artifact_bytes_written,
+            artifact_bytes_written=artifact_bytes_written,
+            force_truncated=True,
+            output_utf8_bytes_hint=(
+                preflight_output_bytes
+                + len(shlex.join(argv).encode("utf-8", errors="backslashreplace"))
+                + 4096
+            ),
+        )
         if remaining_output_bytes <= 0:
-            records.append(
+            persist_record(
                 {
                     "id": command_id,
                     "command": shlex.join(argv),
@@ -2585,7 +3120,6 @@ def run_verification(
                     "verification_output_budget_exceeded": True,
                 }
             )
-            write_json(run_dir / f"{prefix}.json", records)
             break
         effective_output_limit = min(max_output_bytes, remaining_output_bytes)
         before = state_supplier()
@@ -2634,7 +3168,7 @@ def run_verification(
             effective_output_limit < max_output_bytes
             and result.output_limit_exceeded
         )
-        records.append(
+        persisted = persist_record(
             {
                 "id": command_id,
                 "command": shlex.join(argv),
@@ -2645,17 +3179,46 @@ def run_verification(
                 ),
             }
         )
-        write_json(run_dir / f"{prefix}.json", records)
         after = state_supplier()
         assert_repo_unchanged(
             expected_state,
             after,
             f"verification command {command_id}",
         )
-        if verification_output_budget_exceeded:
+        if (
+            verification_output_budget_exceeded
+            or persisted["verification_artifact_budget_exceeded"]
+        ):
             break
-    write_json(run_dir / f"{prefix}.json", records)
-    return all(item["exit_code"] in (0, None) for item in records), records
+    verified = all(item["exit_code"] in (0, None) for item in records)
+    if not dry_run:
+        write_json(
+            summary_path,
+            {
+                "format": "rootloom-verification-summary-v1",
+                "record_format": "rootloom-verification-ndjson-v1",
+                "ndjson": ndjson_path.name,
+                "record_count": len(records),
+                "verified": verified,
+                "artifact_bytes_written": artifact_bytes_written,
+                "max_artifact_bytes": max_artifact_bytes,
+                "output_bytes_observed": sum(
+                    int(record.get("output_bytes_observed", 0)) for record in records
+                ),
+                "output_bytes_retained": sum(
+                    int(record.get("output_bytes_retained", 0)) for record in records
+                ),
+                "output_utf8_bytes": sum(
+                    int(record.get("output_utf8_bytes", 0)) for record in records
+                ),
+                "artifact_output_truncated": any(
+                    bool(record.get("artifact_output_truncated")) for record in records
+                ),
+            },
+        )
+        if ndjson_path.stat().st_size != artifact_bytes_written:
+            raise PipelineError("verification NDJSON size does not match byte accounting", 9)
+    return verified, records
 
 
 def validate_verification_coverage(
@@ -2703,6 +3266,24 @@ def compact_verification(records: list[dict[str, Any]]) -> str:
                     "verification_output_budget_exceeded",
                     False,
                 ),
+                "output_utf8_bytes": record.get("output_utf8_bytes", 0),
+                "artifact_output_utf8_bytes": record.get(
+                    "artifact_output_utf8_bytes",
+                    0,
+                ),
+                "record_json_bytes": record.get("record_json_bytes", 0),
+                "artifact_bytes_written_total": record.get(
+                    "artifact_bytes_written_total",
+                    0,
+                ),
+                "artifact_output_truncated": record.get(
+                    "artifact_output_truncated",
+                    False,
+                ),
+                "verification_artifact_budget_exceeded": record.get(
+                    "verification_artifact_budget_exceeded",
+                    False,
+                ),
                 "output_tail": output[-12000:],
             }
         )
@@ -2711,7 +3292,7 @@ def compact_verification(records: list[dict[str, Any]]) -> str:
         return payload
     marker = (
         "\n... verification summary truncated to the model prompt budget; "
-        f"full machine records remain in the private artifact ({len(payload)} chars) ...\n"
+        f"bounded machine records remain in the private artifact ({len(payload)} chars) ...\n"
     )
     available = MAX_VERIFICATION_PROMPT_CHARS - len(marker)
     head_size = available // 2
@@ -2728,6 +3309,12 @@ def run_pipeline_locked(
         raise PipelineError("--max-command-output-bytes must be positive", 9)
     if args.max_verification_output_bytes <= 0:
         raise PipelineError("--max-verification-output-bytes must be positive", 9)
+    if args.max_verification_artifact_bytes <= 0:
+        raise PipelineError("--max-verification-artifact-bytes must be positive", 9)
+    if args.max_delta_bytes <= 0:
+        raise PipelineError("--max-delta-bytes must be positive", 9)
+    if args.max_untracked_patch_bytes <= 0:
+        raise PipelineError("--max-untracked-patch-bytes must be positive", 9)
     verification_environment = build_verification_environment(args.verify_env)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
     allowed_protected_deletions = normalize_protected_deletions(
@@ -2788,14 +3375,6 @@ def run_pipeline_locked(
         run_dir.chmod(0o700)
 
     task = task_path.read_text(encoding="utf-8")
-    baseline_diff = run_text_exact(
-        ["git", "diff", "--binary", "--full-index", "--no-ext-diff"],
-        repo,
-    )
-    baseline_cached_diff = run_text_exact(
-        ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
-        repo,
-    )
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
     bound_verification_paths = normalize_verification_bindings(
@@ -2824,6 +3403,11 @@ def run_pipeline_locked(
         "max_ignored_paths": args.max_ignored_paths,
         "max_command_output_bytes": args.max_command_output_bytes,
         "max_verification_output_bytes": args.max_verification_output_bytes,
+        "max_verification_artifact_bytes": args.max_verification_artifact_bytes,
+        "max_delta_bytes": args.max_delta_bytes,
+        "max_untracked_patch_bytes": args.max_untracked_patch_bytes,
+        "verification_artifact_format": "ndjson-v1",
+        "delta_artifact_format": "complete-patch-with-bounded-prompt-excerpt-v1",
         "max_verification_commands": MAX_VERIFICATION_COMMANDS,
         "max_verification_prompt_chars": MAX_VERIFICATION_PROMPT_CHARS,
         "verification_environment_names": sorted(verification_environment),
@@ -2857,10 +3441,32 @@ def run_pipeline_locked(
             baseline_status + ("\n" if baseline_status else ""),
             encoding="utf-8",
         )
-        (run_dir / "00-baseline.patch").write_text(baseline_diff, encoding="utf-8")
-        (run_dir / "00-baseline-cached.patch").write_text(
-            baseline_cached_diff,
-            encoding="utf-8",
+        baseline_capture_deadline = time.monotonic() + args.stage_timeout
+        baseline_delta_bytes = stream_command_artifact(
+            [
+                "git", "diff", "--binary", "--full-index", "--no-ext-diff",
+                "--no-textconv",
+            ],
+            repo=repo,
+            destination=run_dir / "00-baseline.patch",
+            max_bytes=args.max_delta_bytes,
+            timeout_seconds=remaining_deadline_seconds(
+                baseline_capture_deadline,
+                "baseline Delta capture",
+            ),
+        )
+        stream_command_artifact(
+            [
+                "git", "diff", "--cached", "--binary", "--full-index",
+                "--no-ext-diff", "--no-textconv",
+            ],
+            repo=repo,
+            destination=run_dir / "00-baseline-cached.patch",
+            max_bytes=args.max_delta_bytes - baseline_delta_bytes,
+            timeout_seconds=remaining_deadline_seconds(
+                baseline_capture_deadline,
+                "baseline Delta capture",
+            ),
         )
         write_json(run_dir / "00-baseline-untracked.json", baseline_untracked)
         write_json(
@@ -3062,6 +3668,9 @@ def run_pipeline_locked(
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
             allowed_protected_deletions=allowed_protected_deletions,
+            max_delta_bytes=args.max_delta_bytes,
+            max_untracked_patch_bytes=args.max_untracked_patch_bytes,
+            timeout_seconds=args.stage_timeout,
         )
 
         validate_allowed_path_boundaries(repo, allowed_rules)
@@ -3084,6 +3693,7 @@ def run_pipeline_locked(
             environment=verification_environment,
             max_output_bytes=args.max_command_output_bytes,
             max_total_output_bytes=args.max_verification_output_bytes,
+            max_artifact_bytes=args.max_verification_artifact_bytes,
         )
         post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(
@@ -3102,6 +3712,9 @@ def run_pipeline_locked(
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
             allowed_protected_deletions=allowed_protected_deletions,
+            max_delta_bytes=args.max_delta_bytes,
+            max_untracked_patch_bytes=args.max_untracked_patch_bytes,
+            timeout_seconds=args.stage_timeout,
         )
         if not delta["introduced_paths"]:
             raise PipelineError(
@@ -3171,6 +3784,9 @@ def run_pipeline_locked(
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
             allowed_protected_deletions=allowed_protected_deletions,
+            max_delta_bytes=args.max_delta_bytes,
+            max_untracked_patch_bytes=args.max_untracked_patch_bytes,
+            timeout_seconds=args.stage_timeout,
         )
         validate_review(review)
         if review.get("verdict") == "PASS":

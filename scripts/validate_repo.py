@@ -386,9 +386,13 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.12"',
+            'RUNNER_VERSION = "2.13"',
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
             "DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES",
+            "DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES",
+            "DEFAULT_MAX_DELTA_BYTES",
+            "DEFAULT_MAX_UNTRACKED_PATCH_BYTES",
+            "MAX_DELTA_PATCH_EXCERPT_BYTES",
             "MAX_VERIFICATION_COMMANDS",
             "MAX_VERIFICATION_PROMPT_CHARS",
             "COMMAND_OUTPUT_LIMIT_EXIT",
@@ -398,6 +402,9 @@ def validate_system_assets(errors: list[str]) -> None:
             "build_verification_environment",
             '"--max-command-output-bytes"',
             '"--max-verification-output-bytes"',
+            '"--max-verification-artifact-bytes"',
+            '"--max-delta-bytes"',
+            '"--max-untracked-patch-bytes"',
             '"--verify-env"',
             "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
             "metadata_only_floor",
@@ -407,6 +414,15 @@ def validate_system_assets(errors: list[str]) -> None:
             "file_metadata_fingerprint",
             "sensitive_untracked_paths",
             "state_untracked_manifests",
+            "stream_command_artifact",
+            "remaining_deadline_seconds",
+            "stream_untracked_patch",
+            "read_artifact_excerpt",
+            '"--no-textconv"',
+            "verification_record_line",
+            "json_string_content_byte_length",
+            "empty_verification_record",
+            '"verification_artifact_format": "ndjson-v1"',
             "redacted_untracked_metadata",
             '"--sensitive-path"',
             '"--redact-untracked-dotfiles"',
@@ -548,6 +564,10 @@ def validate_repository_hygiene(errors: list[str]) -> None:
         ROOT / "AGENTS.md",
         ROOT / "docs" / "architecture.md",
         ROOT / "docs" / "architecture.zh-CN.md",
+        ROOT
+        / "docs"
+        / "decisions"
+        / "2026-07-12-strict-runner-resource-artifacts.md",
         ROOT / "docs" / "guidance-design.md",
         ROOT / "docs" / "guidance-design.zh-CN.md",
         ROOT / "docs" / "maturity.md",

@@ -330,8 +330,8 @@ class RunnerGateTests(unittest.TestCase):
             ),
             mock.patch.object(
                 runner,
-                "untracked_patch",
-                wraps=runner.untracked_patch,
+                "stream_untracked_patch",
+                wraps=runner.stream_untracked_patch,
             ) as patch_capture,
         ):
             delta, _ = runner.enforce_repository_contract(
@@ -343,7 +343,9 @@ class RunnerGateTests(unittest.TestCase):
                 allowed_protected_deletions={".env"},
             )
 
-        patch_capture.assert_called_once_with(self.repo, [])
+        patch_capture.assert_called_once()
+        self.assertEqual(patch_capture.call_args.args[0], self.repo)
+        self.assertEqual(patch_capture.call_args.args[1], [])
         self.assertEqual(delta["ignored_metadata"][0]["path"], ".env")
         self.assertEqual(delta["ignored_metadata"][0]["kind"], "missing")
         self.assertEqual(delta["protected_deletions"], [".env"])
@@ -687,6 +689,136 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(state["worktree"]["ordinary.txt"]["kind"], "file")
         self.assertIn("sha256", state["worktree"]["ordinary.txt"])
         self.assertIn(marker, delta["untracked_patch"])
+        self.assertTrue(delta["delta_complete"])
+        self.assertGreater(delta["delta_bytes"], 0)
+
+    def test_untracked_patch_budget_fails_closed_without_partial_patch(self) -> None:
+        baseline = runner.capture_repo_state(self.repo)
+        path = self.repo / "large-untracked.bin"
+        path.write_bytes(os.urandom(64 * 1024))
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="large-untracked",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths([path.name]),
+                max_delta_bytes=128 * 1024,
+                max_untracked_patch_bytes=1024,
+            )
+        self.assertIn("automated review was refused", str(caught.exception))
+        artifact = self.run_dir / "large-untracked-untracked.patch"
+        self.assertEqual(artifact.stat().st_size, 0)
+
+    def test_untracked_patch_commands_share_one_capture_deadline(self) -> None:
+        destination = self.run_dir / "shared-deadline.patch"
+        manifest = [
+            {"path": "one.txt", "kind": "file"},
+            {"path": "two.txt", "kind": "file"},
+        ]
+
+        def consume_deadline(*args: object, **kwargs: object) -> int:
+            time.sleep(0.03)
+            return 0
+
+        with mock.patch.object(
+            runner,
+            "stream_command_artifact",
+            side_effect=consume_deadline,
+        ) as capture:
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.stream_untracked_patch(
+                    self.repo,
+                    manifest,
+                    destination,
+                    1024,
+                    time.monotonic() + 0.01,
+                )
+        self.assertIn("deadline expired", str(caught.exception))
+        self.assertEqual(capture.call_count, 1)
+
+    def test_tracked_delta_budget_fails_closed_without_full_buffering(self) -> None:
+        path = self.repo / "large-tracked.bin"
+        path.write_bytes(os.urandom(64 * 1024))
+        git(self.repo, "add", path.name)
+        git(self.repo, "commit", "-qm", "add binary")
+        baseline = runner.capture_repo_state(self.repo)
+        path.write_bytes(os.urandom(64 * 1024))
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="large-tracked",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths([path.name]),
+                max_delta_bytes=1024,
+            )
+        self.assertIn("Delta is incomplete", str(caught.exception))
+        artifact = self.run_dir / "large-tracked-unstaged.patch"
+        self.assertEqual(artifact.stat().st_size, 0)
+
+    def test_large_complete_delta_retains_only_bounded_prompt_excerpt(self) -> None:
+        path = self.repo / "excerpted-tracked.bin"
+        path.write_bytes(os.urandom(64 * 1024))
+        git(self.repo, "add", path.name)
+        git(self.repo, "commit", "-qm", "add excerpt fixture")
+        baseline = runner.capture_repo_state(self.repo)
+        path.write_bytes(os.urandom(64 * 1024))
+        delta, _ = runner.enforce_repository_contract(
+            repo=self.repo,
+            run_dir=self.run_dir,
+            prefix="excerpted",
+            baseline=baseline,
+            allowed_rules=runner.normalize_allowed_paths([path.name]),
+            max_delta_bytes=1024 * 1024,
+        )
+        state = delta["patch_prompt_excerpts"]["unstaged_patch"]
+        artifact = self.run_dir / "excerpted-unstaged.patch"
+        self.assertTrue(state["truncated"])
+        self.assertEqual(state["artifact_bytes"], artifact.stat().st_size)
+        self.assertLess(
+            len(delta["unstaged_patch"].encode("utf-8")),
+            artifact.stat().st_size,
+        )
+        self.assertLessEqual(
+            state["excerpt_utf8_bytes"],
+            runner.MAX_DELTA_PATCH_EXCERPT_BYTES + 200,
+        )
+
+    def test_delta_capture_disables_repository_textconv_drivers(self) -> None:
+        marker = self.root / "textconv-ran"
+        driver = self.repo / "textconv.py"
+        driver.write_text(
+            "import pathlib, sys\n"
+            "pathlib.Path(sys.argv[1]).write_text('ran')\n"
+            "print(pathlib.Path(sys.argv[2]).read_text())\n",
+            encoding="utf-8",
+        )
+        (self.repo / ".gitattributes").write_text(
+            "*.dat diff=malicious\n",
+            encoding="utf-8",
+        )
+        data = self.repo / "sample.dat"
+        data.write_text("before\n", encoding="utf-8")
+        git(self.repo, "add", ".gitattributes", driver.name, data.name)
+        git(self.repo, "commit", "-qm", "add textconv fixture")
+        git(
+            self.repo,
+            "config",
+            "diff.malicious.textconv",
+            f"{shlex.quote(sys.executable)} {shlex.quote(str(driver))} "
+            f"{shlex.quote(str(marker))}",
+        )
+        baseline = runner.capture_repo_state(self.repo)
+        data.write_text("after\n", encoding="utf-8")
+        runner.enforce_repository_contract(
+            repo=self.repo,
+            run_dir=self.run_dir,
+            prefix="no-textconv",
+            baseline=baseline,
+            allowed_rules=runner.normalize_allowed_paths([data.name]),
+        )
+        self.assertFalse(marker.exists())
 
     def test_ignored_path_budget_fails_closed(self) -> None:
         (self.repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
@@ -1268,8 +1400,8 @@ class RunnerGateTests(unittest.TestCase):
                 timeout=1,
             )
             elapsed = time.monotonic() - started
-            self.assertEqual(result.exit_code, 124)
-            self.assertTrue(result.timed_out)
+            self.assertEqual(result.exit_code, 0)
+            self.assertFalse(result.timed_out)
             self.assertFalse(result.leftover_process_group)
             self.assertTrue(result.output_drain_timed_out)
             self.assertTrue(result.detached_descendant_possible)
@@ -1282,6 +1414,188 @@ class RunnerGateTests(unittest.TestCase):
             while not done.exists() and time.monotonic() < deadline:
                 time.sleep(0.02)
         self.assertTrue(done.exists())
+
+    def test_parent_exit_starts_detached_stdout_drain_without_waiting_for_timeout(self) -> None:
+        ready = self.root / "long-timeout-detached-ready"
+        stop = self.root / "long-timeout-detached-stop"
+        done = self.root / "long-timeout-detached-done"
+        child = self.root / "long_timeout_detached_child.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "ready, stop, done = map(pathlib.Path, sys.argv[1:4])\n"
+            "ready.write_text('ready')\n"
+            "while not stop.exists():\n"
+            "    time.sleep(0.02)\n"
+            "done.write_text('done')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "long_timeout_parent.py"
+        parent.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]],\n"
+            "    start_new_session=True,\n"
+            ")\n"
+            "ready = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 3\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0 if ready.exists() else 2)\n",
+            encoding="utf-8",
+        )
+
+        started = time.monotonic()
+        try:
+            result = runner.run_managed(
+                [
+                    sys.executable,
+                    str(parent),
+                    str(child),
+                    str(ready),
+                    str(stop),
+                    str(done),
+                ],
+                cwd=self.root,
+                timeout=3600,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(result.exit_code, 0)
+            self.assertFalse(result.timed_out)
+            self.assertFalse(result.leftover_process_group)
+            self.assertTrue(result.output_drain_timed_out)
+            self.assertTrue(result.detached_descendant_possible)
+            self.assertLess(elapsed, 5)
+        finally:
+            stop.write_text("stop", encoding="utf-8")
+            deadline = time.monotonic() + 3
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertTrue(done.exists())
+
+    def test_artifact_capture_parent_exit_starts_bounded_drain(self) -> None:
+        stop = self.root / "artifact-detached-stop"
+        done = self.root / "artifact-detached-done"
+        child = self.root / "artifact_detached_child.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "stop, done = map(pathlib.Path, sys.argv[1:3])\n"
+            "while not stop.exists():\n"
+            "    time.sleep(0.02)\n"
+            "done.write_text('done')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "artifact_parent.py"
+        parent.write_text(
+            "import subprocess, sys\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]],\n"
+            "    start_new_session=True,\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        artifact = self.root / "detached-artifact.patch"
+        started = time.monotonic()
+        try:
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.stream_command_artifact(
+                    [
+                        sys.executable,
+                        str(parent),
+                        str(child),
+                        str(stop),
+                        str(done),
+                    ],
+                    repo=self.root,
+                    destination=artifact,
+                    max_bytes=1024,
+                    timeout_seconds=3600,
+                )
+            self.assertIn("output pipe remained open", str(caught.exception))
+            self.assertLess(time.monotonic() - started, 5)
+            self.assertEqual(artifact.stat().st_size, 0)
+        finally:
+            stop.write_text("stop", encoding="utf-8")
+            deadline = time.monotonic() + 3
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertTrue(done.exists())
+
+    def test_artifact_capture_enforces_command_timeout(self) -> None:
+        artifact = self.root / "timed-artifact.patch"
+        started = time.monotonic()
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.stream_command_artifact(
+                [sys.executable, "-c", "import time; time.sleep(20)"],
+                repo=self.root,
+                destination=artifact,
+                max_bytes=1024,
+                timeout_seconds=1,
+            )
+        self.assertIn("timed out", str(caught.exception))
+        self.assertLess(time.monotonic() - started, 5)
+        self.assertEqual(artifact.stat().st_size, 0)
+
+    def test_artifact_capture_restores_prior_length_after_write_failure(self) -> None:
+        artifact = self.root / "partial-write.patch"
+        artifact.write_bytes(b"baseline")
+        original_fdopen = runner.os.fdopen
+
+        class FailingArtifact:
+            def __init__(self, descriptor: int, mode: str) -> None:
+                self.handle = original_fdopen(descriptor, mode, buffering=0)
+
+            def __enter__(self) -> "FailingArtifact":
+                return self
+
+            def __exit__(
+                self,
+                exc_type: object,
+                exc: object,
+                traceback: object,
+            ) -> None:
+                self.handle.close()
+
+            def write(self, chunk: bytes) -> int:
+                self.handle.write(chunk[:5])
+                raise OSError("simulated artifact write failure")
+
+        with mock.patch.object(
+            runner.os,
+            "fdopen",
+            side_effect=lambda descriptor, mode, buffering=0: FailingArtifact(
+                descriptor,
+                mode,
+            ),
+        ):
+            with self.assertRaises(OSError):
+                runner.stream_command_artifact(
+                    [sys.executable, "-c", "import os; os.write(1, b'x' * 100)"],
+                    repo=self.root,
+                    destination=artifact,
+                    max_bytes=1024,
+                    timeout_seconds=5,
+                    append=True,
+                )
+        self.assertEqual(artifact.read_bytes(), b"baseline")
+
+    def test_artifact_capture_compensates_selector_setup_failure(self) -> None:
+        artifact = self.root / "selector-setup.patch"
+        artifact.write_bytes(b"baseline")
+        with mock.patch.object(
+            runner.selectors,
+            "DefaultSelector",
+            side_effect=OSError("simulated selector setup failure"),
+        ):
+            with self.assertRaises(OSError):
+                runner.stream_command_artifact(
+                    [sys.executable, "-c", "import time; time.sleep(20)"],
+                    repo=self.root,
+                    destination=artifact,
+                    max_bytes=1024,
+                    timeout_seconds=5,
+                    append=True,
+                )
+        self.assertEqual(artifact.read_bytes(), b"baseline")
 
     def test_output_limit_terminates_log_storm_with_bounded_tail(self) -> None:
         marker = self.root / "output-limit-command-finished"
@@ -1450,6 +1764,159 @@ class RunnerGateTests(unittest.TestCase):
             150,
         )
         self.assertTrue(records[-1]["verification_output_budget_exceeded"])
+        self.assertFalse(marker.exists())
+        ndjson = self.run_dir / "verification-budget.ndjson"
+        lines = ndjson.read_bytes().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(ndjson.stat().st_size, records[-1]["artifact_bytes_written_total"])
+        summary = json.loads(
+            (self.run_dir / "verification-budget-summary.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        self.assertEqual(summary["artifact_bytes_written"], ndjson.stat().st_size)
+        self.assertFalse((self.run_dir / "verification-budget.json").exists())
+
+    def test_verification_ndjson_budget_uses_actual_serialized_bytes(self) -> None:
+        commands = [
+            {
+                "id": "verify-1",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import os; os.write(1, b'\\0' * 10000)",
+                ],
+            }
+        ]
+        expected = runner.capture_repo_state(self.repo)
+        serialized_output_lengths: list[int] = []
+        original_dumps = runner.json.dumps
+
+        def tracking_dumps(value: object, *args: object, **kwargs: object) -> str:
+            if isinstance(value, dict) and "output" in value:
+                serialized_output_lengths.append(len(str(value["output"])))
+            return original_dumps(value, *args, **kwargs)
+
+        with mock.patch.object(runner.json, "dumps", side_effect=tracking_dumps):
+            verified, records = runner.run_verification(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="verification-serialized-budget",
+                commands=commands,
+                dry_run=False,
+                timeout_seconds=5,
+                expected_state=expected,
+                state_supplier=lambda: runner.capture_repo_state(self.repo),
+                entrypoints={},
+                environment=runner.build_verification_environment([], {}),
+                max_output_bytes=20_000,
+                max_total_output_bytes=20_000,
+                max_artifact_bytes=1500,
+            )
+        self.assertFalse(verified)
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["command_exit_code"], 0)
+        self.assertEqual(record["exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
+        self.assertEqual(record["output_utf8_bytes"], 10_000)
+        self.assertTrue(record["artifact_output_truncated"])
+        self.assertTrue(record["verification_artifact_budget_exceeded"])
+        ndjson = self.run_dir / "verification-serialized-budget.ndjson"
+        self.assertLessEqual(ndjson.stat().st_size, 1500)
+        persisted = json.loads(ndjson.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["record_json_bytes"], ndjson.stat().st_size)
+        self.assertEqual(
+            persisted["artifact_bytes_written_total"],
+            ndjson.stat().st_size,
+        )
+        self.assertLess(max(serialized_output_lengths), 10_000)
+
+    def test_verification_json_byte_prediction_matches_encoded_payload(self) -> None:
+        outputs = [
+            "plain ascii",
+            'quotes " and slash \\',
+            "controls\x00\b\f\n\r\t\x1f",
+            "中文与 emoji 😀",
+            "surrogate \udcff",
+        ]
+        for output in outputs:
+            with self.subTest(output=repr(output)):
+                record, payload = runner.verification_record_line(
+                    {
+                        **runner.empty_verification_record("verify-1", ["true"]),
+                        "output": output,
+                        "exit_code": 0,
+                    },
+                    max_bytes=100_000,
+                    artifact_bytes_written=17,
+                )
+                self.assertEqual(record["record_json_bytes"], len(payload))
+                self.assertEqual(
+                    record["artifact_bytes_written_total"],
+                    17 + len(payload),
+                )
+                decoded = json.loads(payload.decode("utf-8"))
+                self.assertEqual(decoded["output"], output)
+
+    def test_log_sized_control_output_is_not_expanded_before_rejection(self) -> None:
+        output = "\x00" * runner.DEFAULT_MAX_COMMAND_OUTPUT_BYTES
+        serialized_output_lengths: list[int] = []
+        original_dumps = runner.json.dumps
+
+        def tracking_dumps(value: object, *args: object, **kwargs: object) -> str:
+            if isinstance(value, dict) and "output" in value:
+                serialized_output_lengths.append(len(str(value["output"])))
+            return original_dumps(value, *args, **kwargs)
+
+        with mock.patch.object(runner.json, "dumps", side_effect=tracking_dumps):
+            record, payload = runner.verification_record_line(
+                {
+                    **runner.empty_verification_record("verify-1", ["true"]),
+                    "output": output,
+                    "exit_code": 0,
+                },
+                max_bytes=1500,
+                artifact_bytes_written=0,
+            )
+        self.assertTrue(record["artifact_output_truncated"])
+        self.assertEqual(
+            record["output_utf8_bytes"],
+            runner.DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+        )
+        self.assertLessEqual(len(payload), 1500)
+        self.assertLess(max(serialized_output_lengths), 1000)
+
+    def test_verification_artifact_metadata_is_preflighted_before_command(self) -> None:
+        marker = self.root / "preflight-command-ran"
+        commands = [
+            {
+                "id": "verify-1",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "import pathlib, sys; pathlib.Path(sys.argv[1]).write_text('ran')",
+                    str(marker),
+                ],
+            }
+        ]
+        expected = runner.capture_repo_state(self.repo)
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.run_verification(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="verification-preflight",
+                commands=commands,
+                dry_run=False,
+                timeout_seconds=5,
+                expected_state=expected,
+                state_supplier=lambda: runner.capture_repo_state(self.repo),
+                entrypoints={},
+                environment=runner.build_verification_environment([], {}),
+                max_output_bytes=1024,
+                max_total_output_bytes=1024,
+                max_artifact_bytes=100,
+            )
+        self.assertIn("too small for required structured metadata", str(caught.exception))
         self.assertFalse(marker.exists())
 
     def test_verification_batch_rejects_more_than_command_ceiling(self) -> None:

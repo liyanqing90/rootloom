@@ -41,6 +41,9 @@ python3 <skill-dir>/scripts/run_pipeline.py \
   --sensitive-path 'private/**' \
   --max-command-output-bytes 8388608 \
   --max-verification-output-bytes 33554432 \
+  --max-verification-artifact-bytes 67108864 \
+  --max-delta-bytes 33554432 \
+  --max-untracked-patch-bytes 8388608 \
   --verify 'your focused test command' \
   --verify 'your broader verification command'
 ```
@@ -51,9 +54,13 @@ Merged command output is streamed into a bounded tail with an 8 MiB default per-
 budget. `--max-command-output-bytes` accepts another positive budget. Exceeding it
 terminates the original process group and records structured output metadata.
 Model stages persist a `*-command.json` sidecar. Verification additionally has a 32 MiB
-retained-output batch budget, a fixed 64-command ceiling, and a 120,000-character
-model-prompt summary ceiling. `--max-verification-output-bytes` changes the positive
-batch byte budget.
+retained-output batch budget, a 64 MiB actual serialized-NDJSON budget, a fixed
+64-command ceiling, and a 120,000-character model-prompt summary ceiling.
+`--max-verification-output-bytes` and `--max-verification-artifact-bytes` change the
+positive batch budgets. One record is appended per command, followed by a small summary
+index; JSON escape bytes are counted before rejected output is materialized, minimum
+record space is preflighted before command execution, and exhaustion is structured and
+fail-closed.
 Verification receives a minimal environment; repeat `--verify-env NAME` only for an
 existing variable that the command genuinely requires. Names are recorded, values are
 not. Model stages retain the parent environment for Codex authentication compatibility.
@@ -62,6 +69,14 @@ Known secret-like visible-untracked paths are classified before content fingerpr
 
 This classification is path-based, not content-lineage tracking or DLP. Copied bytes at
 an ordinary allowed path can still enter content fingerprints and Delta artifacts.
+Complete Delta patches stream to private artifacts under a 32 MiB aggregate budget per
+capture and an additional 8 MiB ordinary-untracked budget. Override them with
+`--max-delta-bytes` and `--max-untracked-patch-bytes` only after reviewing the resource
+cost. A partial or oversized Delta stops before automated Review and cannot receive PASS.
+All Git commands in one Runner-owned capture share the stage deadline and immediate
+parent-exit drain, disable external diff and textconv drivers, restore partial artifacts
+on failure, and retain
+only a fixed excerpt from each complete patch in model-facing memory.
 
 After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules fail, the path must pass pre-writer checks against the baseline protected set and diagnosis `allowed_paths`, and the run must use a clean baseline with `--max-repair-cycles 0`. Any authorized protected deletion makes the run deletion-only: no ordinary code edits, renames, moves, or visible file creations are accepted in the same run. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Do not translate that state into automated acceptance. Topology is checked after every writer, after deterministic verification, and after final review.
 
@@ -71,18 +86,22 @@ developer instructions and enforces the following locally, without trusting mode
 - one non-blocking lock per Git common directory;
 - content fingerprints for tracked and ordinary visible-untracked deliverables; pre-classified metadata-only fingerprints without `sha256` for ignored and known/configured sensitive visible-untracked paths; plus separate Git-index and HEAD/refs/config snapshots;
 - an ignored-path enumeration budget and allowed-path gate before any content-bearing Delta capture;
+- streamed, complete-or-fail staged, unstaged, HEAD-to-worktree, and ordinary-untracked Delta artifacts under explicit byte budgets;
+- bounded Runner-owned Git capture lifecycle, disabled repository diff/textconv execution, failure compensation, and fixed model-facing patch excerpts;
 - no Git-visible mutation by evidence, diagnosis, verification, or review stages;
 - no Git-index mutation by the writer;
 - exact `allowed_paths` enforcement (`path` or `directory/**`) including untracked files;
 - protected metadata-only path rejection before Delta capture, with only exact preflighted deletion-only exceptions and mandatory human acceptance;
 - exact agreement between the writer's `files_changed` report and its real stage delta;
 - semantic consistency for GO, completed, PASS, FAIL, and finding severity;
-- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and a final hard deadline for draining inherited output pipes;
+- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and an immediate final hard deadline for draining inherited output pipes after direct-parent exit;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 
 The artifact root must be outside the target repository. The runner saves staged,
 unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked
 patch, and metadata-only manifests for ignored or sensitive visible-untracked paths.
+The complete patch artifacts remain private on disk; prompts receive bounded excerpts and
+structured byte/completeness state rather than reloading each complete patch into memory.
 The process boundary is the original POSIX process group. A descendant that creates a
 new session can survive outside it; the Runner closes local output capture at a bounded
 deadline so that such a descendant cannot hold the stage or repository lock forever.

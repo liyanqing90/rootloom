@@ -214,6 +214,9 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --bind-verification-path verify-1:scripts/acceptance.sh \
   --max-command-output-bytes 8388608 \
   --max-verification-output-bytes 33554432 \
+  --max-verification-artifact-bytes 67108864 \
+  --max-delta-bytes 33554432 \
+  --max-untracked-patch-bytes 8388608 \
   --verify 'make focused-test' \
   --verify 'make check'
 ```
@@ -222,7 +225,11 @@ The runner loads the same four Agent TOMLs and enforces a repository lock, clean
 
 Every model or verification command has an 8 MiB merged-output budget by default. Capture retains only a bounded tail; exceeding the budget terminates the original process group and records structured byte counts, truncation, drain cutoff, and detached-descendant risk. Model stages persist those fields in an adjacent `*-command.json` sidecar. Override the positive per-command budget with `--max-command-output-bytes` only after considering artifact and memory cost.
 
-One deterministic-verification batch is additionally limited to 32 MiB of retained output and 64 commands. `--max-verification-output-bytes` can lower or raise the positive batch byte budget; the command-count ceiling is fixed. The compact verification supplied to repair and Review stages is capped at 120,000 characters while the bounded private machine record remains available. Exceptional exits clean the original process group even when the direct parent has already exited. These are local Runner bounds, not host-level containment for a descendant that creates a new session.
+One deterministic-verification batch is additionally limited to 32 MiB of retained output, 64 MiB of actual serialized NDJSON, and 64 commands. `--max-verification-output-bytes` and `--max-verification-artifact-bytes` can change the positive byte budgets; the command-count ceiling is fixed. Records are appended once to `*-verification.ndjson`, with a versioned small `*-verification-summary.json` index that reports observed, retained, UTF-8, serialized-record, and cumulative artifact bytes. JSON escape size is counted before a rejected output is materialized, and the minimum fail-closed record is preflighted before its command runs. If the artifact budget is exhausted, output is marked truncated and verification fails closed. The compact verification supplied to repair and Review stages remains capped at 120,000 characters.
+
+Git Delta capture is also bounded at its source. Staged, unstaged, `HEAD`-to-worktree, and ordinary-untracked binary patches stream directly into private artifacts and must fit a complete 32 MiB aggregate per capture; the untracked portion has an additional 8 MiB default. All Git commands within one capture share one stage deadline and the immediate parent-exit drain, disable external diff and textconv drivers, and restore the artifact to its prior length on every failure. Complete patches stay on disk while model-facing state reads at most 24,000 raw bytes from each patch view plus a marker, preventing decode/JSON amplification. Use `--max-delta-bytes` and `--max-untracked-patch-bytes` only after assessing memory, disk, and review cost. Any incomplete capture stops before automated Review—truncated source content cannot receive PASS.
+
+When a direct parent exits while stdout remains open, the Runner immediately cleans the original process group and starts the one-second local drain instead of waiting for the remaining stage timeout. The direct parent's exit code is preserved when the holder escaped into a new session, while structured drain-cutoff and detached-descendant fields record the residual risk. These are local Runner bounds, not host-level containment for a descendant that creates a new session.
 
 Verification commands receive only a minimal portability environment (`PATH`, `HOME`, locale, temporary-directory, terminal, user, and `CI` variables when present), plus `PYTHONDONTWRITEBYTECODE=1`. Use repeatable `--verify-env NAME` for an additional existing variable. Artifacts record passed names, never values. This reduces accidental credential inheritance but is not output redaction or file-access isolation; avoid passing production secrets and use an isolated environment for untrusted commands.
 
