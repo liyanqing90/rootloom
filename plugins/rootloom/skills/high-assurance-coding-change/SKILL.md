@@ -47,6 +47,9 @@ The runner reads model, reasoning, and sandbox settings from the same four custo
 
 Known secret-like visible-untracked paths are classified before content fingerprinting. Every path protected at the baseline remains metadata-only for the complete run, even after ignore configuration changes, and declassification of an existing protected path is rejected before Delta capture. Add repeatable exact-path or `directory/**` rules with `--sensitive-path`; use `--redact-untracked-dotfiles` when every untracked dotfile should remain metadata-only. Built-in matching is finite. These options protect runner-generated artifacts and prompts, not repository file access: all four model stages can still read files. Use a secret-free worktree or OS/container isolation when deny-read behavior is required.
 
+This classification is path-based, not content-lineage tracking or DLP. Copied bytes at
+an ordinary allowed path can still enter content fingerprints and Delta artifacts.
+
 After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules fail, the path must pass pre-writer checks against the baseline protected set and diagnosis `allowed_paths`, and the run must use a clean baseline with `--max-repair-cycles 0`. Any authorized protected deletion makes the run deletion-only: no ordinary code edits, renames, moves, or visible file creations are accepted in the same run. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Do not translate that state into automated acceptance. Topology is checked after every writer, after deterministic verification, and after final review.
 
 The runner also injects each role TOML's `developer_instructions` as model-visible
@@ -61,12 +64,16 @@ developer instructions and enforces the following locally, without trusting mode
 - protected metadata-only path rejection before Delta capture, with only exact preflighted deletion-only exceptions and mandatory human acceptance;
 - exact agreement between the writer's `files_changed` report and its real stage delta;
 - semantic consistency for GO, completed, PASS, FAIL, and finding severity;
-- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, and group-exit confirmation;
+- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and a final hard deadline for draining inherited output pipes;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 
 The artifact root must be outside the target repository. The runner saves staged,
 unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked
 patch, and metadata-only manifests for ignored or sensitive visible-untracked paths.
+The process boundary is the original POSIX process group. A descendant that creates a
+new session can survive outside it; the Runner closes local output capture at a bounded
+deadline so that such a descendant cannot hold the stage or repository lock forever.
+Use container, cgroup, or equivalent job isolation for hostile verification commands.
 Treat these artifacts as sensitive source material and delete old runs according to the
 repository's retention policy.
 

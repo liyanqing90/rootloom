@@ -56,7 +56,8 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.10"
+RUNNER_VERSION = "2.11"
+PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -1785,12 +1786,49 @@ def wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
     return True
 
 
+def close_process_output_streams(process: subprocess.Popen[str]) -> None:
+    for stream in (process.stdout, process.stderr):
+        if stream is None or stream.closed:
+            continue
+        try:
+            stream.close()
+        except OSError:
+            pass
+
+
+def drain_process_output(
+    process: subprocess.Popen[str],
+    timeout: float = PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS,
+) -> str:
+    try:
+        output, _ = process.communicate(timeout=timeout)
+        return output or ""
+    except subprocess.TimeoutExpired as exc:
+        partial = exc.output or ""
+        if isinstance(partial, bytes):
+            partial = partial.decode("utf-8", errors="backslashreplace")
+        close_process_output_streams(process)
+        return str(partial) + (
+            "\nmanaged command output pipe remained open after process-group "
+            "cleanup; local capture was closed at its deadline and a detached "
+            "descendant may still be running\n"
+        )
+
+
 def terminate_process_group(process: subprocess.Popen[str]) -> str:
     process_group_id = process.pid
+    process_group_signalable = True
     try:
         os.killpg(process_group_id, signal.SIGTERM)
     except ProcessLookupError:
-        pass
+        process_group_signalable = False
+    except PermissionError as exc:
+        if process.poll() is None:
+            raise PipelineError(
+                f"could not SIGTERM managed command process group {process_group_id}",
+                9,
+            ) from exc
+        process_group_signalable = False
 
     # Reap the direct child promptly when possible. Process-group existence checks
     # can otherwise observe that exited child as a zombie and mistake it for a live
@@ -1800,7 +1838,7 @@ def terminate_process_group(process: subprocess.Popen[str]) -> str:
     except subprocess.TimeoutExpired:
         pass
 
-    if not wait_for_process_group_exit(process_group_id, 5):
+    if process_group_signalable and not wait_for_process_group_exit(process_group_id, 5):
         try:
             os.killpg(process_group_id, signal.SIGKILL)
         except ProcessLookupError:
@@ -1823,8 +1861,7 @@ def terminate_process_group(process: subprocess.Popen[str]) -> str:
                 9,
             )
 
-    output, _ = process.communicate()
-    return output or ""
+    return drain_process_output(process)
 
 
 def ensure_process_group_finished(process: subprocess.Popen[str]) -> bool:

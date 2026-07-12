@@ -216,9 +216,11 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --verify 'make check'
 ```
 
-Runner 读取同一组四个 Agent TOML，并强制仓库锁、干净基线、只读阶段快照、唯一写代理、精确允许路径、Git index 不变、结构化输出、确定性验证、独立评审和最多一次修复循环。它会在 Writer 前为检测到的验证入口建立指纹，在每条验证命令执行前复查该命令的入口，并在命令结束后立即确认仓库未变化。绑定范围包括直接执行的仓库脚本、按命令关联的 `--bind-verification-path` 稳定性依赖、`make` 文件、JavaScript package manifest、pytest 配置文件、后续可能取得优先级的缺失常见候选，以及仓库内每个 symlink 路径组件与最终目标内容。操作方绑定和直接脚本必须解析为已存在的普通文件。存在多条用户验证命令时使用 `verify-N:path`；只有一条用户命令时才兼容裸路径写法。它支持 Linux、macOS 与 WSL，不支持原生 Windows。产物为私有，并且必须位于目标仓库之外。
+Runner 读取同一组四个 Agent TOML，并强制仓库锁、干净基线、只读阶段快照、唯一写代理、精确允许路径、Git index 不变、结构化输出、确定性验证、独立评审和最多一次修复循环。它会在 Writer 前为检测到的验证入口建立指纹，在每条验证命令执行前复查该命令的入口，并在命令结束后立即确认仓库未变化。绑定范围包括直接执行的仓库脚本、按命令关联的 `--bind-verification-path` 稳定性依赖、`make` 文件、JavaScript package manifest、pytest 配置文件、后续可能取得优先级的缺失常见候选，以及仓库内每个 symlink 路径组件与最终目标内容。操作方绑定和直接脚本必须解析为已存在的普通文件。存在多条用户验证命令时使用 `verify-N:path`；只有一条用户命令时才兼容裸路径写法。它支持 Linux、macOS 与 WSL，不支持原生 Windows。进程组清理和输出 drain 均有界，但创建新 session 的后代仍可逃离原组；不可信命令需要容器、cgroup 或等价作业隔离。产物为私有，并且必须位于目标仓库之外。
 
 已知疑似密钥名称会在任何内容指纹前被归为元数据。仓库专有名称可重复传入 `--sensitive-path path` 或 `--sensitive-path 'directory/**'`；如果所有未跟踪 dotfile 都应元数据化，可启用 `--redact-untracked-dotfiles`。这些控制只脱敏自动产物和随 Prompt 提供的数据，不能阻止具有仓库读取能力的 Evidence、Diagnosis、Implementation 或 Review 阶段主动打开文件。需要访问隔离时，应使用不含 secret 的 worktree 或 OS/container 挂载边界。
+
+这是路径级脱敏，不是内容血缘追踪或 DLP。若模型或命令把 protected 字节复制到普通允许路径，新路径仍可能被内容哈希并进入 Delta。要阻止这类泄漏，必须使用 deny-read 挂载、无 secret worktree 或外部 DLP 边界。
 
 metadata-only 路径同时受到验收保护：任何在基线被保护的路径都会在整个 Run 中保持 metadata-only，即使后续 ignore 配置发生变化；对既有 protected 路径的去分类会在 Delta 捕获前被拒绝。Writer 返回后，即使 Diagnosis 的 `allowed_paths` 包含它们，Runner 也会拒绝任何检测到的 ignored 或敏感 visible-untracked 创建、修改或删除。这是写后机器门禁，不是 OS 级写入预防或回滚；失败任务可能留下 protected 文件系统变化，需要操作方恢复。确需删除时，必须为每个文件显式传入 `--allow-protected-path-delete path`；目录与 glob 会被拒绝，路径会在 Writer 启动前完成预检，`--allow-dirty` 和 repair cycle 会被拒绝，旧内容不会被读取或备份，并且该任务会变成 deletion-only：普通代码修改、rename、move 或 visible 文件创建都必须拆到另一次任务。模型评审成功后仍以 `HUMAN_REVIEW_REQUIRED` 退出码 10 停止，而不会自动 PASS。Topology 会在启动、每次 Writer 后、确定性验证后和最终 Review 后复查。
 

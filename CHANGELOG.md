@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.9] - 2026-07-12
+
+### Security
+
+- Bound the final managed-command output drain after process-group cleanup. A detached descendant that retains the inherited stdout pipe can no longer hold the Runner or repository lock indefinitely; local capture closes at the deadline and the command remains a timeout failure.
+
+### Changed
+
+- Document that POSIX process-group cleanup cannot terminate descendants that create a new session or otherwise escape the original group. Hostile verification commands still require container, cgroup, or equivalent job isolation.
+- The strict high-assurance runner is now version 2.11.
+
+### Tests
+
+- Added a real detached-child regression that starts a new session, retains stdout, and proves the Runner returns within a fixed upper bound with an explicit fail-closed diagnostic.
+
 ## [1.2.8] - 2026-07-12
 
 ### Security
@@ -193,7 +208,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.9...HEAD
+[1.2.9]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...v1.2.9
 [1.2.8]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...v1.2.8
 [1.2.7]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...v1.2.6

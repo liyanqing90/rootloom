@@ -1219,6 +1219,64 @@ class RunnerGateTests(unittest.TestCase):
         self.assertTrue(timed_out)
         self.assertFalse(leftover)
 
+    def test_detached_child_holding_stdout_cannot_defeat_timeout(self) -> None:
+        ready = self.root / "detached-ready"
+        stop = self.root / "detached-stop"
+        done = self.root / "detached-done"
+        child = self.root / "detached_stdout_child.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "ready, stop, done = map(pathlib.Path, sys.argv[1:4])\n"
+            "ready.write_text('ready')\n"
+            "deadline = time.monotonic() + 15\n"
+            "while not stop.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.02)\n"
+            "done.write_text('done')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "spawn_detached_stdout_child.py"
+        parent.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]],\n"
+            "    start_new_session=True,\n"
+            ")\n"
+            "ready = pathlib.Path(sys.argv[2])\n"
+            "deadline = time.monotonic() + 3\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0 if ready.exists() else 2)\n",
+            encoding="utf-8",
+        )
+
+        started = time.monotonic()
+        try:
+            return_code, output, timed_out, leftover = runner.run_managed(
+                [
+                    sys.executable,
+                    str(parent),
+                    str(child),
+                    str(ready),
+                    str(stop),
+                    str(done),
+                ],
+                cwd=self.root,
+                timeout=1,
+            )
+            elapsed = time.monotonic() - started
+            self.assertEqual(return_code, 124)
+            self.assertTrue(timed_out)
+            self.assertFalse(leftover)
+            self.assertLess(elapsed, 5)
+            self.assertIn("output pipe remained open", output)
+            self.assertFalse(done.exists())
+        finally:
+            stop.write_text("stop", encoding="utf-8")
+            deadline = time.monotonic() + 3
+            while not done.exists() and time.monotonic() < deadline:
+                time.sleep(0.02)
+        self.assertTrue(done.exists())
+
     def test_successful_command_with_leftover_child_fails_closed(self) -> None:
         marker = self.root / "leftover-child"
         child = self.root / "linger.py"

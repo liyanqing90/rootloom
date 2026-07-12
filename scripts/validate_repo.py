@@ -386,7 +386,9 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.10"',
+            'RUNNER_VERSION = "2.11"',
+            "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
+            "drain_process_output",
             "metadata_only_floor",
             "protected_metadata_paths",
             "intrinsic_protected_paths",
