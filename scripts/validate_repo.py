@@ -38,6 +38,43 @@ REQUIRED_SKILLS = {
     "high-assurance-coding-change",
 }
 
+WORKFLOW_CONTRACTS = {
+    SYSTEM_ASSETS / "AGENTS.md": (
+        "Tier 0 Direct",
+        "Tier 1 Scoped",
+        "Tier 2 Governed",
+        "Intent",
+        "Context",
+        "Tools",
+        "Constraints",
+        "Verification",
+    ),
+    SKILLS_DIR / "operating-coding-change" / "SKILL.md": (
+        "Software 3.0 = Intent + Context + Tools + Constraints + Verification",
+        "Tier 0 Direct",
+        "Tier 1 Scoped",
+        "ROOT_CAUSE_ALIGNMENT",
+        "MITIGATION",
+    ),
+    SKILLS_DIR / "operating-code-review" / "SKILL.md": (
+        "ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE",
+        "false fix",
+        "original failure path",
+    ),
+    SKILLS_DIR / "operating-high-risk-change" / "SKILL.md": (
+        "Tier 2 Governed",
+        "Intent + Context + Tools + Constraints + Verification",
+        "competing hypotheses",
+        "ROOT_CAUSE_ALIGNMENT: PASS",
+        "MITIGATION",
+    ),
+    SKILLS_DIR / "high-assurance-coding-change" / "SKILL.md": (
+        "Tier 1 Scoped",
+        "Tier 2 Governed",
+        "ROOT_CAUSE_ALIGNMENT: PASS",
+    ),
+}
+
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
@@ -311,6 +348,42 @@ def validate_system_assets(errors: list[str]) -> None:
                 errors.append(f"setup script is missing capability contract: {contract}")
 
 
+def validate_workflow_contracts(errors: list[str]) -> None:
+    legacy_tier = re.compile(r"\bR[1-4]\b")
+    for path, contracts in WORKFLOW_CONTRACTS.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            errors.append(f"missing workflow contract file: {path.relative_to(ROOT)}")
+            continue
+        for contract in contracts:
+            if contract not in content:
+                errors.append(
+                    f"workflow contract missing in {path.relative_to(ROOT)}: {contract}"
+                )
+        if legacy_tier.search(content):
+            errors.append(
+                f"legacy R1-R4 tier vocabulary remains in {path.relative_to(ROOT)}"
+            )
+
+    for path in (
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        ROOT / "docs" / "architecture.md",
+        ROOT / "docs" / "architecture.zh-CN.md",
+    ):
+        content = path.read_text(encoding="utf-8")
+        for tier in ("Tier 0 Direct", "Tier 1 Scoped", "Tier 2 Governed"):
+            if tier not in content:
+                errors.append(
+                    f"public tier documentation missing in {path.relative_to(ROOT)}: {tier}"
+                )
+        if legacy_tier.search(content):
+            errors.append(
+                f"legacy R1-R4 tier vocabulary remains in {path.relative_to(ROOT)}"
+            )
+
+
 def iter_public_text_files() -> list[Path]:
     files: list[Path] = []
     for path in ROOT.rglob("*"):
@@ -420,6 +493,7 @@ def main() -> int:
     validate_hooks(errors)
     validate_skills(errors)
     validate_system_assets(errors)
+    validate_workflow_contracts(errors)
     validate_links(errors)
     validate_source_files(errors)
     validate_workflows(errors)

@@ -104,12 +104,17 @@ Semantic refinement lives in a separate Skill so model judgment cannot rewrite t
 
 ## Workflow routing
 
-The global working agreement routes by risk and requested action:
+The global working agreement first completes the smallest useful `Intent + Context + Tools + Constraints + Verification` contract, then routes by one shared tier vocabulary:
 
-- ordinary non-trivial implementation → `$operating-coding-change`;
+- Tier 0 Direct mechanical work → execute directly through `$operating-coding-change` with minimum context and proof;
+- Tier 1 Scoped bugs, features, refactors, and bounded multi-file work → `$operating-coding-change` with an internal task packet and tiered root-cause gate;
+- Tier 2 Governed public/persisted contracts, security, migrations, infrastructure, deployment, release, or materially uncertain root cause → `$operating-high-risk-change` with a user-visible governed packet and ExecPlan;
 - review-only work → `$operating-code-review`;
-- public/persisted contracts, security, migrations, infrastructure, deployment, or release → `$operating-high-risk-change`;
 - user-requested controlled multi-agent change → `$high-assurance-coding-change`.
+
+Behavioral fixes are Tier 1 or higher unless demonstrably mechanical. Ordinary diagnosis must align the repair with the violated invariant at its owning boundary. Governed diagnosis adds competing hypotheses and a GO/NO_GO gate. The code-review workflow emits `ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE`; a transparent `MITIGATION` never satisfies a complete-fix claim.
+
+No separate always-on Gatekeeper Skill is needed. Stable classification lives in global policy, detailed behavior lives in progressive-disclosure operating Skills, and deterministic proof lives in tests, validation, CI, and the optional high-assurance runner. Hooks do not decide semantic root cause.
 
 The high-assurance roles are:
 

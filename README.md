@@ -120,7 +120,7 @@ The repository contains the actual polished outputs, not only prose about them:
 
 ### Global guidance owns stable behavior
 
-It defines authorization, reversible autonomy, working-tree protection, root-cause and scope defaults, evidence standards, workflow routing, automatic project guidance, delegation limits, and concise communication. It contains no repository commands, framework preferences, project architecture, or personality role-play.
+It defines authorization, reversible autonomy, tiered task intake, working-tree protection, root-cause and scope defaults, evidence standards, workflow routing, automatic project guidance, delegation limits, and concise communication. It contains no repository commands, framework preferences, project architecture, or personality role-play.
 
 ### Project guidance owns repository facts
 
@@ -130,6 +130,20 @@ The `SessionStart` Hook deterministically extracts purpose, source-of-truth file
 
 Nested guidance is seeded only for a real module boundary with distinct manifests, commands, ownership, or invariants. The system never creates mandatory per-file L3 comments.
 
+## Tiered task intake and root-cause gates
+
+Rootloom uses one risk vocabulary across its operating workflows:
+
+| Tier | Use | Intake and proof |
+| --- | --- | --- |
+| Tier 0 Direct | Trivial, low-risk, reversible mechanical work | Execute directly with the smallest relevant check |
+| Tier 1 Scoped | Ordinary bugs, feature slices, refactors, and bounded multi-file work | Keep `Intent + Context + Tools + Constraints + Verification` internal; require targeted evidence |
+| Tier 2 Governed | Cross-boundary, high-risk, externally mutating, or materially uncertain work | Expose a governed task packet, impact map, compatibility/rollback, and explicit gates |
+
+Behavioral defects are Tier 1 or higher unless the correction is demonstrably mechanical. Tier 1 diagnosis traces symptom → trigger → ownership path → violated invariant → root cause. Tier 2 adds competing hypotheses and a GO/NO_GO gate. A reversible workaround is reported as `MITIGATION`; it is never presented as a complete root-cause fix.
+
+The task packet stays internal for Tier 0 and Tier 1 unless the user requests it, needs a handoff, or a blocker requires a decision. This preserves the useful intake discipline without turning small changes into ceremony.
+
 ## Workflow series
 
 | Skill | When it runs | Key contract |
@@ -137,9 +151,9 @@ Nested guidance is seeded only for a real module boundary with distinct manifest
 | `$setup-rootloom` | Explicit install, update, audit, layer change, or rollback | Choose a capability preset; plan first; never silently replace user policy |
 | `$seed-project-guidance` | Missing or structurally stale guidance | Deterministic facts only |
 | `$refine-project-guidance` | First non-trivial task, repeated mistakes, or architecture/contract changes | Durable project-specific invariants only |
-| `$operating-coding-change` | Ordinary R1/R2 implementation | Root cause, focused diff, proportional verification |
+| `$operating-coding-change` | Tier 0 Direct and Tier 1 Scoped implementation | Software 3.0 intake, tiered root-cause gate, focused diff, proportional verification |
 | `$operating-code-review` | Review-only requests | Evidence-backed findings first; no edits |
-| `$operating-high-risk-change` | APIs, schemas, data, security, infrastructure, deploy, release | ExecPlan, compatibility, rollback, authorization gates |
+| `$operating-high-risk-change` | Tier 2 Governed APIs, schemas, data, security, infrastructure, deploy, release, or uncertain root cause | Governed task packet, ExecPlan, diagnosis, compatibility, rollback, authorization gates |
 | `$high-assurance-coding-change` | Explicit controlled multi-agent request | Evidence → diagnosis gate → one writer → deterministic verification → independent review |
 
 Normal tasks stay single-agent. The high-assurance workflow is opt-in because multiple agents add token use, latency, and coordination risk.

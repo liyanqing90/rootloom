@@ -5,12 +5,13 @@ description: Plan and execute high-risk engineering changes involving public API
 
 # High-Risk Change Workflow
 
-Use this Skill for R3 and R4 work. Do not execute production mutation, deployment, publication, release, force-push, credential change, billing action, or destructive data operation unless the current request clearly authorizes the exact target and scope.
+Use this Skill for Tier 2 Governed work. Do not execute production mutation, deployment, publication, release, force-push, credential change, billing action, or destructive data operation unless the current request clearly authorizes the exact target and scope.
 
 ## 1. Establish authority and risk
 
 Identify:
 
+- task type and the complete `Intent + Context + Tools + Constraints + Verification` execution contract;
 - requested observable outcome and non-goals;
 - exact environment, repository, branch, service, data set, account, or resource;
 - public and persisted contracts;
@@ -20,13 +21,23 @@ Identify:
 
 Ask only when missing authorization or a materially ambiguous product/operational decision remains. Do not ask for ordinary reversible implementation details.
 
+Produce a concise governed task packet for Tier 2. It must be executable now, identify the exact missing prerequisite or user decision, or route to the repository workflow that makes it executable. Do not produce a prose-only plan.
+
 ## 2. Create an ExecPlan
 
 Use `assets/EXECPLAN.template.md`. Store the active plan in the repository's established planning location, or `.codex/plans/<task>.md` when none exists.
 
 The plan must be self-contained, grounded in verified paths and commands, and updated as evidence changes. Include observable success, baseline, invariants, impact map, staged implementation, compatibility, migration, rollout, rollback, verification, and decision log.
 
-## 3. Preserve compatibility deliberately
+Read context progressively: start with active project guidance, then the relevant requirement or contract, target ownership paths, and verification rules. Expand only when the impact map or unresolved evidence requires it.
+
+## 3. Gate governed defect repair
+
+For bugs, incidents, regressions, data repair, or incorrect runtime behavior, record observed evidence, competing hypotheses, ownership path, violated invariant, and root cause before implementation. A GO decision requires evidence that explains the material symptoms and rejects plausible alternatives.
+
+If root cause remains unknown, either stop as `NO_GO` or explicitly govern a reversible `MITIGATION` with residual risk, observability, rollback, and a removal or follow-up condition. Never present symptom suppression as a complete root-cause fix.
+
+## 4. Preserve compatibility deliberately
 
 For API, schema, config, CLI, event, or persisted-format changes:
 
@@ -40,7 +51,7 @@ For API, schema, config, CLI, event, or persisted-format changes:
 
 Pre-release status is not automatic permission to break contracts.
 
-## 4. Data and migration discipline
+## 5. Data and migration discipline
 
 Evaluate:
 
@@ -51,7 +62,7 @@ Evaluate:
 
 Prefer expand → migrate/backfill → verify → contract. Avoid destructive contraction in the same rollout unless explicitly authorized and operationally justified.
 
-## 5. Dependency and supply-chain discipline
+## 6. Dependency and supply-chain discipline
 
 For a new or materially changed production dependency:
 
@@ -61,9 +72,9 @@ For a new or materially changed production dependency:
 - avoid broad upgrade commands that refresh unrelated packages;
 - verify build, tests, packaging, deployment, and rollback assumptions.
 
-## 6. External actions
+## 7. External actions
 
-Before R4 execution:
+Before external or irreversible execution:
 
 1. reconfirm target, scope, branch/environment/account and blast radius;
 2. use plan, preview, dry-run, backup, canary, staged rollout, or reversible mode where available;
@@ -72,7 +83,7 @@ Before R4 execution:
 5. obtain explicit approval for the exact action if not already present;
 6. verify the resulting external state—command submission alone is not success.
 
-## 7. Verification
+## 8. Verification
 
 Use all applicable layers:
 
@@ -85,8 +96,10 @@ Use all applicable layers:
 - browser/screenshot evidence for affected formal UI;
 - post-action verification for authorized external changes.
 
+For defect repair, require `ROOT_CAUSE_ALIGNMENT: PASS` before closeout. Prefer fail-before/pass-after regression evidence; when impractical, document equivalent trace or contract proof and the residual verification gap.
+
 Classify failures as introduced, pre-existing, environmental, or unverified. Do not hide gaps.
 
-## 8. Report
+## 9. Report
 
 Report the final design and staged impact, exact changes, verification evidence, compatibility/migration status, external effects actually performed, rollback readiness, and residual risk. Keep an incomplete or blocked ExecPlan visibly incomplete rather than silently deleting missing gates.

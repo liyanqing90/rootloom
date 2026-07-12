@@ -17,6 +17,14 @@
 - Confirm before irreversible loss, production or external mutation, deployment, publication, release, force-push, purchases, credential or permission changes, destructive migrations, incompatible contracts, or material scope expansion.
 - A user-requested local `git commit` authorizes committing the scoped local changes. It does not imply push, PR creation, release, or publication.
 
+## Task Intake
+
+- Classify non-trivial work before execution as Tier 0 Direct, Tier 1 Scoped, or Tier 2 Governed. Repository-defined tiers take precedence when present.
+- Ensure Intent, Context, Tools, Constraints, and Verification are known; read or ask only when a missing part materially changes correctness, safety, cost, scope, or destructive impact.
+- Keep Tier 0 and Tier 1 task packets internal by default. Expose a governed packet for Tier 2, a blocker, an explicit handoff, or a user request.
+- Treat behavioral defects as Tier 1 or higher unless the correction is demonstrably mechanical. Escalate uncertain root cause, cross-boundary impact, repeated failed repair, or high-risk domains to Tier 2.
+- Do not turn small, low-risk, reversible work into planning bureaucracy.
+
 ## Engineering Defaults
 
 - Preserve unrelated user modifications. Never reset, clean, stash, bulk-restore, or overwrite work merely to obtain a clean tree.
@@ -36,8 +44,8 @@
 
 ## Workflow Routing
 
-- Use `operating-coding-change` for ordinary non-trivial implementation work.
-- Use `operating-high-risk-change` for public or persisted contracts, schemas, migrations, security, infrastructure, production dependencies, deployment, release, or destructive effects.
+- Use `operating-coding-change` for Tier 0 Direct and Tier 1 Scoped implementation work.
+- Use `operating-high-risk-change` for Tier 2 Governed work involving public or persisted contracts, schemas, migrations, security, infrastructure, production dependencies, deployment, release, destructive effects, or materially uncertain root cause.
 - Use installed design/product/frontend Skills for formal UI, UX, Figma, or visual work.
 - Keep `high-assurance-coding-change` opt-in; use it only when the user explicitly requests controlled multi-agent work or the selected workflow requires it.
 - Keep task-specific requirements in the current prompt and reusable procedures in Skills.

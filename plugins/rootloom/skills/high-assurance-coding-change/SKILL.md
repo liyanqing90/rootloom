@@ -11,8 +11,8 @@ Use the installed custom roles as a controlled pipeline. Keep the parent agent r
 
 Apply active repository and global risk rules before this orchestration:
 
-- For ordinary reversible R1/R2 work, use the active `operating-coding-change` workflow as the implementation discipline inside this pipeline.
-- For public APIs, schemas, persisted data, security boundaries, architecture ownership, production dependencies, releases, or destructive work, `operating-high-risk-change` owns the plan, compatibility, rollback, authorization, and execution gate when available.
+- For Tier 1 Scoped work, use the active `operating-coding-change` workflow as the implementation discipline inside this pipeline. Tier 0 Direct work should not use this pipeline.
+- For Tier 2 Governed work involving public APIs, schemas, persisted data, security boundaries, architecture ownership, production dependencies, releases, destructive effects, or materially uncertain root cause, `operating-high-risk-change` owns the task packet, plan, compatibility, rollback, authorization, and execution gate when available.
 - Do not let this skill turn a blocked high-risk change into an authorized one. Start its evidence stages only within the scope that the governing workflow permits, and start implementation only after all required user decisions exist.
 
 ## Preconditions
@@ -98,6 +98,8 @@ Spawn exactly one agent with `agent_type = "root_cause_reviewer"`. Provide the o
 - rejected alternatives;
 - an explicit change contract with allowed and forbidden scope;
 - required tests and material risks.
+
+The diagnosis must also establish `ROOT_CAUSE_ALIGNMENT: PASS`. A mitigation, unsupported hypothesis, or downstream symptom patch cannot receive `GO` as a complete fix.
 
 On `NO_GO`, do not edit. Gather one bounded round of missing read-only evidence when safe and useful, then rerun the gate once. If the gate still returns `NO_GO`, stop and report the missing evidence or decision.
 

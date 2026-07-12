@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-07-12
+
+### Added
+
+- Unified task intake around Tier 0 Direct, Tier 1 Scoped, and Tier 2 Governed work without adding another always-on routing Skill.
+- Added a Software 3.0 completeness gate, progressive context rules, tier-aware user-facing task packets, and explicit root-cause-alignment review.
+- Added deterministic repository validation for the shared tier vocabulary and false-fix prevention contracts.
+
+### Changed
+
+- Behavioral defects now default to Tier 1 or higher, while trivial mechanical work remains bureaucracy-free.
+- Ordinary, high-risk, review, and high-assurance Skills now distinguish evidence-backed root-cause fixes from transparent mitigations.
+
 ## [1.0.1] - 2026-07-11
 
 ### Changed
@@ -26,6 +39,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/liyanqing90/rootloom/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/liyanqing90/rootloom/releases/tag/v1.0.0

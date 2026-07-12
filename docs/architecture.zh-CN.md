@@ -104,12 +104,17 @@ SessionStart
 
 ## 工作流路由
 
-全局工作协议按风险和请求类型路由：
+全局工作协议先补全最小可用的 `Intent + Context + Tools + Constraints + Verification` 契约，再使用一套统一分级路由：
 
-- 普通非平凡实施 → `$operating-coding-change`；
+- Tier 0 Direct 机械工作 → 通过 `$operating-coding-change` 直接执行，只读取最小上下文并提供最小证据；
+- Tier 1 Scoped 的普通 Bug、功能、重构和边界明确的多文件工作 → `$operating-coding-change`，内部使用任务包和分级根因门禁；
+- Tier 2 Governed 的公开/持久化契约、安全、迁移、基础设施、部署、发布或根因存在实质不确定性的工作 → `$operating-high-risk-change`，展示治理任务包并维护 ExecPlan；
 - 只读审查 → `$operating-code-review`；
-- 公开/持久化契约、安全、迁移、基础设施、部署或发布 → `$operating-high-risk-change`；
 - 用户明确要求的受控多代理修改 → `$high-assurance-coding-change`。
+
+行为修复默认至少是 Tier 1，除非可证明为机械修正。普通诊断必须让修改位置与所有者边界中被破坏的不变量一致；治理诊断再增加竞争假设与 GO/NO_GO 门禁。代码审查输出 `ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE`；透明标注的 `MITIGATION` 不能满足“完整修复”声明。
+
+系统不再需要另一个常驻 Gatekeeper Skill。稳定分级属于全局策略，详细行为属于渐进加载的工程 Skills，确定性证据属于测试、验证器、CI 和可选高保障 Runner。Hooks 不负责判断语义根因。
 
 高保障角色如下：
 

@@ -1,6 +1,6 @@
 {
   "name": "rootloom",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "description": "Reliable Codex engineering, woven from project truth to verified delivery.",
   "author": {
     "name": "liyanqing",
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Rootloom",
     "shortDescription": "Reliable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom weaves repository guidance, reusable workflows, command Rules, model-routed agents, lifecycle audits, and deterministic delivery gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
+    "longDescription": "Rootloom weaves tiered task intake, repository guidance, root-cause workflows, command Rules, model-routed agents, lifecycle audits, and deterministic delivery gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [
@@ -39,7 +39,7 @@
     "logo": "./assets/logo.svg",
     "logoDark": "./assets/logo-dark.svg",
     "defaultPrompt": [
-      "Choose and set up the right Rootloom capability layer safely.",
+      "Classify and execute a task with the right Rootloom workflow tier.",
       "Seed and refine AGENTS.md guidance for this repository.",
       "Run a controlled high-assurance coding change."
     ]

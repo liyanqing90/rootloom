@@ -5,7 +5,8 @@
 - State: draft | in progress | blocked | complete
 - Owner: <name or agent>
 - Last updated: <YYYY-MM-DD>
-- Risk: R3 | R4
+- Task type: <bug/debugging, architecture, data/schema/migration, security, release/deploy, production operation, or other>
+- Risk: Tier 2 (Governed)
 
 ## Goal and observable success
 
@@ -19,6 +20,15 @@
 
 - <Current behavior, failing test, trace, metrics, relevant paths.>
 - <Pre-existing failures or dirty-tree constraints.>
+
+## Governed defect diagnosis
+
+- Observed failure: <behavior and trigger, or not applicable>
+- Competing hypotheses: <candidate causes and evidence>
+- Ownership path: <where the behavior or state is owned>
+- Violated invariant: <rule that failed>
+- Root cause: <evidence-backed cause, NO_GO, or explicit MITIGATION>
+- Root-cause alignment: <PASS, FAIL, or NOT_APPLICABLE>
 
 ## Constraints and invariants
 

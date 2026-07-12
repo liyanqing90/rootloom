@@ -42,8 +42,26 @@ Do not report personal style preferences as defects. Separate questions and opti
 - For UI, inspect rendered evidence, accessibility, interaction states, responsive behavior, console/runtime failures, and screenshot coverage when available.
 - Do not claim a test, reproduction, screenshot, or external check was performed unless it was.
 
+## Root-cause alignment
+
+For a bug fix, regression, incident repair, or behavior-changing workaround, trace the observed failure to its owning boundary and ask whether the diff repairs the violated invariant or only suppresses a downstream symptom.
+
+Treat these as evidence of a possible false fix unless the repository proves they belong at the owning boundary: caller-only special cases, swallowed exceptions, arbitrary retries or delays, widened timeouts, silent defaults, duplicated state, weakened tests or validation, and checks that exercise only the new patch branch rather than the original failure path.
+
+Require one outcome:
+
+```text
+ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE
+```
+
+- `PASS`: the evidence supports the stated root cause and the repair belongs at the owning boundary.
+- `FAIL`: root cause is unsupported, a plausible alternative remains, the change only masks a symptom, or a mitigation is presented as a complete fix.
+- `NOT_APPLICABLE`: the change is not a defect repair.
+
+Report a failed alignment as a severity-ranked finding according to its actual impact. Verify that regression evidence exercises the original failure path; if fail-before/pass-after evidence is impractical, require an equivalent trace or contract proof and record the gap.
+
 ## Output
 
-Start with `## Findings`, ordered by severity. Each finding should be concise but complete. Then include `## Questions` and `## Optional Improvements` only when useful. Finish with `## Verification Gaps` when relevant.
+Start with `## Findings`, ordered by severity. Each finding should be concise but complete. Then state `ROOT_CAUSE_ALIGNMENT`. Include `## Questions` and `## Optional Improvements` only when useful. Finish with `## Verification Gaps` when relevant.
 
 If no material findings exist, state that explicitly and list any unreviewed surfaces or checks that were unavailable.
