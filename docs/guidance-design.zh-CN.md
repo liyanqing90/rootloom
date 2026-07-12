@@ -19,6 +19,8 @@ OpenAI 的 [GPT-5.6 模型指南](https://developers.openai.com/api/docs/guides/
 
 [GEB 系统](https://chunxiang.space/geb-system)有两个值得保留的思想：
 
+GEB 是个人文章/课程站点，不是 OpenAI 规范或同行评审标准。它只提供设计启发；Rootloom 的 Codex 契约以官方平台文档和实际观察到的仓库行为为准。
+
 - 文档应与其描述的代码和契约保持局部一致；
 - 全局、模块和局部上下文应形成层级，而不是平铺成百科全书。
 

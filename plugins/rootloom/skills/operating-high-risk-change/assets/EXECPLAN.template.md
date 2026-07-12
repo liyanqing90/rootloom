@@ -21,6 +21,12 @@
 - <Current behavior, failing test, trace, metrics, relevant paths.>
 - <Pre-existing failures or dirty-tree constraints.>
 
+### Evidence provenance
+
+| Claim | Kind | Source and environment | Observed | Reference | Freshness / redaction |
+| --- | --- | --- | --- | --- | --- |
+| <material fact or inference> | fact | <repository, runtime, issue, or external system> | <time or window> | <path, command, artifact, query, trace, or correlation ID> | <notes> |
+
 ## Governed defect diagnosis
 
 - Observed failure: <behavior and trigger, or not applicable>
@@ -68,6 +74,9 @@
 
 ## Verification
 
+- Original failure path: `<command, test, trace, or observation>`
+- Owning-boundary invariant: `<command, test, assertion, or contract proof>`
+- Adjacent negative/alternate path: `<command, test, or observation>`
 - Focused tests: `<commands>`
 - Contract/migration tests: `<commands>`
 - Type/lint/build/package: `<commands>`
@@ -84,3 +93,7 @@
 ## Decision log
 
 - <YYYY-MM-DD> — <decision, evidence, consequence>
+
+## Durable decision records
+
+- <Accepted ADR/decision-record link, or none because no durable decision was created.>

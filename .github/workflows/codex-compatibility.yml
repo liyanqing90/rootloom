@@ -1,0 +1,45 @@
+name: Codex compatibility probe
+
+on:
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codex-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  latest-cli:
+    name: Latest Codex CLI (informational)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+
+      - name: Install latest Codex CLI
+        run: npm install --global @openai/codex@latest
+
+      - name: Record probed version
+        run: codex --version
+
+      - name: Probe command-policy contracts
+        run: >-
+          python3 -m unittest
+          tests.test_setup_rootloom.RootloomSetupTests.test_rules_distinguish_commit_push_and_destructive_reset
+          -v

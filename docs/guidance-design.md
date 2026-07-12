@@ -19,6 +19,8 @@ The default 32 KiB project-instruction budget is a ceiling, not a target. This p
 
 The [GEB system](https://chunxiang.space/geb-system) contains two valuable ideas:
 
+GEB is an individual article/course site, not an OpenAI specification or peer-reviewed standard. It is design inspiration only; official platform documentation and observed repository behavior govern Rootloom's Codex contracts.
+
 - documentation should stay locally aligned with the code and contracts it describes;
 - global, module, and local context should form a hierarchy rather than a flat encyclopedia.
 

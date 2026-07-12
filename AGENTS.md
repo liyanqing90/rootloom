@@ -32,6 +32,7 @@
 - `plugins/rootloom/` is the only installable plugin source; `.agents/plugins/marketplace.json` must continue to point to that exact directory.
 - `plugins/rootloom/skills/seed-project-guidance/scripts/seed_project_guidance.py` owns automatic evidence collection and must remain deterministic, bounded, standard-library-only, and network-free.
 - `plugins/rootloom/skills/refine-project-guidance/SKILL.md` owns semantic project-guidance judgment; do not move model-dependent inference into the `SessionStart` Hook or deterministic scanner.
+- `plugins/rootloom/skills/record-engineering-decision/SKILL.md` owns portable decision memory; create records only for accepted durable choices and keep `AGENTS.md` references concise rather than duplicating rationale.
 - `plugins/rootloom/skills/setup-rootloom/scripts/setup_rootloom.py` owns Codex-home writes and capability-to-artifact mapping; it must remain plan-first, dependency-closing, transactional, conflict-refusing, atomic, backed up, and hash-aware.
 - `plugins/rootloom/hooks/run_component_hook.py` owns lifecycle-Hook enablement. Absent, malformed, or symlinked policy must fail closed; setup is the only supported way to enable a component.
 - `plugins/rootloom/hooks/subagent_budget.py` is an advisory audit because `SubagentStart` cannot cancel children; documentation and messages must never present it as a hard cumulative agent limit.

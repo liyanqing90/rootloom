@@ -31,9 +31,12 @@ Rootloom lets a team install only the Codex capabilities it actually wants—wit
 | Engineering workflows | Ordinary change, review-only, high-risk, and opt-in high-assurance Skills |
 | Model routing | Four custom Agent TOMLs with explicit model, reasoning, role, and sandbox defaults |
 | Runtime and commands | A quality-first profile, four-thread concurrent cap, and tested command Rules |
-| Deterministic delivery | A staged `codex exec` runner with one writer, scope gates, verification, and independent review |
+| Evidence and memory | Attributable runtime/external evidence plus optional repository-owned engineering decision records |
+| Deterministic process | A staged `codex exec` runner with one writer, scope gates, verification, and independent review |
 
 The repository, marketplace, and plugin share one stable public ID: `rootloom`.
+
+> **Maturity:** Rootloom is an early-stage, single-maintainer project. “Reliable” is the design goal, not a claim of proven defect reduction. Deterministic gates cover selected process mechanics, not whether a model's evidence or root-cause diagnosis is true. Read [Maturity, guarantees, and compatibility](docs/maturity.md).
 
 ## Why Rootloom
 
@@ -151,6 +154,7 @@ The task packet stays internal for Tier 0 and Tier 1 unless the user requests it
 | `$setup-rootloom` | Explicit install, update, audit, layer change, or rollback | Choose a capability preset; plan first; never silently replace user policy |
 | `$seed-project-guidance` | Missing or structurally stale guidance | Deterministic facts only |
 | `$refine-project-guidance` | First non-trivial task, repeated mistakes, or architecture/contract changes | Durable project-specific invariants only |
+| `$record-engineering-decision` | An accepted architecture, contract, dependency, security, data, or operational choice must survive the task | Repository-owned context, alternatives, provenance, consequences, and revisit triggers |
 | `$operating-coding-change` | Tier 0 Direct and Tier 1 Scoped implementation | Software 3.0 intake, tiered root-cause gate, focused diff, proportional verification |
 | `$operating-code-review` | Review-only requests | Evidence-backed findings first; no edits |
 | `$operating-high-risk-change` | Tier 2 Governed APIs, schemas, data, security, infrastructure, deploy, release, or uncertain root cause | Governed task packet, ExecPlan, diagnosis, compatibility, rollback, authorization gates |
@@ -226,7 +230,9 @@ Read the detailed [official-guidance and GEB analysis](docs/guidance-design.md).
 
 The core needs local Git/filesystem evidence and native Codex configuration. An MCP server would add another process and trust surface without adding a missing capability.
 
-Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Do not make every coding task inherit it merely to complete an architecture checklist.
+Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Record environment, observation time/window, a stable artifact/query/trace reference, freshness/redaction, and fact-versus-inference status for material evidence. Do not make every coding task inherit an integration merely to complete an architecture checklist.
+
+The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Evidence provenance improves auditability; it does not prove a diagnosis.
 
 ## Safety model
 
@@ -235,6 +241,10 @@ Use MCP narrowly when a custom role genuinely needs an external source—interna
 - Global setup is explicit, atomic, backed up, hash-checked, and rollback-aware.
 - Read-only roles disable apps by default; only one standard role is write-capable.
 - Rules, sandboxing, Hooks, Skills, and model instructions are defense in depth, not a substitute for OS policy, credentials, branch protection, review, or CI.
+
+## Compatibility policy
+
+Normal CI tests a pinned Codex CLI baseline. A separate scheduled workflow probes the latest CLI and is informational until maintainers review and adopt an upstream change. This catches drift without making every release depend on an unpinned toolchain. See [Maturity, guarantees, and compatibility](docs/maturity.md).
 
 ## Update
 

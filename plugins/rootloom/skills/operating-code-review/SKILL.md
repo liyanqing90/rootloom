@@ -30,6 +30,8 @@ A finding must identify:
 - smallest concrete correction;
 - confidence: verified, strongly inferred, or uncertain.
 
+For material runtime or external evidence, also identify its source, environment, observed time or window, stable artifact/query/trace/correlation reference when available, and freshness/redaction constraints. Treat an unattributed model summary as an unverified lead rather than direct evidence.
+
 Do not report personal style preferences as defects. Separate questions and optional improvements from findings.
 
 ## Review procedure
@@ -59,6 +61,8 @@ ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE
 - `NOT_APPLICABLE`: the change is not a defect repair.
 
 Report a failed alignment as a severity-ranked finding according to its actual impact. Verify that regression evidence exercises the original failure path; if fail-before/pass-after evidence is impractical, require an equivalent trace or contract proof and record the gap.
+
+Also require the verification set to cover the violated invariant at its owning boundary and an adjacent negative, edge, or alternate path. Passing a test written only around the new conditional can still be a false fix.
 
 ## Output
 

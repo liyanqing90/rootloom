@@ -70,6 +70,7 @@ repository's retention policy.
 - Do not stage or unstage files. The deterministic runner requires the Git index to remain byte-for-byte equivalent at the entry level.
 - Keep `allowed_paths` machine-readable: exact normalized repository-relative files or `directory/**`; list both endpoints of a rename.
 - Treat subagent output as evidence, not truth. Recheck material claims against source, runtime behavior, or tests.
+- Structured schemas validate required shape and cross-stage process semantics; they do not establish factual truth, root-cause correctness, or production safety.
 - Prefer repository-owned verification commands. A model statement that tests passed is not evidence.
 - Use parallelism only for independent read-heavy scopes.
 - Do not treat hooks as a security or routing boundary.
@@ -87,6 +88,8 @@ Require each explorer to return:
 - direct, possible, and excluded impact scope;
 - unknowns and competing hypotheses.
 
+For runtime or external evidence, require an evidence provenance record with source, environment, observed time or window, stable artifact/query/trace/correlation reference when available, freshness/redaction notes, and fact-versus-inference status. The strict runner is offline and disables external tools; collect authorized external evidence in the parent, sanitize or materialize the necessary artifact outside the run directory, and pass only the bounded evidence required by the task.
+
 Do not edit source during this stage.
 
 ## Stage 2: Gate the diagnosis
@@ -100,6 +103,8 @@ Spawn exactly one agent with `agent_type = "root_cause_reviewer"`. Provide the o
 - required tests and material risks.
 
 The diagnosis must also establish `ROOT_CAUSE_ALIGNMENT: PASS`. A mitigation, unsupported hypothesis, or downstream symptom patch cannot receive `GO` as a complete fix.
+
+Required tests must map to the original failure path, the violated invariant at its owning boundary, and at least one adjacent negative or alternate path.
 
 On `NO_GO`, do not edit. Gather one bounded round of missing read-only evidence when safe and useful, then rerun the gate once. If the gate still returns `NO_GO`, stop and report the missing evidence or decision.
 
@@ -131,6 +136,8 @@ The parent performs the final diff review and reports:
 - independent review verdict;
 - only material remaining risks or unrun checks.
 
+If the accepted change creates a durable architecture, contract, dependency, security, data, or operational decision, record it through `record-engineering-decision` when installed after the implementation is verified. The record is repository memory, not evidence that the implementation is correct.
+
 ## Determinism boundary
 
-This native workflow strongly guides Codex but is not an unbypassable state machine. Use `scripts/run_pipeline.py` for explicit model routing and stage order. For production-critical work, also enforce external OS/container, credential, network, and CI boundaries; model prompts, sandbox labels, and hooks alone are not a complete security boundary.
+This native workflow strongly guides Codex but is not an unbypassable state machine. Use `scripts/run_pipeline.py` for explicit model routing and stage order. Its determinism covers selected mechanics—stage order, repository state, allowed paths, structured shape, command execution, and repair-cycle bounds—not whether a diagnosis is true or an outcome is correct. For production-critical work, also enforce external OS/container, credential, network, and CI boundaries; model prompts, sandbox labels, and hooks alone are not a complete security boundary.

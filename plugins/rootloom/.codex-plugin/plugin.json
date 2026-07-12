@@ -1,7 +1,7 @@
 {
   "name": "rootloom",
-  "version": "1.1.0",
-  "description": "Reliable Codex engineering, woven from project truth to verified delivery.",
+  "version": "1.2.0",
+  "description": "Codex engineering controls woven from attributable evidence to verified process.",
   "author": {
     "name": "liyanqing",
     "url": "https://github.com/liyanqing90"
@@ -24,7 +24,7 @@
   "interface": {
     "displayName": "Rootloom",
     "shortDescription": "Reliable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom weaves tiered task intake, repository guidance, root-cause workflows, command Rules, model-routed agents, lifecycle audits, and deterministic delivery gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
+    "longDescription": "Rootloom weaves tiered task intake, repository guidance, attributable evidence, durable decision records, root-cause workflows, command Rules, model-routed agents, lifecycle audits, and deterministic process gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [

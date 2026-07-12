@@ -17,7 +17,7 @@ Please do not open a public issue for a suspected vulnerability. Use GitHub's pr
 
 Do not include real credentials, proprietary repository content, or personal data. Use synthetic fixtures wherever possible.
 
-You should receive an acknowledgement within 7 days and an initial assessment within 14 days. Timelines may vary for reports that depend on Codex platform behavior outside this repository.
+The current single maintainer targets acknowledgement within 7 days and an initial assessment within 14 days. These are best-effort response targets, not a service-level guarantee; timing may vary with maintainer availability or reports that depend on Codex platform behavior outside this repository.
 
 ## Security boundaries
 

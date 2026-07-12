@@ -75,6 +75,44 @@ class RunnerGateTests(unittest.TestCase):
         with self.assertRaises(runner.PipelineError):
             runner.validate_review(review)
 
+    def test_evidence_requires_attributable_provenance(self) -> None:
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_evidence({"reproduction": {}, "evidence_provenance": {}})
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_evidence({"reproduction": {}, "evidence_provenance": []})
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_evidence(
+                {
+                    "reproduction": {},
+                    "evidence_provenance": [
+                        {
+                            "claim": "failure observed",
+                            "kind": "fact",
+                            "source_environment": "focused test / local",
+                            "observed_at": "2026-07-12",
+                            "reference": "tests/test_failure.py",
+                            "freshness_redaction": "fresh",
+                        },
+                        {"claim": "missing fields"},
+                    ],
+                }
+            )
+
+    def test_go_diagnosis_requires_invariant_verification_map(self) -> None:
+        diagnosis = {
+            "decision": "GO",
+            "root_cause": "cause",
+            "violated_invariant": "invariant",
+            "change_contract": {
+                "allowed_paths": ["a.txt"],
+                "allowed_behavior": ["fix"],
+                "acceptance_criteria": ["test passes"],
+            },
+            "required_tests": ["test"],
+        }
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_diagnosis(diagnosis)
+
     def test_completed_report_must_match_actual_delta_and_have_no_deviation(self) -> None:
         rules = runner.normalize_allowed_paths(["a.txt"])
         report = {

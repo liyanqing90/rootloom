@@ -29,6 +29,8 @@ Use `assets/EXECPLAN.template.md`. Store the active plan in the repository's est
 
 The plan must be self-contained, grounded in verified paths and commands, and updated as evidence changes. Include observable success, baseline, invariants, impact map, staged implementation, compatibility, migration, rollout, rollback, verification, and decision log.
 
+For material runtime or external evidence, include source, environment, observation time or window, stable artifact/query/issue/trace/correlation reference when available, freshness and redaction notes, and fact-versus-inference status. Keep sensitive raw payloads outside the plan and reference a sanitized repository-owned artifact when durable evidence is required. These fields support auditability; they do not prove the diagnosis.
+
 Read context progressively: start with active project guidance, then the relevant requirement or contract, target ownership paths, and verification rules. Expand only when the impact map or unresolved evidence requires it.
 
 ## 3. Gate governed defect repair
@@ -97,6 +99,10 @@ Use all applicable layers:
 - post-action verification for authorized external changes.
 
 For defect repair, require `ROOT_CAUSE_ALIGNMENT: PASS` before closeout. Prefer fail-before/pass-after regression evidence; when impractical, document equivalent trace or contract proof and the residual verification gap.
+
+Map behavioral verification to the violated invariant: prove the original trigger, the invariant at its owning boundary, and an adjacent negative or alternate path. A check that exercises only the newly added patch branch is insufficient evidence of a root-cause fix.
+
+When implementation accepts a durable architecture, contract, dependency, security, data, or operational choice, invoke `record-engineering-decision` when installed and link the accepted record from the ExecPlan. Do not turn transient task history into permanent documentation.
 
 Classify failures as introduced, pre-existing, environmental, or unverified. Do not hide gaps.
 

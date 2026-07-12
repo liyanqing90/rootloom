@@ -32,6 +32,7 @@ REQUIRED_SKILLS = {
     "setup-rootloom",
     "seed-project-guidance",
     "refine-project-guidance",
+    "record-engineering-decision",
     "operating-coding-change",
     "operating-code-review",
     "operating-high-risk-change",
@@ -55,11 +56,15 @@ WORKFLOW_CONTRACTS = {
         "Tier 1 Scoped",
         "ROOT_CAUSE_ALIGNMENT",
         "MITIGATION",
+        "provenance record",
+        "adjacent negative",
     ),
     SKILLS_DIR / "operating-code-review" / "SKILL.md": (
         "ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE",
         "false fix",
         "original failure path",
+        "unattributed model summary",
+        "adjacent negative",
     ),
     SKILLS_DIR / "operating-high-risk-change" / "SKILL.md": (
         "Tier 2 Governed",
@@ -67,11 +72,20 @@ WORKFLOW_CONTRACTS = {
         "competing hypotheses",
         "ROOT_CAUSE_ALIGNMENT: PASS",
         "MITIGATION",
+        "material runtime or external evidence",
+        "adjacent negative",
     ),
     SKILLS_DIR / "high-assurance-coding-change" / "SKILL.md": (
         "Tier 1 Scoped",
         "Tier 2 Governed",
         "ROOT_CAUSE_ALIGNMENT: PASS",
+        "do not establish factual truth",
+        "evidence provenance",
+    ),
+    SKILLS_DIR / "record-engineering-decision" / "SKILL.md": (
+        "durable repository-owned engineering decision",
+        "fact, inference, or unresolved uncertainty",
+        "does not prove the conclusion true",
     ),
 }
 
@@ -463,6 +477,8 @@ def validate_repository_hygiene(errors: list[str]) -> None:
         ROOT / "docs" / "architecture.zh-CN.md",
         ROOT / "docs" / "guidance-design.md",
         ROOT / "docs" / "guidance-design.zh-CN.md",
+        ROOT / "docs" / "maturity.md",
+        ROOT / "docs" / "maturity.zh-CN.md",
         ROOT / "docs" / "setup.md",
         ROOT / "docs" / "setup.zh-CN.md",
         ROOT / "examples" / "AGENTS.project.md",
@@ -486,6 +502,54 @@ def validate_repository_hygiene(errors: list[str]) -> None:
                 errors.append(f"secret-like content in {path.relative_to(ROOT)}")
 
 
+def validate_maturity_contract(errors: list[str]) -> None:
+    contracts = {
+        ROOT / "docs" / "maturity.md": (
+            "early-stage, single-maintainer",
+            "do not yet demonstrate broad adoption",
+            "does not prove the conclusion true",
+            "scheduled latest-version probe",
+            "does not collect telemetry from user repositories",
+            "Do not turn a process-conformance rate into a product-quality claim",
+            "GEB article is acknowledged as informal design inspiration",
+        ),
+        ROOT / "docs" / "maturity.zh-CN.md": (
+            "早期、单维护者",
+            "尚不能证明广泛采用",
+            "不能证明模型陈述为真",
+            "定时使用最新版本探测",
+            "不从用户仓库收集遥测",
+            "不能把流程遵从率包装成产品质量结论",
+            "GEB 文章仅作为",
+        ),
+    }
+    for path, expected in contracts.items():
+        try:
+            content = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        for contract in expected:
+            if contract not in content:
+                errors.append(
+                    f"maturity boundary missing in {path.relative_to(ROOT)}: {contract}"
+                )
+
+    workflow = ROOT / ".github" / "workflows" / "codex-compatibility.yml"
+    try:
+        content = workflow.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        errors.append("missing Codex latest-version compatibility probe")
+        return
+    for contract in (
+        "schedule:",
+        "workflow_dispatch:",
+        "@openai/codex@latest",
+        "test_rules_distinguish_commit_push_and_destructive_reset",
+    ):
+        if contract not in content:
+            errors.append(f"Codex compatibility probe is missing contract: {contract}")
+
+
 def main() -> int:
     errors: list[str] = []
     validate_marketplace(errors)
@@ -498,6 +562,7 @@ def main() -> int:
     validate_source_files(errors)
     validate_workflows(errors)
     validate_repository_hygiene(errors)
+    validate_maturity_contract(errors)
     if errors:
         print("Repository validation failed:", file=sys.stderr)
         for error in errors:

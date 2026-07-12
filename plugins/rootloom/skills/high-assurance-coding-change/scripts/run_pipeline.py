@@ -48,13 +48,36 @@ VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
 HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
-RUNNER_VERSION = "2.0"
+RUNNER_VERSION = "2.1"
 
 EVIDENCE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
         "observed_facts": {"type": "array", "items": {"type": "string"}},
+        "evidence_provenance": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "claim": {"type": "string"},
+                    "kind": {"type": "string", "enum": ["fact", "inference", "unknown"]},
+                    "source_environment": {"type": "string"},
+                    "observed_at": {"type": "string"},
+                    "reference": {"type": "string"},
+                    "freshness_redaction": {"type": "string"},
+                },
+                "required": [
+                    "claim",
+                    "kind",
+                    "source_environment",
+                    "observed_at",
+                    "reference",
+                    "freshness_redaction",
+                ],
+            },
+        },
         "execution_path": {"type": "array", "items": {"type": "string"}},
         "reproduction": {
             "type": "object",
@@ -105,6 +128,7 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
     },
     "required": [
         "observed_facts",
+        "evidence_provenance",
         "execution_path",
         "reproduction",
         "scope",
@@ -140,6 +164,20 @@ DIAGNOSIS_SCHEMA: dict[str, Any] = {
             ],
         },
         "required_tests": {"type": "array", "items": {"type": "string"}},
+        "verification_map": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "original_failure_path": {"type": "string"},
+                "owning_boundary_invariant": {"type": "string"},
+                "adjacent_negative_or_alternate_path": {"type": "string"},
+            },
+            "required": [
+                "original_failure_path",
+                "owning_boundary_invariant",
+                "adjacent_negative_or_alternate_path",
+            ],
+        },
         "risks": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
@@ -149,6 +187,7 @@ DIAGNOSIS_SCHEMA: dict[str, Any] = {
         "rejected_alternatives",
         "change_contract",
         "required_tests",
+        "verification_map",
         "risks",
     ],
 }
@@ -283,6 +322,23 @@ def validate_evidence(value: dict[str, Any]) -> None:
             "semantic gate failed: reproduced evidence must include reproduction evidence",
             8,
         )
+    provenance = value.get("evidence_provenance")
+    require_nonempty_list(provenance, "evidence_provenance")
+    for index, record in enumerate(provenance):
+        if not isinstance(record, dict):
+            raise PipelineError(
+                f"semantic gate failed: evidence_provenance[{index}] must be an object",
+                8,
+            )
+        for field in (
+            "claim",
+            "kind",
+            "source_environment",
+            "observed_at",
+            "reference",
+            "freshness_redaction",
+        ):
+            require_nonempty_text(record.get(field), f"evidence_provenance[{index}].{field}")
 
 
 def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
@@ -301,6 +357,15 @@ def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
         "change_contract.acceptance_criteria",
     )
     require_nonempty_list(value.get("required_tests"), "required_tests")
+    verification_map = value.get("verification_map")
+    if not isinstance(verification_map, dict):
+        raise PipelineError("semantic gate failed: GO requires a verification_map", 8)
+    for field in (
+        "original_failure_path",
+        "owning_boundary_invariant",
+        "adjacent_negative_or_alternate_path",
+    ):
+        require_nonempty_text(verification_map.get(field), f"verification_map.{field}")
     return rules
 
 
@@ -1240,6 +1305,9 @@ def run_pipeline_locked(
         Do not modify files. Do not call MCP, apps, browsers, or remote services.
         Inspect repository instructions, relevant source, tests, and local git state.
         Distinguish facts, inference, and unknowns. Do not choose the final fix.
+        Attribute material evidence with source/environment, observed time or window,
+        stable reference when available, and freshness/redaction notes. The schema
+        enforces shape and process discipline, not factual truth.
 
         TASK:
         {task}
@@ -1298,6 +1366,8 @@ def run_pipeline_locked(
         Act as the independent root-cause gate. Do not modify files and do not call
         external tools. Recheck material evidence against the repository. Return GO
         only when the root cause and a focused, testable change contract are supported.
+        Map verification to the original failure path, the owning-boundary invariant,
+        and an adjacent negative or alternate path.
         allowed_paths must contain exact repo-relative paths or directory/** prefixes;
         include both endpoints of a move or rename. Do not use ambiguous glob syntax.
 

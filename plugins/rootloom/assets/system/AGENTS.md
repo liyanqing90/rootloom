@@ -47,6 +47,7 @@
 - Use `operating-coding-change` for Tier 0 Direct and Tier 1 Scoped implementation work.
 - Use `operating-high-risk-change` for Tier 2 Governed work involving public or persisted contracts, schemas, migrations, security, infrastructure, production dependencies, deployment, release, destructive effects, or materially uncertain root cause.
 - Use installed design/product/frontend Skills for formal UI, UX, Figma, or visual work.
+- Use `record-engineering-decision` only for accepted durable architecture, contract, dependency, security, data, or operational decisions; keep routine task history out of permanent records.
 - Keep `high-assurance-coding-change` opt-in; use it only when the user explicitly requests controlled multi-agent work or the selected workflow requires it.
 - Keep task-specific requirements in the current prompt and reusable procedures in Skills.
 

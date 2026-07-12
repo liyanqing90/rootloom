@@ -31,6 +31,8 @@ Read or ask only when a missing part materially changes correctness, safety, cos
 
 Do not begin with a broad repository scan when a precise entry point exists.
 
+When runtime or external evidence is material, keep a compact provenance record: source, environment, observation time or window, stable artifact/query/trace/correlation reference when available, freshness or redaction notes, and whether the claim is verified fact, inference, or unknown. Prefer repository-owned sanitized artifacts or links over copying raw logs. Provenance makes evidence auditable; it does not make a diagnosis true.
+
 ## 2. Classify the task and tier
 
 Use this Skill for:
@@ -84,7 +86,13 @@ A special case is not automatically bad. Determine whether it is accidental comp
 
 ## 6. Verify proportionally
 
-Run focused evidence first, then expand according to blast radius:
+For a behavioral fix, derive the verification map from the violated invariant before choosing commands:
+
+1. exercise the original failure path and trigger;
+2. assert the repaired invariant at its owning boundary;
+3. exercise at least one adjacent negative, edge, or alternate path that must remain unchanged.
+
+Then run focused evidence first and expand according to blast radius:
 
 1. original reproduction or regression test;
 2. affected unit/integration tests;
@@ -94,6 +102,8 @@ Run focused evidence first, then expand according to blast radius:
 6. broader suite when shared contracts or widely used code changed.
 
 Prefer behavioral assertions over mocks, snapshots, incidental structure, arbitrary sleeps, and positional selectors. For a behavioral fix, prefer evidence that the original path fails before the change and passes afterward. When that is impractical, record the equivalent trace, contract, or runtime evidence and the remaining verification gap. Add a regression test when it provides durable proof without overfitting the implementation.
+
+When the change establishes a durable architecture, contract, dependency, security, data, or operational decision, use `record-engineering-decision` when installed. Do not create a decision record for routine implementation details.
 
 If a check cannot run, record the exact command or evidence that is missing, the blocker, and the residual risk. Never convert an unrun check into a passing claim.
 

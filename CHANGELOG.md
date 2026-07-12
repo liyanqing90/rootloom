@@ -6,6 +6,20 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-07-12
+
+### Added
+
+- Added `$record-engineering-decision` and a concise repository-owned decision template for durable architecture, contract, dependency, security, data, and operational choices.
+- Added evidence-provenance and invariant-derived verification contracts across ordinary, governed, review, and high-assurance workflows.
+- Added bilingual maturity and guarantee boundaries that distinguish deterministic process mechanics from factual or outcome correctness.
+- Added a non-blocking scheduled compatibility probe against the latest Codex CLI while retaining the pinned required baseline.
+
+### Changed
+
+- The strict runner now requires attributable evidence records and a three-part verification map before a GO diagnosis.
+- Security response windows are documented as single-maintainer, best-effort targets rather than service-level guarantees.
+
 ## [1.1.0] - 2026-07-12
 
 ### Added
@@ -39,7 +53,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/liyanqing90/rootloom/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/liyanqing90/rootloom/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/liyanqing90/rootloom/releases/tag/v1.0.0

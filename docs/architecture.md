@@ -20,6 +20,7 @@ Rootloom is a layered plugin, not a monolithic prompt. Each Codex mechanism owns
 | --- | --- | --- |
 | Global `AGENTS.md` | Stable authority, autonomy, engineering, evidence, routing, delegation, and communication policy | Model-visible working agreement |
 | Project `AGENTS.md` | Verified repository facts, commands, map, and durable local invariants | Hierarchical project guidance |
+| Decision records | Accepted architecture, contract, dependency, security, data, and operational decisions | Repository-owned durable memory; prose, not enforcement |
 | Skills | Reusable procedures for setup, seeding, refinement, coding, review, high-risk work, and controlled multi-agent work | Progressive-disclosure workflow |
 | Custom agents | Role description, model, reasoning, sandbox default, apps, and developer instructions | Spawned-session configuration |
 | Config/profile | Concurrent thread cap, nesting depth, default runtime mode for high-assurance CLI work | Native runtime configuration |
@@ -60,6 +61,7 @@ plugin
     ├── setup-rootloom/
     ├── seed-project-guidance/
     ├── refine-project-guidance/
+    ├── record-engineering-decision/
     ├── operating-coding-change/
     ├── operating-code-review/
     ├── operating-high-risk-change/
@@ -114,6 +116,10 @@ The global working agreement first completes the smallest useful `Intent + Conte
 
 Behavioral fixes are Tier 1 or higher unless demonstrably mechanical. Ordinary diagnosis must align the repair with the violated invariant at its owning boundary. Governed diagnosis adds competing hypotheses and a GO/NO_GO gate. The code-review workflow emits `ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE`; a transparent `MITIGATION` never satisfies a complete-fix claim.
 
+Material runtime or external evidence carries a compact provenance record: source, environment, observed time/window, stable reference, freshness/redaction, and fact-versus-inference status. Behavioral verification is derived from the violated invariant and covers the original failure path, the owning-boundary invariant, and an adjacent negative or alternate path.
+
+Accepted durable decisions route to `$record-engineering-decision`. The record preserves context, alternatives, evidence, consequences, and revisit triggers in the repository; `AGENTS.md` may point to it but must not duplicate it.
+
 No separate always-on Gatekeeper Skill is needed. Stable classification lives in global policy, detailed behavior lives in progressive-disclosure operating Skills, and deterministic proof lives in tests, validation, CI, and the optional high-assurance runner. Hooks do not decide semantic root cause.
 
 The high-assurance roles are:
@@ -151,6 +157,8 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 - at most one targeted repair cycle;
 - process-group termination on timeout or interruption.
 
+This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, or the change is safe in production.
+
 OS/container, credential, network, branch protection, and CI policy still belong outside the runner for production-critical work.
 
 ## Why no core MCP server
@@ -158,6 +166,12 @@ OS/container, credential, network, branch protection, and CI policy still belong
 The core system needs local Git/filesystem evidence and native Codex configuration. An MCP server would add another process, protocol, trust decision, and failure mode without adding a capability.
 
 MCP remains the correct extension point when a role genuinely needs an external system, such as authoritative internal documentation, issue tracking, observability, or deployment control. Add it to that narrow custom agent and configure its approval policy; do not make every coding task inherit it.
+
+Because the strict runner disables external tools and network access, authorized runtime evidence must be collected before a run and passed as bounded, sanitized material. Rootloom standardizes provenance, not the vendor-specific collection mechanism.
+
+## Maturity and compatibility boundary
+
+Rootloom is early-stage and currently single-maintainer. The pinned Codex CLI contract in normal CI is the supported reproducible baseline; a non-blocking scheduled latest-version probe detects upstream drift. See [Maturity, guarantees, and compatibility](maturity.md) for adoption, learning-cost, platform-coupling, and governance boundaries.
 
 ## Threat model
 
