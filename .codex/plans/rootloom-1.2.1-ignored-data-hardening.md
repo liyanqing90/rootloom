@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: implementation complete; publication not authorized
+- State: published
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security, compatibility, and release
@@ -62,7 +62,7 @@ Prevent ignored or secret-like untracked file contents from being read into stri
 - Persisted data: private runner artifacts only.
 - Public contracts: runner CLI, artifact schema, platform requirements, capability descriptions.
 - Generated artifacts: Delta patches/manifests and verification JSON.
-- External systems: GitHub only after explicit publication authorization.
+- External systems: GitHub publication completed after explicit user authorization.
 
 ## Design and decisions
 
@@ -87,7 +87,7 @@ Prevent ignored or secret-like untracked file contents from being read into stri
 - Mixed-version behavior: 1.2.1 retains visible `untracked` summary compatibility; new metadata fields are additive.
 - Failure detection: focused security tests, full test suite, repository validator, compatibility smoke.
 - Rollback or compensation: revert the 1.2.1 hardening commit before publication; after publication use a forward patch release rather than rewriting the tag.
-- Irreversible point: GitHub tag/Release publication, requiring explicit authorization.
+- Irreversible point: completed GitHub tag/Release publication; future corrections use forward patch releases.
 
 ## Verification
 
@@ -99,7 +99,7 @@ Prevent ignored or secret-like untracked file contents from being read into stri
 - Type/lint/build/package: `make check`, `git diff --check`.
 - UI/browser evidence: not applicable.
 - Security/dependency checks: secret-like repository scan and artifact assertions.
-- Post-action verification: remote CI, tag dereference, and Release target only if publication is authorized.
+- Post-action verification: `main`, dereferenced `v1.2.1`, and Release all resolved to `97ff1c26c9ffb07df70080efcd01f9bc48f8a25c`; GitHub CI run `29177611054` passed.
 
 ### Observed local results
 
@@ -107,6 +107,13 @@ Prevent ignored or secret-like untracked file contents from being read into stri
 - `make compatibility-smoke` — PASS on `codex-cli 0.144.0-alpha.4`; commit allow, push prompt, reset forbidden, rollback clean, pre-existing config restored.
 - `make smoke` — PASS in an isolated Codex home; marketplace install/discovery, engineering/full setup, live SessionStart model smoke, and rollback completed.
 - `git diff --check` — PASS.
+
+### Publication record
+
+- Authorization: the user explicitly authorized commit, push, tag, and GitHub Release publication in the Codex task on 2026-07-12.
+- Tag: `v1.2.1` (annotated), dereferenced to `97ff1c26c9ffb07df70080efcd01f9bc48f8a25c`.
+- Release: <https://github.com/liyanqing90/rootloom/releases/tag/v1.2.1>.
+- CI: <https://github.com/liyanqing90/rootloom/actions/runs/29177611054>, conclusion `success`.
 
 ## Risks
 

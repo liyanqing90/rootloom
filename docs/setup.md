@@ -82,6 +82,8 @@ It does not change the default model, reasoning effort, approval policy, sandbox
 
 Setup and rollback take a non-blocking cross-process lock under `~/.codex/.rootloom/`; a competing operation fails without touching managed targets. Apply prepares all backups and the transaction manifest before its first target mutation. Apply target writes, rollback target writes, and their final state commits each share a compensation boundary, so a failure restores the previous files and state. Manifests record original file modes, and rollback restores those modes instead of inheriting a temporary-file default.
 
+This compensation covers failures that return control to Python; it is not a crash-consistent transaction. `SIGKILL`, host failure, power loss, and parent-directory durability can interrupt between target replacement and state commit, and there is no automatic orphan-transaction recovery command yet. Inspect managed state and backups before retrying after an abrupt termination.
+
 ## Conflicts
 
 The default apply is atomic and refuses:

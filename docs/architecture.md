@@ -152,17 +152,17 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 - a repository lock and private artifact directory;
 - clean baseline and Git state snapshots;
 - full content fingerprints for tracked and ordinary visible-untracked deliverables;
-- metadata-only capture for every ignored path and sensitive visible-untracked path, with those contents excluded from artifacts and reviewer prompts;
+- pre-fingerprint classification and metadata-only capture for every ignored path plus known or caller-configured sensitive visible-untracked path, with no content hash and with those contents excluded from artifacts and reviewer prompts;
 - an explicit fail-closed ignored-path enumeration budget;
 - no mutation by evidence, diagnosis, or review stages;
 - one writer with an unchanged Git index;
 - exact allowed-path and writer-report agreement, checked before content-bearing Delta capture;
-- deterministic verification commands without a shell, stable command IDs, and successful command-record coverage for every diagnosis verification item;
+- deterministic verification commands without a shell, stable command IDs, successful command-record coverage for every diagnosis verification item, and at least one mapped user-supplied command beyond formatting-only `verify-0`;
 - structured semantic gates for GO, completion, PASS, and findings;
 - at most one targeted repair cycle;
 - process-group termination on timeout or interruption.
 
-This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, the selected verification command is adequate, or the change is safe in production. The strict runner supports Linux, macOS, and WSL. Native Windows is explicitly rejected because repository locking and process-group termination use POSIX semantics.
+This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, the selected verification command is adequate, or the change is safe in production. Built-in sensitive-name detection is finite; custom exact/recursive rules and opt-in dotfile redaction close repository-specific gaps. Artifact redaction is not file-access isolation because every model stage still receives a readable repository sandbox. The strict runner supports Linux, macOS, and WSL. Native Windows is explicitly rejected because repository locking and process-group termination use POSIX semantics.
 
 OS/container, credential, network, branch protection, and CI policy still belong outside the runner for production-critical work.
 

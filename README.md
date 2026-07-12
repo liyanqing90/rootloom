@@ -210,11 +210,14 @@ When the native spawn surface cannot attest the requested custom role/model—or
 python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --repo /absolute/path/to/repo \
   --task /absolute/path/to/task.md \
+  --sensitive-path 'private/**' \
   --verify 'make focused-test' \
   --verify 'make check'
 ```
 
 The runner loads the same four Agent TOMLs and enforces a repository lock, clean baseline, read-only stage snapshots, one writer, exact allowed paths, unchanged Git index, structured outputs, deterministic verification, independent review, and at most one repair cycle. It supports Linux, macOS, and WSL; native Windows is not supported. Artifacts are private and must live outside the target repository.
+
+Known secret-like untracked names are metadata-only before any content fingerprinting. Use repeatable `--sensitive-path path` or `--sensitive-path 'directory/**'` rules for repository-specific names, and `--redact-untracked-dotfiles` when every untracked dotfile should be metadata-only. These controls redact automatic artifacts and supplied prompts; they do not prevent read-capable Evidence, Diagnosis, Implementation, or Review stages from opening repository files. Use a secret-free worktree or OS/container mounts when access denial is required.
 
 See [Architecture](docs/architecture.md) for the complete enforcement boundary.
 
@@ -232,13 +235,13 @@ The core needs local Git/filesystem evidence and native Codex configuration. An 
 
 Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Record environment, observation time/window, a stable artifact/query/trace reference, freshness/redaction, and fact-versus-inference status for material evidence. Do not make every coding task inherit an integration merely to complete an architecture checklist.
 
-The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Facts and reproductions must reference stable provenance IDs; this proves reference integrity, not that the referenced path, test, line, or claim is true. Repository snapshots content-hash tracked and ordinary visible-untracked deliverables. Ignored paths and sensitive visible-untracked paths are metadata-only and never enter runner patches or Reviewer prompts. Ignored enumeration fails closed above a configurable path budget. Each diagnosis requirement must map to a successful machine command ID, which proves execution linkage—not semantic adequacy of the selected command.
+The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Facts and reproductions must reference stable provenance IDs; this proves reference integrity, not that the referenced path, test, line, or claim is true. Repository snapshots content-hash tracked and ordinary visible-untracked deliverables. Ignored paths and known or configured sensitive visible-untracked paths are classified first, remain metadata-only without a content hash, and never enter runner patches or Reviewer prompts. Built-in name matching is intentionally finite and cannot discover every secret. Ignored enumeration fails closed above a configurable path budget. Each diagnosis requirement must map to a successful machine command ID, including at least one user-supplied command rather than only `git diff --check`; this proves execution linkage—not semantic adequacy of the selected command.
 
 ## Safety model
 
 - Project seeding is local, bounded, deterministic, standard-library-only, and network-free. It excludes symlinked/out-of-repository evidence, serializes writers through the Git common directory, and skips safely if guidance changes during generation.
 - Unmarked guidance, overrides, symlinks, untrusted repositories, opted-out projects, temporary/vendor/cache trees, secret-like content, and malformed managed blocks are preserved or rejected.
-- Global setup is explicit, process-locked, pre-manifested, fully compensating, hash-checked, mode-preserving, and rollback-aware.
+- Global setup is explicit, process-locked, pre-manifested, hash-checked, mode-preserving, rollback-aware, and compensates caught apply/rollback failures. It is not yet crash-consistent across `SIGKILL`, host failure, or power loss.
 - Read-only roles disable apps by default; only one standard role is write-capable.
 - Rules, sandboxing, Hooks, Skills, and model instructions are defense in depth, not a substitute for OS policy, credentials, branch protection, review, or CI.
 

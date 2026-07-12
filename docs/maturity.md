@@ -8,13 +8,15 @@ Rootloom is an early-stage, single-maintainer project. Its repository structure,
 
 | Claim | Current evidence | Not guaranteed |
 | --- | --- | --- |
-| Setup is transactional | cross-process lock, prepared recovery manifest, fault-injected state-commit compensation, hashes, mode-preserving rollback tests | failures outside the managed Codex home or simultaneous mutation by software that ignores the lock |
+| Setup compensates caught failures | cross-process lock, prepared recovery manifest, fault-injected state-commit compensation, hashes, mode-preserving rollback tests | crash consistency across `SIGKILL`, host/power failure, parent-directory durability, or automatic orphan-transaction recovery |
 | Project seeding is bounded | deterministic local scanner, repository-contained non-symlink evidence, Git-common-dir writer lock, snapshot recheck, and regression tests | semantic completeness or perfectly current architecture knowledge |
 | Command policy is intentional | pinned and latest-CLI offline lifecycle smoke for direct-argv commit, push, and destructive reset | shell-wrapped equivalents, every administrator/platform policy composition, or future CLI semantics |
 | High-assurance execution is deterministic | fixed stage order, linked provenance IDs, metadata-only secret/ignored capture, pre-capture scope gates, mapped command results, and bounded repair cycles | factual truth of model evidence, semantic adequacy of selected commands, correct root cause, business correctness, or production safety |
 | Review is independent by role | separate read-only reviewer configuration | human-independent correctness or elimination of shared model bias |
 
 JSON Schema validates required shape. Semantic gates validate selected cross-stage consistency. Neither proves that a model's statement is true, and process discipline does not prove the conclusion true. Repository source, reproducible behavior, attributable runtime evidence, tests, reviewers, CI, and production controls remain necessary.
+
+Runner artifact redaction is also narrower than file-access isolation. Ignored and known/configured sensitive untracked paths are not content-hashed or supplied in Delta prompts, but read-capable model stages can still open them from the repository. Use secret-free worktrees, external secret storage, or OS/container mount policy when deny-read behavior is required. Built-in sensitive-name matching is deliberately finite; repository-specific names require explicit rules or opt-in untracked-dotfile redaction.
 
 ## Adoption fit and learning cost
 

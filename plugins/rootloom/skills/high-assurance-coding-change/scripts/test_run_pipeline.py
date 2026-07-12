@@ -178,6 +178,11 @@ class RunnerGateTests(unittest.TestCase):
             "command_ids"
         ] = ["verify-0"]
         runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+        for item in diagnosis["verification_map"].values():
+            item["command_ids"] = ["verify-0"]
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+        self.assertIn("user-supplied behavior command", str(caught.exception))
 
     def test_completed_report_must_match_actual_delta_and_have_no_deviation(self) -> None:
         rules = runner.normalize_allowed_paths(["a.txt"])
@@ -344,17 +349,91 @@ class RunnerGateTests(unittest.TestCase):
     def test_sensitive_visible_untracked_content_is_redacted(self) -> None:
         baseline = runner.capture_repo_state(self.repo)
         marker = "VISIBLE_SECRET_127d"
-        (self.repo / ".env.local").write_text(marker, encoding="utf-8")
-        delta, _ = runner.enforce_repository_contract(
+        sensitive = self.repo / ".env.local"
+        sensitive.write_text(marker, encoding="utf-8")
+        original_fingerprint = runner.file_fingerprint
+
+        def reject_sensitive_content(path: Path) -> dict[str, object]:
+            if path == sensitive:
+                raise AssertionError("sensitive untracked content was hashed")
+            return original_fingerprint(path)
+
+        with mock.patch.object(
+            runner,
+            "file_fingerprint",
+            side_effect=reject_sensitive_content,
+        ):
+            delta, state = runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="redacted",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths([".env.local"]),
+            )
+        self.assertEqual(delta["visible_untracked"], [])
+        redacted = delta["redacted_untracked_metadata"][0]
+        self.assertEqual(redacted["path"], ".env.local")
+        self.assertEqual(redacted["kind"], "file-metadata")
+        self.assertNotIn("sha256", redacted)
+        self.assertEqual(state["worktree"][".env.local"]["kind"], "file-metadata")
+        self.assertNotIn("sha256", state["worktree"][".env.local"])
+        self.assertNotIn(marker, runner.compact_delta(delta))
+
+    def test_known_custom_and_dotfile_sensitive_paths_are_metadata_only(self) -> None:
+        known_paths = (
+            ".npmrc",
+            ".pypirc",
+            ".netrc",
+            ".git-credentials",
+            ".docker/config.json",
+            ".kube/config",
+            "kubeconfig",
+            "auth.json",
+            "service-account.json",
+        )
+        for path in known_paths:
+            with self.subTest(path=path):
+                self.assertTrue(runner.is_sensitive_repo_path(path))
+
+        npmrc = self.repo / ".npmrc"
+        npmrc.write_text("//registry.example/:_authToken=secret", encoding="utf-8")
+        known_state = runner.capture_repo_state(self.repo)
+        self.assertIn(".npmrc", known_state["sensitive_untracked_paths"])
+        self.assertEqual(known_state["worktree"][".npmrc"]["kind"], "file-metadata")
+        self.assertNotIn("sha256", known_state["worktree"][".npmrc"])
+
+        custom = self.repo / "private" / "runtime.conf"
+        custom.parent.mkdir()
+        custom.write_text("custom-secret", encoding="utf-8")
+        dotfile = self.repo / "config" / ".customrc"
+        dotfile.parent.mkdir()
+        dotfile.write_text("dot-secret", encoding="utf-8")
+        rules = runner.normalize_sensitive_paths(["private/**"])
+        state = runner.capture_repo_state(
+            self.repo,
+            sensitive_rules=rules,
+            redact_untracked_dotfiles=True,
+        )
+        for path in ("private/runtime.conf", "config/.customrc"):
+            with self.subTest(path=path):
+                self.assertIn(path, state["sensitive_untracked_paths"])
+                self.assertEqual(state["worktree"][path]["kind"], "file-metadata")
+                self.assertNotIn("sha256", state["worktree"][path])
+
+    def test_ordinary_visible_untracked_file_retains_content_patch(self) -> None:
+        baseline = runner.capture_repo_state(self.repo)
+        marker = "ordinary-visible-content-41c2"
+        (self.repo / "ordinary.txt").write_text(marker, encoding="utf-8")
+        delta, state = runner.enforce_repository_contract(
             repo=self.repo,
             run_dir=self.run_dir,
-            prefix="redacted",
+            prefix="ordinary",
             baseline=baseline,
-            allowed_rules=runner.normalize_allowed_paths([".env.local"]),
+            allowed_rules=runner.normalize_allowed_paths(["ordinary.txt"]),
         )
-        self.assertEqual(delta["visible_untracked"], [])
-        self.assertEqual(delta["redacted_untracked_metadata"][0]["path"], ".env.local")
-        self.assertNotIn(marker, runner.compact_delta(delta))
+        self.assertEqual(state["worktree"]["ordinary.txt"]["kind"], "file")
+        self.assertIn("sha256", state["worktree"]["ordinary.txt"])
+        self.assertIn(marker, delta["untracked_patch"])
 
     def test_ignored_path_budget_fails_closed(self) -> None:
         (self.repo / ".gitignore").write_text("cache/\n", encoding="utf-8")

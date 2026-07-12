@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.2] - 2026-07-12
+
+### Security
+
+- Classify known and caller-configured sensitive visible-untracked paths before repository-state fingerprinting, so their contents are never opened or hashed and their redacted metadata never contains `sha256`.
+- Expanded known secret-like coverage for npm, PyPI, netrc, Git credential, Docker, Kubernetes, auth, and service-account files.
+- Added repeatable exact/recursive `--sensitive-path` rules and opt-in `--redact-untracked-dotfiles` protection for repository-specific cases.
+
+### Changed
+
+- Delta and baseline untracked manifests now derive from the already classified repository state instead of re-enumerating and re-fingerprinting files.
+- Repository-topology traversal runs once at strict-runner startup rather than at every stage snapshot; full incremental tracked-file fingerprinting remains planned work.
+- A GO diagnosis must map at least one verification requirement to a user-supplied command instead of relying exclusively on the built-in `git diff --check` command.
+- Reconciled the published 1.2.1 ExecPlan with its actual tag, Release, authorization, and successful CI result.
+
+### Tests
+
+- Added fail-on-read sensitive-file regression coverage, metadata-shape assertions that reject content hashes, known/custom/dotfile matcher coverage, ordinary-untracked negative coverage, and behavior-command mapping enforcement.
+
 ## [1.2.1] - 2026-07-12
 
 ### Security
@@ -75,7 +94,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.1...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.2...HEAD
+[1.2.2]: https://github.com/liyanqing90/rootloom/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/liyanqing90/rootloom/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/liyanqing90/rootloom/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...v1.1.0

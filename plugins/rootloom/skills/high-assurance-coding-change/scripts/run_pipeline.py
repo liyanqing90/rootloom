@@ -53,16 +53,25 @@ VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
 HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
-RUNNER_VERSION = "2.3"
-SENSITIVE_PATH_PARTS = {".aws", ".gnupg", ".ssh"}
+BUILTIN_DIFF_CHECK_ID = "verify-0"
+RUNNER_VERSION = "2.4"
+SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
+    ".git-credentials",
+    ".netrc",
+    ".npmrc",
+    ".pypirc",
+    "auth.json",
     "credentials",
     "credentials.json",
     "id_dsa",
     "id_ecdsa",
     "id_ed25519",
     "id_rsa",
+    "kubeconfig",
+    "service-account.json",
+    "service_account.json",
     "secrets.json",
 }
 
@@ -334,23 +343,46 @@ def normalize_repo_path(value: str, *, contract: bool = False) -> str:
     return path.as_posix()
 
 
-def normalize_allowed_paths(values: Any) -> list[tuple[str, bool]]:
-    require_nonempty_list(values, "change_contract.allowed_paths")
+def normalize_path_rules(
+    values: Any,
+    *,
+    field: str,
+    require_entries: bool,
+) -> list[tuple[str, bool]]:
+    if not isinstance(values, list) or (require_entries and not values):
+        requirement = "must be a non-empty list" if require_entries else "must be a list"
+        raise PipelineError(f"semantic gate failed: {field} {requirement}", 8)
     rules: list[tuple[str, bool]] = []
     for raw in values:
         if not isinstance(raw, str):
-            raise PipelineError("allowed_paths entries must be strings", 8)
+            raise PipelineError(f"{field} entries must be strings", 8)
         value = raw.strip()
         recursive = value.endswith("/**") or value.endswith("/")
         base = value[:-3] if value.endswith("/**") else value.rstrip("/")
         if any(token in base for token in ("*", "?", "[", "]")):
             raise PipelineError(
-                f"unsupported allowed_paths glob {raw!r}; use an exact path or directory/**",
+                f"unsupported {field} glob {raw!r}; use an exact path or directory/**",
                 8,
             )
         normalized = normalize_repo_path(base, contract=True)
         rules.append((normalized, recursive))
     return rules
+
+
+def normalize_allowed_paths(values: Any) -> list[tuple[str, bool]]:
+    return normalize_path_rules(
+        values,
+        field="change_contract.allowed_paths",
+        require_entries=True,
+    )
+
+
+def normalize_sensitive_paths(values: Any) -> list[tuple[str, bool]]:
+    return normalize_path_rules(
+        values,
+        field="--sensitive-path",
+        require_entries=False,
+    )
 
 
 def path_is_allowed(path: str, rules: list[tuple[str, bool]]) -> bool:
@@ -478,6 +510,7 @@ def validate_diagnosis(
     verification_map = value.get("verification_map")
     if not isinstance(verification_map, dict):
         raise PipelineError("semantic gate failed: GO requires a verification_map", 8)
+    referenced_command_ids: set[str] = set()
     for field in (
         "original_failure_path",
         "owning_boundary_invariant",
@@ -504,6 +537,7 @@ def validate_diagnosis(
                 "must contain non-empty strings",
                 8,
             )
+        referenced_command_ids.update(command_ids)
         if available_command_ids is not None:
             unknown = sorted(set(command_ids) - available_command_ids)
             if unknown:
@@ -512,6 +546,15 @@ def validate_diagnosis(
                     "unknown command ids: " + ", ".join(unknown),
                     8,
                 )
+    if (
+        available_command_ids is not None
+        and not (referenced_command_ids - {BUILTIN_DIFF_CHECK_ID})
+    ):
+        raise PipelineError(
+            "semantic gate failed: verification_map must reference at least one "
+            "user-supplied behavior command; verify-0 only checks diff formatting",
+            8,
+        )
     return rules
 
 
@@ -898,10 +941,19 @@ def list_git_paths(
             process.stderr.close()
 
 
-def is_sensitive_repo_path(path: str) -> bool:
-    """Return whether an untracked path must never be read into runner artifacts."""
+def is_sensitive_repo_path(
+    path: str,
+    custom_rules: list[tuple[str, bool]] | None = None,
+    *,
+    redact_dotfiles: bool = False,
+) -> bool:
+    """Return whether an untracked path must remain metadata-only."""
 
     parts = tuple(part.lower() for part in PurePosixPath(path).parts)
+    if custom_rules and path_is_allowed(path, custom_rules):
+        return True
+    if redact_dotfiles and any(part.startswith(".") for part in parts):
+        return True
     if any(
         part in SENSITIVE_PATH_PARTS
         or part.startswith(".env")
@@ -922,8 +974,12 @@ def capture_repo_state(
     repo: Path,
     *,
     max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
+    sensitive_rules: list[tuple[str, bool]] | None = None,
+    redact_untracked_dotfiles: bool = False,
+    check_topology: bool = True,
 ) -> dict[str, Any]:
-    ensure_supported_repository_topology(repo)
+    if check_topology:
+        ensure_supported_repository_topology(repo)
     if max_ignored_paths <= 0:
         raise PipelineError("ignored path budget must be positive", 9)
     status_raw = git_status_raw(repo)
@@ -935,6 +991,15 @@ def capture_repo_state(
         repo,
         ["ls-files", "-z", "--others", "--exclude-standard"],
     )
+    sensitive_untracked_paths = {
+        path
+        for path in untracked_paths
+        if is_sensitive_repo_path(
+            path,
+            sensitive_rules,
+            redact_dotfiles=redact_untracked_dotfiles,
+        )
+    }
     visible_paths = tracked_paths | untracked_paths
     ignored_paths = list_git_paths(
         repo,
@@ -942,15 +1007,20 @@ def capture_repo_state(
         max_paths=max_ignored_paths,
         budget_name="ignored",
     ) - visible_paths
-    worktree = {path: file_fingerprint(repo / path) for path in visible_paths}
+    content_paths = tracked_paths | (untracked_paths - sensitive_untracked_paths)
+    worktree = {path: file_fingerprint(repo / path) for path in content_paths}
     worktree.update(
-        {path: file_metadata_fingerprint(repo / path) for path in ignored_paths}
+        {
+            path: file_metadata_fingerprint(repo / path)
+            for path in ignored_paths | sensitive_untracked_paths
+        }
     )
     return {
         "status_raw": status_raw,
         "paths": visible_paths | ignored_paths,
         "ignored_paths": ignored_paths,
         "untracked_paths": untracked_paths,
+        "sensitive_untracked_paths": sensitive_untracked_paths,
         "worktree": worktree,
         "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
         "git_control": git_control_state(repo),
@@ -990,28 +1060,6 @@ def assert_repo_unchanged(
         )
 
 
-def visible_untracked_manifests(
-    repo: Path,
-    only_paths: set[str] | None = None,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    visible_paths = list_git_paths(
-        repo,
-        ["ls-files", "--others", "--exclude-standard", "-z"],
-    )
-    content_manifest: list[dict[str, Any]] = []
-    redacted_manifest: list[dict[str, Any]] = []
-    for path in sorted(visible_paths):
-        if only_paths is not None and path not in only_paths:
-            continue
-        if is_sensitive_repo_path(path):
-            redacted_manifest.append(
-                {"path": path, **file_metadata_fingerprint(repo / path)}
-            )
-        else:
-            content_manifest.append({"path": path, **file_fingerprint(repo / path)})
-    return content_manifest, redacted_manifest
-
-
 def metadata_manifest(
     state: dict[str, Any],
     paths: set[str],
@@ -1021,6 +1069,18 @@ def metadata_manifest(
         {"path": path, **state["worktree"].get(path, missing)}
         for path in sorted(paths)
     ]
+
+
+def state_untracked_manifests(
+    state: dict[str, Any],
+    only_paths: set[str] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    selected = set(state["untracked_paths"])
+    if only_paths is not None:
+        selected &= only_paths
+    sensitive = selected & state["sensitive_untracked_paths"]
+    ordinary = selected - sensitive
+    return metadata_manifest(state, ordinary), metadata_manifest(state, sensitive)
 
 
 def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
@@ -1078,8 +1138,8 @@ def capture_delta(
         ["git", "diff", "HEAD", "--binary", "--full-index", "--no-ext-diff"],
         repo,
     )
-    visible_manifest, _ = visible_untracked_manifests(
-        repo,
+    visible_manifest, _ = state_untracked_manifests(
+        current,
         introduced_paths,
     )
     ignored_manifest = metadata_manifest(current, ignored_changed_paths)
@@ -1140,8 +1200,17 @@ def enforce_repository_contract(
     baseline: dict[str, Any],
     allowed_rules: list[tuple[str, bool]],
     max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
+    sensitive_rules: list[tuple[str, bool]] | None = None,
+    redact_untracked_dotfiles: bool = False,
+    check_topology: bool = True,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    current = capture_repo_state(repo, max_ignored_paths=max_ignored_paths)
+    current = capture_repo_state(
+        repo,
+        max_ignored_paths=max_ignored_paths,
+        sensitive_rules=sensitive_rules,
+        redact_untracked_dotfiles=redact_untracked_dotfiles,
+        check_topology=check_topology,
+    )
     introduced = changed_paths_between(baseline, current)
     if current["index"] != baseline["index"]:
         raise PipelineError(
@@ -1159,12 +1228,10 @@ def enforce_repository_contract(
     ignored_changed_paths = introduced & (
         baseline["ignored_paths"] | current["ignored_paths"]
     )
-    redacted_untracked_paths = {
-        path
-        for path in introduced
-        & (baseline["untracked_paths"] | current["untracked_paths"])
-        if path not in ignored_changed_paths and is_sensitive_repo_path(path)
-    }
+    redacted_untracked_paths = introduced & (
+        baseline["sensitive_untracked_paths"]
+        | current["sensitive_untracked_paths"]
+    )
     delta = capture_delta(
         repo,
         run_dir,
@@ -1308,6 +1375,20 @@ def parse_args() -> argparse.Namespace:
             "Fail closed when ignored-path enumeration exceeds this count "
             f"(default: {DEFAULT_MAX_IGNORED_PATHS})"
         ),
+    )
+    parser.add_argument(
+        "--sensitive-path",
+        action="append",
+        default=[],
+        help=(
+            "Keep an exact visible-untracked repo path or directory/** metadata-only; "
+            "repeat for multiple rules (tracked files remain content-fingerprinted)"
+        ),
+    )
+    parser.add_argument(
+        "--redact-untracked-dotfiles",
+        action="store_true",
+        help="Keep every visible-untracked path containing a dotfile segment metadata-only",
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -1483,7 +1564,10 @@ def verification_commands(args: argparse.Namespace) -> list[dict[str, Any]]:
             raise PipelineError("--verify must not be empty")
         commands.append(argv)
     return [
-        {"id": f"verify-{index}", "argv": argv}
+        {
+            "id": BUILTIN_DIFF_CHECK_ID if index == 0 else f"verify-{index}",
+            "argv": argv,
+        }
         for index, argv in enumerate(commands)
     ]
 
@@ -1580,10 +1664,17 @@ def run_pipeline_locked(
     task_path: Path,
 ) -> int:
     ensure_supported_repository_topology(repo)
-    capture_state = lambda: capture_repo_state(
-        repo,
-        max_ignored_paths=args.max_ignored_paths,
-    )
+    sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
+
+    def capture_state() -> dict[str, Any]:
+        return capture_repo_state(
+            repo,
+            max_ignored_paths=args.max_ignored_paths,
+            sensitive_rules=sensitive_rules,
+            redact_untracked_dotfiles=args.redact_untracked_dotfiles,
+            check_topology=False,
+        )
+
     baseline = capture_state()
     baseline_status = baseline["status_raw"].decode(
         "utf-8",
@@ -1628,7 +1719,7 @@ def run_pipeline_locked(
         ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
         repo,
     )
-    baseline_untracked, baseline_redacted_untracked = visible_untracked_manifests(repo)
+    baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
     metadata = {
         "runner_version": RUNNER_VERSION,
@@ -1643,6 +1734,8 @@ def run_pipeline_locked(
         "baseline_redacted_untracked_metadata": baseline_redacted_untracked,
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "max_ignored_paths": args.max_ignored_paths,
+        "sensitive_paths": args.sensitive_path,
+        "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
         "task_file": str(task_path),
         "roles": {
             stage: {
@@ -1681,6 +1774,10 @@ def run_pipeline_locked(
         f"""
         Act only as the evidence stage for a high-assurance code change.
         Do not modify files. Do not call MCP, apps, browsers, or remote services.
+        Do not open or read ignored files, known secret-like untracked paths, or
+        caller-configured sensitive paths. Configured sensitive rules are
+        {json.dumps(args.sensitive_path, ensure_ascii=False)}; untracked dotfile
+        redaction is {args.redact_untracked_dotfiles}.
         Inspect repository instructions, relevant source, tests, and local git state.
         Distinguish facts, inference, and unknowns. Do not choose the final fix.
         Attribute material evidence with source/environment, observed time or window,
@@ -1749,7 +1846,9 @@ def run_pipeline_locked(
     diagnosis_prompt = textwrap.dedent(
         f"""
         Act as the independent root-cause gate. Do not modify files and do not call
-        external tools. Recheck material evidence against the repository. Return GO
+        external tools. Do not open or read ignored files, known secret-like untracked
+        paths, or caller-configured sensitive paths. Recheck material evidence against
+        the repository. Return GO
         only when the root cause and a focused, testable change contract are supported.
         Map verification to the original failure path, the owning-boundary invariant,
         and an adjacent negative or alternate path. Each verification-map item must
@@ -1799,9 +1898,10 @@ def run_pipeline_locked(
             credential changes, destructive operations, or scope expansion. Add focused
             regression coverage and run relevant local checks. Stop as blocked if the
             proper fix exceeds the contract. Do not stage, unstage, or otherwise change
-            the Git index. Do not create or modify ignored caches, build output, or other
-            generated files; disable such caches when running local checks. Report exactly
-            the files changed during this stage.
+            the Git index. Do not open, read, create, or modify ignored files, known
+            secret-like untracked paths, caller-configured sensitive paths, caches, build
+            output, or other generated files; disable such caches when running local
+            checks. Report exactly the files changed during this stage.
 
             TASK:
             {task}
@@ -1840,6 +1940,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            sensitive_rules=sensitive_rules,
+            redact_untracked_dotfiles=args.redact_untracked_dotfiles,
+            check_topology=False,
         )
 
         verified, verification = run_verification(
@@ -1863,6 +1966,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            sensitive_rules=sensitive_rules,
+            redact_untracked_dotfiles=args.redact_untracked_dotfiles,
+            check_topology=False,
         )
         if not delta["introduced_paths"]:
             raise PipelineError(
@@ -1928,6 +2034,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            sensitive_rules=sensitive_rules,
+            redact_untracked_dotfiles=args.redact_untracked_dotfiles,
+            check_topology=False,
         )
         validate_review(review)
         if review.get("verdict") == "PASS":

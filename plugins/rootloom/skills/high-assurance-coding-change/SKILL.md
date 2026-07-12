@@ -38,17 +38,20 @@ On installations where `agent_type` is unavailable, including the locally verifi
 python3 <skill-dir>/scripts/run_pipeline.py \
   --repo /absolute/path/to/repo \
   --task /absolute/path/to/task.md \
+  --sensitive-path 'private/**' \
   --verify 'your focused test command' \
   --verify 'your broader verification command'
 ```
 
 The runner reads model, reasoning, and sandbox settings from the same four custom-agent TOML files. It requires a clean worktree by default, uses structured stage outputs, disables user config/plugins/apps for every stage, blocks network in the workspace-write sandbox, and allows at most one targeted repair cycle. Verification commands are parsed without a shell; place pipelines or compound commands in a repository-owned script.
 
+Known secret-like visible-untracked paths are classified before content fingerprinting. Add repeatable exact-path or `directory/**` rules with `--sensitive-path`; use `--redact-untracked-dotfiles` when every untracked dotfile should remain metadata-only. Built-in matching is finite. These options protect runner-generated artifacts and prompts, not repository file access: all four model stages can still read files. Use a secret-free worktree or OS/container isolation when deny-read behavior is required.
+
 The runner also injects each role TOML's `developer_instructions` as model-visible
 developer instructions and enforces the following locally, without trusting model prose:
 
 - one non-blocking lock per Git common directory;
-- content fingerprints for tracked and ordinary visible-untracked deliverables; metadata-only fingerprints for ignored and sensitive visible-untracked paths; plus separate Git-index and HEAD/refs/config snapshots;
+- content fingerprints for tracked and ordinary visible-untracked deliverables; pre-classified metadata-only fingerprints without `sha256` for ignored and known/configured sensitive visible-untracked paths; plus separate Git-index and HEAD/refs/config snapshots;
 - an ignored-path enumeration budget and allowed-path gate before any content-bearing Delta capture;
 - no Git-visible mutation by evidence, diagnosis, verification, or review stages;
 - no Git-index mutation by the writer;
@@ -123,7 +126,7 @@ After the worker returns, the parent inspects the actual diff and reruns the str
 
 Do not proceed to acceptance when a required deterministic check is failing or was not run without a documented reason.
 
-In the strict runner, every diagnosis verification item must reference one or more stable command IDs and each mapped command must have a successful machine record. This proves execution linkage, not that the chosen command adequately covers the business requirement; the final reviewer must still assess test adequacy.
+In the strict runner, every diagnosis verification item must reference one or more stable command IDs and each mapped command must have a successful machine record. At least one mapping must reference a user-supplied command; formatting-only `verify-0` cannot be the entire verification contract. This proves execution linkage, not that the chosen command adequately covers the business requirement; the final reviewer must still assess test adequacy.
 
 ## Stage 5: Review independently
 

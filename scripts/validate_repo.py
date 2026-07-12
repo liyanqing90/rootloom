@@ -386,10 +386,13 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.3"',
+            'RUNNER_VERSION = "2.4"',
             "file_metadata_fingerprint",
-            "visible_untracked_manifests",
+            "sensitive_untracked_paths",
+            "state_untracked_manifests",
             "redacted_untracked_metadata",
+            '"--sensitive-path"',
+            '"--redact-untracked-dotfiles"',
             "max_ignored_paths",
             "validate_verification_coverage",
             '"provenance_ids"',
