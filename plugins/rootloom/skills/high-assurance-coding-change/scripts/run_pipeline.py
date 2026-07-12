@@ -54,7 +54,8 @@ HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
-RUNNER_VERSION = "2.4"
+HUMAN_REVIEW_REQUIRED_EXIT = 10
+RUNNER_VERSION = "2.5"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -385,6 +386,27 @@ def normalize_sensitive_paths(values: Any) -> list[tuple[str, bool]]:
     )
 
 
+def normalize_protected_deletions(values: Any) -> set[str]:
+    if not isinstance(values, list):
+        raise PipelineError("--allow-protected-path-delete must be a list", 8)
+    paths: set[str] = set()
+    for raw in values:
+        if not isinstance(raw, str):
+            raise PipelineError(
+                "--allow-protected-path-delete entries must be strings",
+                8,
+            )
+        value = raw.strip()
+        if value.endswith("/") or any(token in value for token in ("*", "?", "[", "]")):
+            raise PipelineError(
+                "--allow-protected-path-delete requires exact file paths; "
+                f"directory or glob rule rejected: {raw!r}",
+                8,
+            )
+        paths.add(normalize_repo_path(value, contract=True))
+    return paths
+
+
 def path_is_allowed(path: str, rules: list[tuple[str, bool]]) -> bool:
     normalized = normalize_repo_path(path)
     return any(
@@ -552,7 +574,7 @@ def validate_diagnosis(
     ):
         raise PipelineError(
             "semantic gate failed: verification_map must reference at least one "
-            "user-supplied behavior command; verify-0 only checks diff formatting",
+            "user-supplied verification command; verify-0 only checks diff formatting",
             8,
         )
     return rules
@@ -1192,6 +1214,52 @@ def compact_delta(delta: dict[str, Any]) -> str:
     )
 
 
+def validate_protected_changes(
+    *,
+    baseline: dict[str, Any],
+    current: dict[str, Any],
+    introduced_paths: set[str],
+    allowed_deletions: set[str],
+) -> set[str]:
+    protected_paths = (
+        baseline["ignored_paths"]
+        | current["ignored_paths"]
+        | baseline["sensitive_untracked_paths"]
+        | current["sensitive_untracked_paths"]
+    )
+    changed_protected = introduced_paths & protected_paths
+    missing = {"kind": "missing"}
+    approved_deletions: set[str] = set()
+    violations: list[str] = []
+    for path in sorted(changed_protected):
+        existed = baseline["worktree"].get(path, missing) != missing
+        deleted = current["worktree"].get(path, missing) == missing
+        if path in allowed_deletions and existed and deleted:
+            approved_deletions.add(path)
+        else:
+            violations.append(path)
+    if violations:
+        raise PipelineError(
+            "writer changed protected metadata-only paths; content cannot be "
+            "independently reviewed: " + ", ".join(violations),
+            9,
+        )
+    unused = sorted(allowed_deletions - approved_deletions)
+    if unused:
+        raise PipelineError(
+            "protected deletion authorization was unused or did not resolve to an "
+            "existing protected path deleted by the writer: " + ", ".join(unused),
+            9,
+        )
+    return approved_deletions
+
+
+def completion_outcome(protected_deletions: list[str]) -> tuple[str, int]:
+    if protected_deletions:
+        return "HUMAN_REVIEW_REQUIRED", HUMAN_REVIEW_REQUIRED_EXIT
+    return "PASS", 0
+
+
 def enforce_repository_contract(
     *,
     repo: Path,
@@ -1203,6 +1271,7 @@ def enforce_repository_contract(
     sensitive_rules: list[tuple[str, bool]] | None = None,
     redact_untracked_dotfiles: bool = False,
     check_topology: bool = True,
+    allowed_protected_deletions: set[str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     current = capture_repo_state(
         repo,
@@ -1225,6 +1294,12 @@ def enforce_repository_contract(
             "repository paths changed outside the approved contract: " + ", ".join(outside),
             6,
         )
+    approved_deletions = validate_protected_changes(
+        baseline=baseline,
+        current=current,
+        introduced_paths=introduced,
+        allowed_deletions=allowed_protected_deletions or set(),
+    )
     ignored_changed_paths = introduced & (
         baseline["ignored_paths"] | current["ignored_paths"]
     )
@@ -1241,6 +1316,7 @@ def enforce_repository_contract(
         ignored_changed_paths,
         redacted_untracked_paths,
     )
+    delta["protected_deletions"] = sorted(approved_deletions)
     return delta, current
 
 
@@ -1389,6 +1465,15 @@ def parse_args() -> argparse.Namespace:
         "--redact-untracked-dotfiles",
         action="store_true",
         help="Keep every visible-untracked path containing a dotfile segment metadata-only",
+    )
+    parser.add_argument(
+        "--allow-protected-path-delete",
+        action="append",
+        default=[],
+        help=(
+            "Explicitly authorize deletion of one exact baseline ignored/sensitive path; "
+            "repeat for multiple paths; successful runs still require human acceptance"
+        ),
     )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
@@ -1665,14 +1750,17 @@ def run_pipeline_locked(
 ) -> int:
     ensure_supported_repository_topology(repo)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
+    allowed_protected_deletions = normalize_protected_deletions(
+        args.allow_protected_path_delete
+    )
 
-    def capture_state() -> dict[str, Any]:
+    def capture_state(*, check_topology: bool = False) -> dict[str, Any]:
         return capture_repo_state(
             repo,
             max_ignored_paths=args.max_ignored_paths,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
-            check_topology=False,
+            check_topology=check_topology,
         )
 
     baseline = capture_state()
@@ -1736,6 +1824,7 @@ def run_pipeline_locked(
         "max_ignored_paths": args.max_ignored_paths,
         "sensitive_paths": args.sensitive_path,
         "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
+        "allowed_protected_path_deletions": sorted(allowed_protected_deletions),
         "task_file": str(task_path),
         "roles": {
             stage: {
@@ -1901,7 +1990,11 @@ def run_pipeline_locked(
             the Git index. Do not open, read, create, or modify ignored files, known
             secret-like untracked paths, caller-configured sensitive paths, caches, build
             output, or other generated files; disable such caches when running local
-            checks. Report exactly the files changed during this stage.
+            checks. The only protected-path operation authorized by the operator is
+            deletion of these exact paths: {json.dumps(sorted(allowed_protected_deletions), ensure_ascii=False)}.
+            Do not create or modify them. Even an authorized deletion requires human
+            acceptance and cannot receive automated PASS. Report exactly the files
+            changed during this stage.
 
             TASK:
             {task}
@@ -1923,7 +2016,7 @@ def run_pipeline_locked(
             schema=IMPLEMENTATION_SCHEMA,
             prompt=implementation_prompt,
         )
-        post_implementation_state = capture_state()
+        post_implementation_state = capture_state(check_topology=True)
         if post_implementation_state["index"] != stage_baseline["index"]:
             raise PipelineError(f"{label} changed the Git index", 6)
         if post_implementation_state["git_control"] != stage_baseline["git_control"]:
@@ -1943,6 +2036,7 @@ def run_pipeline_locked(
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
+            allowed_protected_deletions=allowed_protected_deletions,
         )
 
         verified, verification = run_verification(
@@ -1969,6 +2063,7 @@ def run_pipeline_locked(
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
+            allowed_protected_deletions=allowed_protected_deletions,
         )
         if not delta["introduced_paths"]:
             raise PipelineError(
@@ -2025,7 +2120,7 @@ def run_pipeline_locked(
             schema=REVIEW_SCHEMA,
             prompt=review_prompt,
         )
-        post_review_state = capture_state()
+        post_review_state = capture_state(check_topology=True)
         assert_repo_unchanged(post_verification_state, post_review_state, "review stage")
         delta, _ = enforce_repository_contract(
             repo=repo,
@@ -2037,11 +2132,15 @@ def run_pipeline_locked(
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
+            allowed_protected_deletions=allowed_protected_deletions,
         )
         validate_review(review)
         if review.get("verdict") == "PASS":
+            result_status, result_exit_code = completion_outcome(
+                delta["protected_deletions"]
+            )
             summary = {
-                "result": "PASS",
+                "result": result_status,
                 "run_dir": str(run_dir),
                 "repair_cycles": attempt,
                 "changed_paths": delta["introduced_paths"],
@@ -2052,11 +2151,12 @@ def run_pipeline_locked(
                 "untracked": delta["untracked"],
                 "ignored_metadata": delta["ignored_metadata"],
                 "redacted_untracked_metadata": delta["redacted_untracked_metadata"],
+                "protected_deletions": delta["protected_deletions"],
                 "delta_artifacts": delta["artifacts"],
             }
             write_json(run_dir / "result.json", summary)
             print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
-            return 0
+            return result_exit_code
 
         previous_failure = "INDEPENDENT REVIEW FAILED:\n" + json.dumps(
             review,

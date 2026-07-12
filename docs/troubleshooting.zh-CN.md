@@ -91,6 +91,12 @@ codex execpolicy check --pretty \
 
 这可能是正确结果。Runner 与原生路由分别判断 readiness。若 Agent 文件和 profile 通过，但本地 spawn 工具不能证明 `agent_type`，确定性连续 Runner 仍可使用，而原生模型路由保持关闭。
 
+## 严格 Runner 以退出码 10 和 `HUMAN_REVIEW_REQUIRED` 结束
+
+这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。必须由人确认精确删除并决定是否接受工作树修改；自动化不得把退出码 10 转成成功。
+
+如果 Runner 报告的是未授权 protected 路径变化，说明它在 Writer 返回后停止了验收，sandbox 并未预防文件系统修改。应人工检查并恢复该路径；Rootloom 不会读取或备份 ignored/敏感内容用于自动回滚。
+
 ## Python 报告缺少 `tomllib`
 
 请使用 Python 3.11 或更高版本：

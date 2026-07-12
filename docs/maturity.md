@@ -18,6 +18,8 @@ JSON Schema validates required shape. Semantic gates validate selected cross-sta
 
 Runner artifact redaction is also narrower than file-access isolation. Ignored and known/configured sensitive untracked paths are not content-hashed or supplied in Delta prompts, but read-capable model stages can still open them from the repository. Use secret-free worktrees, external secret storage, or OS/container mount policy when deny-read behavior is required. Built-in sensitive-name matching is deliberately finite; repository-specific names require explicit rules or opt-in untracked-dotfile redaction.
 
+Detected metadata-only path changes are ineligible for automated acceptance by default. The gate runs after the writer and is not OS-level write prevention or rollback, so the operator may need to recover a protected filesystem change after failure. An operator may authorize deletion of one exact baseline path, but the Runner then exits with `HUMAN_REVIEW_REQUIRED`; it cannot claim automated PASS because neither the model nor the artifact proves the former protected content. Topology checkpoints reduce writer-created nested-repository TOCTOU risk, but arbitrary external processes can still mutate between checkpoints.
+
 ## Adoption fit and learning cost
 
 Use the smallest capability that pays for itself:

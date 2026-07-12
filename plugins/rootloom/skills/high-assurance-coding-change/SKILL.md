@@ -47,6 +47,8 @@ The runner reads model, reasoning, and sandbox settings from the same four custo
 
 Known secret-like visible-untracked paths are classified before content fingerprinting. Add repeatable exact-path or `directory/**` rules with `--sensitive-path`; use `--redact-untracked-dotfiles` when every untracked dotfile should remain metadata-only. Built-in matching is finite. These options protect runner-generated artifacts and prompts, not repository file access: all four model stages can still read files. Use a secret-free worktree or OS/container isolation when deny-read behavior is required.
 
+After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules and unused authorizations fail. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Do not translate that state into automated acceptance. Topology is checked after every writer and after final review.
+
 The runner also injects each role TOML's `developer_instructions` as model-visible
 developer instructions and enforces the following locally, without trusting model prose:
 
@@ -56,6 +58,7 @@ developer instructions and enforces the following locally, without trusting mode
 - no Git-visible mutation by evidence, diagnosis, verification, or review stages;
 - no Git-index mutation by the writer;
 - exact `allowed_paths` enforcement (`path` or `directory/**`) including untracked files;
+- protected metadata-only path rejection before Delta capture, with only exact deletion exceptions and mandatory human acceptance;
 - exact agreement between the writer's `files_changed` report and its real stage delta;
 - semantic consistency for GO, completed, PASS, FAIL, and finding severity;
 - process-group termination on timeout or interruption;

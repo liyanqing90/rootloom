@@ -182,7 +182,7 @@ class RunnerGateTests(unittest.TestCase):
             item["command_ids"] = ["verify-0"]
         with self.assertRaises(runner.PipelineError) as caught:
             runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
-        self.assertIn("user-supplied behavior command", str(caught.exception))
+        self.assertIn("user-supplied verification command", str(caught.exception))
 
     def test_completed_report_must_match_actual_delta_and_have_no_deviation(self) -> None:
         rules = runner.normalize_allowed_paths(["a.txt"])
@@ -307,10 +307,11 @@ class RunnerGateTests(unittest.TestCase):
         (self.repo / ".gitignore").write_text(".env\n", encoding="utf-8")
         git(self.repo, "add", ".gitignore")
         git(self.repo, "commit", "-qm", "ignore local environment")
-        baseline = runner.capture_repo_state(self.repo)
         marker = "ROOTLOOM_SECRET_MUST_NOT_LEAVE_FILE_91f7"
         ignored = self.repo / ".env"
         ignored.write_text(f"TOKEN={marker}\n", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+        ignored.unlink()
 
         original_fingerprint = runner.file_fingerprint
 
@@ -337,17 +338,19 @@ class RunnerGateTests(unittest.TestCase):
                 prefix="ignored-safe",
                 baseline=baseline,
                 allowed_rules=runner.normalize_allowed_paths([".env"]),
+                allowed_protected_deletions={".env"},
             )
 
         patch_capture.assert_called_once_with(self.repo, [])
         self.assertEqual(delta["ignored_metadata"][0]["path"], ".env")
+        self.assertEqual(delta["ignored_metadata"][0]["kind"], "missing")
+        self.assertEqual(delta["protected_deletions"], [".env"])
         self.assertEqual(delta["untracked_patch"], "")
         for artifact in self.run_dir.iterdir():
             self.assertNotIn(marker, artifact.read_text(encoding="utf-8"))
         self.assertNotIn(marker, runner.compact_delta(delta))
 
     def test_sensitive_visible_untracked_content_is_redacted(self) -> None:
-        baseline = runner.capture_repo_state(self.repo)
         marker = "VISIBLE_SECRET_127d"
         sensitive = self.repo / ".env.local"
         sensitive.write_text(marker, encoding="utf-8")
@@ -363,21 +366,114 @@ class RunnerGateTests(unittest.TestCase):
             "file_fingerprint",
             side_effect=reject_sensitive_content,
         ):
-            delta, state = runner.enforce_repository_contract(
-                repo=self.repo,
-                run_dir=self.run_dir,
-                prefix="redacted",
-                baseline=baseline,
-                allowed_rules=runner.normalize_allowed_paths([".env.local"]),
-            )
-        self.assertEqual(delta["visible_untracked"], [])
-        redacted = delta["redacted_untracked_metadata"][0]
+            state = runner.capture_repo_state(self.repo)
+        visible, redacted_manifest = runner.state_untracked_manifests(state)
+        self.assertEqual(visible, [])
+        redacted = redacted_manifest[0]
         self.assertEqual(redacted["path"], ".env.local")
         self.assertEqual(redacted["kind"], "file-metadata")
         self.assertNotIn("sha256", redacted)
         self.assertEqual(state["worktree"][".env.local"]["kind"], "file-metadata")
         self.assertNotIn("sha256", state["worktree"][".env.local"])
-        self.assertNotIn(marker, runner.compact_delta(delta))
+        self.assertNotIn(marker, str(redacted_manifest))
+
+    def test_protected_modification_and_creation_fail_before_delta_capture(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored.env\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore protected file")
+        ignored = self.repo / "ignored.env"
+        ignored.write_text("before", encoding="utf-8")
+        sensitive = self.repo / ".env.local"
+        sensitive.write_text("before", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+        ignored.write_text("after", encoding="utf-8")
+        sensitive.write_text("after", encoding="utf-8")
+
+        with mock.patch.object(runner, "capture_delta") as capture:
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.enforce_repository_contract(
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    prefix="protected-modification",
+                    baseline=baseline,
+                    allowed_rules=runner.normalize_allowed_paths(
+                        ["ignored.env", ".env.local"]
+                    ),
+                )
+        capture.assert_not_called()
+        self.assertIn("protected metadata-only paths", str(caught.exception))
+
+        ignored.unlink()
+        sensitive.unlink()
+        clean_baseline = runner.capture_repo_state(self.repo)
+        (self.repo / ".env.new").write_text("created", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError):
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="protected-creation",
+                baseline=clean_baseline,
+                allowed_rules=runner.normalize_allowed_paths([".env.new"]),
+            )
+
+    def test_protected_delete_authorization_is_exact_used_and_requires_human_review(self) -> None:
+        for unsafe in ("private/**", "private/", "*.env"):
+            with self.subTest(unsafe=unsafe), self.assertRaises(runner.PipelineError):
+                runner.normalize_protected_deletions([unsafe])
+
+        baseline = runner.capture_repo_state(self.repo)
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="unused-delete",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths(["a.txt"]),
+                allowed_protected_deletions={"missing.env"},
+            )
+        self.assertIn("unused", str(caught.exception))
+        self.assertEqual(runner.completion_outcome([]), ("PASS", 0))
+        self.assertEqual(
+            runner.completion_outcome([".env"]),
+            ("HUMAN_REVIEW_REQUIRED", runner.HUMAN_REVIEW_REQUIRED_EXIT),
+        )
+
+    def test_protected_delete_authorization_does_not_allow_modification(self) -> None:
+        protected = self.repo / ".env.local"
+        protected.write_text("before", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+        protected.write_text("after", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="delete-only",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths([".env.local"]),
+                allowed_protected_deletions={".env.local"},
+            )
+        self.assertIn("protected metadata-only paths", str(caught.exception))
+
+    def test_dotfile_redaction_cannot_hide_deliverable_creation(self) -> None:
+        baseline = runner.capture_repo_state(
+            self.repo,
+            redact_untracked_dotfiles=True,
+        )
+        workflow = self.repo / ".github" / "workflows" / "release.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("name: release\n", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="dotfile-deliverable",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths(
+                    [".github/workflows/release.yml"]
+                ),
+                redact_untracked_dotfiles=True,
+            )
+        self.assertIn("protected metadata-only paths", str(caught.exception))
 
     def test_known_custom_and_dotfile_sensitive_paths_are_metadata_only(self) -> None:
         known_paths = (
@@ -494,6 +590,7 @@ class RunnerGateTests(unittest.TestCase):
         nested = self.repo / "vendor" / "nested"
         nested.mkdir(parents=True)
         git(nested, "init", "-q")
+        runner.capture_repo_state(self.repo, check_topology=False)
         with self.assertRaises(runner.PipelineError) as caught:
             runner.capture_repo_state(self.repo)
         self.assertEqual(caught.exception.exit_code, 9)
