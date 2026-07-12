@@ -386,7 +386,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.5"',
+            'RUNNER_VERSION = "2.6"',
             "file_metadata_fingerprint",
             "sensitive_untracked_paths",
             "state_untracked_manifests",
@@ -395,8 +395,11 @@ def validate_system_assets(errors: list[str]) -> None:
             '"--redact-untracked-dotfiles"',
             '"--allow-protected-path-delete"',
             "validate_protected_changes",
+            "validate_protected_deletion_preflight",
+            "validate_allowed_path_boundaries",
             '"HUMAN_REVIEW_REQUIRED"',
             "post_implementation_state = capture_state(check_topology=True)",
+            "post_verification_state = capture_state(check_topology=True)",
             "post_review_state = capture_state(check_topology=True)",
             "max_ignored_paths",
             "validate_verification_coverage",

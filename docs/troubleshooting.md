@@ -93,7 +93,7 @@ This can be the correct result. The runner and native route have separate readin
 
 ## The strict runner exits 10 with `HUMAN_REVIEW_REQUIRED`
 
-This is the intended result after an explicitly authorized `--allow-protected-path-delete` operation. Verification and model review passed, but the old protected content was deliberately never read, so the Runner cannot issue automated PASS. A human must confirm the exact deletion and decide whether to accept the working-tree change. Do not convert exit 10 to success in automation.
+This is the intended result after an explicitly authorized `--allow-protected-path-delete` operation. The authorization is checked before the writer runs and makes the run deletion-only, so ordinary edits, renames, moves, and visible file creations must be handled separately. Verification and model review passed, but the old protected content was deliberately never read, so the Runner cannot issue automated PASS. A human must confirm the exact deletion and decide whether to accept the working-tree change. Do not convert exit 10 to success in automation.
 
 If the Runner instead reports an unauthorized protected-path change, acceptance stopped after the writer returned; the sandbox did not prevent the filesystem mutation. Inspect and recover that path manually. Rootloom does not read or back up ignored/sensitive content for automatic rollback.
 

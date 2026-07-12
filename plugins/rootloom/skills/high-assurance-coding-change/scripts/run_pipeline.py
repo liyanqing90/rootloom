@@ -55,7 +55,7 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.5"
+RUNNER_VERSION = "2.6"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -413,6 +413,77 @@ def path_is_allowed(path: str, rules: list[tuple[str, bool]]) -> bool:
         normalized == base or (recursive and normalized.startswith(base + "/"))
         for base, recursive in rules
     )
+
+
+def _path_within(path: Path, root: Path) -> bool:
+    try:
+        return path.is_relative_to(root)
+    except ValueError:
+        return False
+
+
+def _check_existing_symlink_target(repo: Path, path: Path, label: str) -> None:
+    if not path.is_symlink():
+        return
+    repo_root = repo.resolve()
+    target = path.resolve(strict=False)
+    if not _path_within(target, repo_root):
+        raise PipelineError(
+            f"{label} crosses a symlink outside the repository: "
+            f"{path.relative_to(repo).as_posix()} -> {target}",
+            9,
+        )
+
+
+def validate_repo_path_symlink_boundary(repo: Path, path: str, label: str) -> None:
+    """Reject existing symlink components that resolve outside the repository."""
+
+    normalized = normalize_repo_path(path, contract=True)
+    current = repo
+    for part in PurePosixPath(normalized).parts:
+        current = current / part
+        if current.exists() or current.is_symlink():
+            _check_existing_symlink_target(repo, current, label)
+
+
+def validate_allowed_path_boundaries(repo: Path, rules: list[tuple[str, bool]]) -> None:
+    for base, recursive in rules:
+        validate_repo_path_symlink_boundary(repo, base, "allowed path")
+        root = repo / base
+        if not recursive or not root.exists() or root.is_symlink():
+            continue
+        if not root.is_dir():
+            continue
+        for current_raw, directories, files in os.walk(root, followlinks=False):
+            current = Path(current_raw)
+            for name in list(directories):
+                candidate = current / name
+                if candidate.is_symlink():
+                    _check_existing_symlink_target(repo, candidate, "allowed path")
+                    directories.remove(name)
+            for name in files:
+                _check_existing_symlink_target(repo, current / name, "allowed path")
+
+
+def validate_verification_command_boundaries(
+    repo: Path,
+    commands: list[dict[str, Any]],
+) -> None:
+    for command in commands:
+        for token in command["argv"]:
+            if token.startswith("-") or token.startswith("/") or "://" in token:
+                continue
+            if "/" not in token:
+                continue
+            try:
+                normalized = normalize_repo_path(token, contract=True)
+            except PipelineError:
+                continue
+            validate_repo_path_symlink_boundary(
+                repo,
+                normalized,
+                f"verification command {command['id']}",
+            )
 
 
 def validate_evidence(value: dict[str, Any]) -> None:
@@ -1251,7 +1322,47 @@ def validate_protected_changes(
             "existing protected path deleted by the writer: " + ", ".join(unused),
             9,
         )
+    if allowed_deletions and introduced_paths != approved_deletions:
+        mixed = sorted(introduced_paths - approved_deletions)
+        raise PipelineError(
+            "protected deletion authorization requires a deletion-only run; "
+            "ordinary repository changes must be performed in a separate run: "
+            + ", ".join(mixed),
+            9,
+        )
     return approved_deletions
+
+
+def validate_protected_deletion_preflight(
+    *,
+    repo: Path,
+    baseline: dict[str, Any],
+    allowed_rules: list[tuple[str, bool]],
+    allowed_deletions: set[str],
+) -> None:
+    missing = {"kind": "missing"}
+    protected_paths = baseline["ignored_paths"] | baseline["sensitive_untracked_paths"]
+    invalid: list[str] = []
+    for path in sorted(allowed_deletions):
+        validate_repo_path_symlink_boundary(repo, path, "protected deletion")
+        fingerprint = baseline["worktree"].get(path, missing)
+        if fingerprint == missing:
+            invalid.append(f"{path} (not present in baseline)")
+            continue
+        if path not in protected_paths:
+            invalid.append(f"{path} (not a baseline protected path)")
+            continue
+        if fingerprint.get("kind") == "directory-metadata":
+            invalid.append(f"{path} (directories are not valid exact deletion targets)")
+            continue
+        if not path_is_allowed(path, allowed_rules):
+            invalid.append(f"{path} (not permitted by diagnosis allowed_paths)")
+    if invalid:
+        raise PipelineError(
+            "protected deletion preflight failed before writer execution: "
+            + ", ".join(invalid),
+            9,
+        )
 
 
 def completion_outcome(protected_deletions: list[str]) -> tuple[str, int]:
@@ -1809,6 +1920,7 @@ def run_pipeline_locked(
     )
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
+    validate_verification_command_boundaries(repo, commands)
     metadata = {
         "runner_version": RUNNER_VERSION,
         "runner_sha256": file_sha256(Path(__file__)),
@@ -1974,6 +2086,13 @@ def run_pipeline_locked(
     )
     if diagnosis.get("decision") != "GO":
         raise PipelineError(f"diagnosis returned NO_GO; see {run_dir / '02-diagnosis.json'}", 2)
+    validate_allowed_path_boundaries(repo, allowed_rules)
+    validate_protected_deletion_preflight(
+        repo=repo,
+        baseline=baseline,
+        allowed_rules=allowed_rules,
+        allowed_deletions=allowed_protected_deletions,
+    )
 
     previous_failure = ""
     for attempt in range(args.max_repair_cycles + 1):
@@ -2047,7 +2166,7 @@ def run_pipeline_locked(
             dry_run=False,
             timeout_seconds=args.stage_timeout,
         )
-        post_verification_state = capture_state()
+        post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(
             post_implementation_state,
             post_verification_state,

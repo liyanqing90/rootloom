@@ -6,6 +6,19 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.4] - 2026-07-12
+
+### Security
+
+- Tightened `--allow-protected-path-delete` into a deletion-only run contract. If any protected deletion is authorized, the net repository change must be exactly the approved protected deletion set; ordinary code edits, visible untracked creations, renames, or moves must happen in a separate run.
+- Added pre-writer protected deletion validation. Authorized deletion paths must exist in the baseline, be classified as protected, be non-directory exact targets, and be included in the diagnosis `allowed_paths` before the implementation stage can run.
+- Reject allowed-path and repository-relative verification command entries that cross an existing symlink outside the repository.
+- Recheck unsupported repository topology immediately after deterministic verification, in addition to startup, writer, and final review checkpoints.
+
+### Tests
+
+- Added regression coverage for protected `.env` rename into an ordinary allowed path, invalid deletion authorization preflight, out-of-repository symlink boundaries, and the Runner 2.6 contract.
+
 ## [1.2.3] - 2026-07-12
 
 ### Security
@@ -111,7 +124,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.3...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...HEAD
+[1.2.4]: https://github.com/liyanqing90/rootloom/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/liyanqing90/rootloom/compare/v1.2.2...v1.2.3
 [1.2.2]: https://github.com/liyanqing90/rootloom/compare/v1.2.1...v1.2.2
 [1.2.1]: https://github.com/liyanqing90/rootloom/compare/v1.2.0...v1.2.1

@@ -454,6 +454,67 @@ class RunnerGateTests(unittest.TestCase):
             )
         self.assertIn("protected metadata-only paths", str(caught.exception))
 
+    def test_protected_delete_authorization_is_deletion_only(self) -> None:
+        (self.repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore env")
+        protected = self.repo / ".env"
+        protected.write_text("SECRET=do-not-copy\n", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+        target = self.repo / "config" / "runtime.txt"
+        target.parent.mkdir()
+        protected.rename(target)
+
+        with mock.patch.object(runner, "capture_delta") as capture:
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.enforce_repository_contract(
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    prefix="protected-rename",
+                    baseline=baseline,
+                    allowed_rules=runner.normalize_allowed_paths(
+                        [".env", "config/runtime.txt"]
+                    ),
+                    allowed_protected_deletions={".env"},
+                )
+        capture.assert_not_called()
+        self.assertIn("deletion-only run", str(caught.exception))
+
+    def test_protected_delete_preflight_rejects_invalid_authorization(self) -> None:
+        protected = self.repo / ".env.local"
+        protected.write_text("before", encoding="utf-8")
+        ordinary = self.repo / "ordinary.txt"
+        ordinary.write_text("ordinary", encoding="utf-8")
+        baseline = runner.capture_repo_state(self.repo)
+        rules = runner.normalize_allowed_paths([".env.local"])
+
+        with self.assertRaises(runner.PipelineError) as missing:
+            runner.validate_protected_deletion_preflight(
+                repo=self.repo,
+                baseline=baseline,
+                allowed_rules=rules,
+                allowed_deletions={"missing.env"},
+            )
+        self.assertIn("before writer execution", str(missing.exception))
+
+        with self.assertRaises(runner.PipelineError) as not_protected:
+            runner.validate_protected_deletion_preflight(
+                repo=self.repo,
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths(["ordinary.txt"]),
+                allowed_deletions={"ordinary.txt"},
+            )
+        self.assertIn("not a baseline protected path", str(not_protected.exception))
+
+        with self.assertRaises(runner.PipelineError) as outside_contract:
+            runner.validate_protected_deletion_preflight(
+                repo=self.repo,
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths(["a.txt"]),
+                allowed_deletions={".env.local"},
+            )
+        self.assertIn("not permitted", str(outside_contract.exception))
+
     def test_dotfile_redaction_cannot_hide_deliverable_creation(self) -> None:
         baseline = runner.capture_repo_state(
             self.repo,
@@ -621,6 +682,29 @@ class RunnerGateTests(unittest.TestCase):
         with self.assertRaises(runner.PipelineError) as caught:
             runner.ensure_supported_repository_topology(gitlink_repo)
         self.assertEqual(caught.exception.exit_code, 9)
+
+    def test_allowed_and_verification_paths_reject_out_of_repo_symlinks(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir()
+        link = self.repo / "linked"
+        link.symlink_to(outside, target_is_directory=True)
+
+        with self.assertRaises(runner.PipelineError) as allowed:
+            runner.validate_allowed_path_boundaries(
+                self.repo,
+                runner.normalize_allowed_paths(["linked/file.txt"]),
+            )
+        self.assertIn("outside the repository", str(allowed.exception))
+
+        script = self.repo / "scripts" / "verify.sh"
+        script.parent.mkdir()
+        script.symlink_to(outside / "verify.sh")
+        with self.assertRaises(runner.PipelineError) as verification:
+            runner.validate_verification_command_boundaries(
+                self.repo,
+                [{"id": "verify-1", "argv": ["scripts/verify.sh"]}],
+            )
+        self.assertIn("outside the repository", str(verification.exception))
 
     def test_timeout_terminates_spawned_process_group(self) -> None:
         marker = self.root / "grandchild-survived"
