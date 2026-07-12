@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: complete
+- State: published
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security
@@ -14,7 +14,7 @@ Close the Rootloom 1.2.3 protected deletion residual gap: an authorized protecte
 
 ## Non-goals
 
-- No GitHub publication or release without a separate explicit user authorization.
+- No force-push or tag mutation.
 - No full human accept/reject state machine in this patch.
 - No container or OS-level syscall sandboxing for verification commands.
 
@@ -54,7 +54,7 @@ Close the Rootloom 1.2.3 protected deletion residual gap: an authorized protecte
 - Persisted data: run artifacts and `result.json`.
 - Public contracts: `--allow-protected-path-delete`, Runner version, plugin version, README/SKILL docs.
 - Generated artifacts: none.
-- External systems: none in this local change.
+- External systems: GitHub `liyanqing90/rootloom` main branch, annotated tag, and Release.
 
 ## Design and decisions
 
@@ -77,8 +77,10 @@ Close the Rootloom 1.2.3 protected deletion residual gap: an authorized protecte
 - Dry-run/preview: focused unit tests for runner gates.
 - Mixed-version behavior: older 1.2.3 accepts fewer constraints; 1.2.4 rejects mixed protected deletion runs.
 - Failure detection: `make check` and focused runner tests.
-- Rollback or compensation: revert the scoped commit before release.
-- Irreversible point: GitHub push/tag/release, not authorized in this task.
+- Rollback or compensation: publish a follow-up release; do not mutate the immutable `v1.2.4` tag.
+- Irreversible point: GitHub push/tag/release, authorized by the user's `发布` request on 2026-07-12.
+
+## Verification
 
 - Verification result: PASS.
 - Original failure path: protected `.env` rename into a visible allowed path fails before delta capture.
@@ -91,7 +93,7 @@ Close the Rootloom 1.2.3 protected deletion residual gap: an authorized protecte
 - Diff hygiene: `git diff --check` passed.
 - UI/browser evidence: not applicable.
 - Security/dependency checks: repository validator secret scan via `make validate`.
-- Post-action verification: local Git diff review.
+- Post-action verification: release commit CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29180064999`; release is live at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.4`.
 
 ## Risks
 
@@ -103,6 +105,7 @@ Close the Rootloom 1.2.3 protected deletion residual gap: an authorized protecte
 
 - 2026-07-12 - Treat protected deletion as a deletion-only strict run because final-state-only validation cannot prove operation semantics.
 - 2026-07-12 - Completed local implementation and verification; external publish/release remains out of scope until explicitly authorized.
+- 2026-07-12 - User authorized publication with `发布`; published release commit `4f094bb750aa8420afdbf171953a7d9879b1ea90`, annotated tag object `e1e75741914d964170115399ce39517688c024ee`, and GitHub Release `v1.2.4`.
 
 ## Durable decision records
 
