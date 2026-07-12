@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: complete
+- State: published
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security
@@ -14,7 +14,7 @@ Close the Rootloom 1.2.4 verification execution boundary gap: a Writer must not 
 
 ## Non-goals
 
-- No GitHub publication or release without a separate explicit user authorization.
+- No force-push or tag mutation.
 - No generic shell or CLI semantic parser.
 - No OS/container sandbox for arbitrary verification commands.
 - No full human accept/reject state machine.
@@ -55,7 +55,7 @@ Close the Rootloom 1.2.4 verification execution boundary gap: a Writer must not 
 - Persisted data: run metadata and result artifacts.
 - Public contracts: Runner version, protected-deletion semantics, verification-command safety boundary.
 - Generated artifacts: none.
-- External systems: none in this local change.
+- External systems: GitHub `liyanqing90/rootloom` main branch, annotated tag, and Release.
 
 ## Design and decisions
 
@@ -78,8 +78,8 @@ Close the Rootloom 1.2.4 verification execution boundary gap: a Writer must not 
 - Dry-run/preview: focused unit tests.
 - Mixed-version behavior: 1.2.5 rejects a narrower set of self-modifying verification runs.
 - Failure detection: `make check`, focused runner tests, compatibility smoke.
-- Rollback or compensation: revert this scoped commit before release.
-- Irreversible point: GitHub publication/release, not authorized in this task.
+- Rollback or compensation: publish a follow-up release; do not mutate the immutable `v1.2.5` tag.
+- Irreversible point: GitHub publication/release, authorized by the user's `发布` request on 2026-07-12.
 
 - Verification result: PASS.
 - Original failure path: Writer replaces `scripts/check.sh` with an out-of-repo symlink; Runner fails before verification execution.
@@ -92,7 +92,7 @@ Close the Rootloom 1.2.4 verification execution boundary gap: a Writer must not 
 - Diff hygiene: `git diff --check` passed.
 - UI/browser evidence: not applicable.
 - Security/dependency checks: repository validator secret scan via `make validate`.
-- Post-action verification: local Git diff review.
+- Post-action verification: release commit CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29181897377`; release is live at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.5`.
 
 ## Risks
 
@@ -104,6 +104,7 @@ Close the Rootloom 1.2.4 verification execution boundary gap: a Writer must not 
 
 - 2026-07-12 - Treat common verification entrypoints as acceptance harness inputs and bind their identity across the write stage.
 - 2026-07-12 - Completed local implementation and verification; external publish/release remains out of scope until explicitly authorized.
+- 2026-07-12 - User authorized publication with `发布`; published release commit `c083f4c0ccd7db60cf419d566269bbc2f39d5beb`, annotated tag object `4dd6e964d5b00a15ce8c45b39bea1557064090fc`, and GitHub Release `v1.2.5`.
 
 ## Durable decision records
 
