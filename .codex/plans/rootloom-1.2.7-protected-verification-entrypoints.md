@@ -115,6 +115,8 @@ Success requires focused regression tests for every reported path plus `make val
 - 2026-07-12 — Implemented Runner 2.9 / plugin 1.2.7 with shared protected classification, command-scoped real-file bindings, pytest selector classification, full path-component symlink binding, return-code-independent process cleanup, and per-command verification fences.
 - 2026-07-12 — Verification passed: 44 focused Runner tests, 41 repository tests, `make validate`, `make check`, `make compatibility-smoke` on `codex-cli 0.144.0-alpha.4`, and `git diff --check`. Root-cause alignment: PASS.
 - 2026-07-12 — User explicitly authorized commit and GitHub publication with “完成后发布”. Publication target is `liyanqing90/rootloom` `main`, annotated tag `v1.2.7`, and a non-draft GitHub Release; no force-push is authorized or required.
+- 2026-07-12 — Published code commit `35278c4cf98a83d19f2a1c1b6c2cdeeabf573d87`. Its tree `23075c3627b00bc0fc28060d81673ceafb9c9fc6` exactly matches the locally verified release tree. GitHub CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29183662034`.
+- 2026-07-12 — Created annotated tag object `54dcdad2c7ea82f853b65d6cae0a52ac7857370a` for `v1.2.7` and published `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.7` as a non-draft, non-prerelease Release.
 
 ## Durable decision records
 
