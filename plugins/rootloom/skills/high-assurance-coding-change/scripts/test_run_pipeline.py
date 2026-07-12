@@ -109,7 +109,7 @@ class RunnerGateTests(unittest.TestCase):
                             "freshness_redaction": "fresh",
                         }
                     ],
-                }
+                },
             )
 
         valid = {
@@ -118,18 +118,23 @@ class RunnerGateTests(unittest.TestCase):
                     "id": "fact-1",
                     "statement": "failure observed",
                     "provenance_ids": ["source-1"],
-                }
+                },
             ],
             "evidence_provenance": [
                 {
                     "id": "source-1",
                     "claim": "failure observed",
                     "kind": "fact",
-                    "source_environment": "focused test / local",
-                    "observed_at": "2026-07-12",
+                    "source_type": "repository",
                     "reference": "tests/test_failure.py",
-                    "freshness_redaction": "fresh",
-                }
+                },
+                {
+                    "id": "source-2",
+                    "claim": "sibling path preserves the owner invariant",
+                    "kind": "fact",
+                    "source_type": "repository",
+                    "reference": "src/sibling.py:20",
+                },
             ],
             "reproduction": {
                 "status": "reproduced",
@@ -139,11 +144,45 @@ class RunnerGateTests(unittest.TestCase):
                 {
                     "hypothesis": "owner invariant failed",
                     "supporting_provenance_ids": ["source-1"],
-                    "contradicting_provenance_ids": [],
-                }
+                    "contradicting_provenance_ids": ["source-2"],
+                },
+                {
+                    "hypothesis": "all sibling paths share the defect",
+                    "supporting_provenance_ids": [],
+                    "contradicting_provenance_ids": ["source-2"],
+                },
             ],
         }
         runner.validate_evidence(valid)
+        invalid_reference = json.loads(json.dumps(valid))
+        invalid_reference["hypotheses"][0]["contradicting_provenance_ids"] = [
+            "fabricated-source"
+        ]
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_evidence(invalid_reference)
+        one_hypothesis = json.loads(json.dumps(valid))
+        one_hypothesis["hypotheses"] = one_hypothesis["hypotheses"][:1]
+        with self.assertRaisesRegex(runner.PipelineError, "competing hypotheses"):
+            runner.validate_evidence(one_hypothesis)
+        unchallenged = json.loads(json.dumps(valid))
+        for hypothesis in unchallenged["hypotheses"]:
+            hypothesis["contradicting_provenance_ids"] = []
+        with self.assertRaisesRegex(runner.PipelineError, "falsified or contradicted"):
+            runner.validate_evidence(unchallenged)
+        unattributed_runtime = json.loads(json.dumps(valid))
+        unattributed_runtime["evidence_provenance"][0]["source_type"] = (
+            "runtime_external"
+        )
+        with self.assertRaisesRegex(runner.PipelineError, "source_environment"):
+            runner.validate_evidence(unattributed_runtime)
+        unattributed_runtime["evidence_provenance"][0].update(
+            {
+                "source_environment": "local focused test",
+                "observed_at": "2026-07-12T12:00:00+08:00",
+                "freshness_redaction": "fresh; no secrets retained",
+            }
+        )
+        runner.validate_evidence(unattributed_runtime)
 
     def test_go_diagnosis_requires_invariant_verification_map(self) -> None:
         diagnosis = {
@@ -156,6 +195,7 @@ class RunnerGateTests(unittest.TestCase):
                 "acceptance_criteria": ["test passes"],
             },
             "required_tests": ["test"],
+            "rejected_alternatives": ["patching the caller leaves the invariant broken"],
         }
         with self.assertRaises(runner.PipelineError):
             runner.validate_diagnosis(diagnosis)
@@ -176,6 +216,12 @@ class RunnerGateTests(unittest.TestCase):
         }
         with self.assertRaises(runner.PipelineError):
             runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+        diagnosis["rejected_alternatives"] = []
+        with self.assertRaisesRegex(runner.PipelineError, "rejected_alternatives"):
+            runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+        diagnosis["rejected_alternatives"] = [
+            "patching the caller leaves the invariant broken"
+        ]
         diagnosis["verification_map"]["adjacent_negative_or_alternate_path"][
             "command_ids"
         ] = ["verify-0"]
@@ -185,6 +231,23 @@ class RunnerGateTests(unittest.TestCase):
         with self.assertRaises(runner.PipelineError) as caught:
             runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
         self.assertIn("user-supplied verification command", str(caught.exception))
+
+    def test_review_requires_a_concrete_challenge_pass(self) -> None:
+        review = {
+            "verdict": "PASS",
+            "findings": [],
+            "contract_compliance": ["scope and invariant satisfied"],
+            "test_adequacy": "original, invariant, and adjacent paths passed",
+            "residual_risks": [],
+        }
+        with self.assertRaisesRegex(runner.PipelineError, "review challenge"):
+            runner.validate_review(review)
+        review["challenge"] = {
+            "strongest_counterexample": "empty input preserves the invariant",
+            "adjacent_analog_checked": "src/sibling.py uses the same owner boundary",
+            "complexity_value": "one owner check replaces two caller checks",
+        }
+        runner.validate_review(review)
 
     def test_completed_report_must_match_actual_delta_and_have_no_deviation(self) -> None:
         rules = runner.normalize_allowed_paths(["a.txt"])
@@ -737,6 +800,44 @@ class RunnerGateTests(unittest.TestCase):
         self.assertIn("deadline expired", str(caught.exception))
         self.assertEqual(capture.call_count, 1)
 
+    def test_untracked_patch_failure_rolls_back_the_complete_batch(self) -> None:
+        destination = self.run_dir / "transactional-untracked.patch"
+        manifest = [
+            {"path": "one.txt", "kind": "file"},
+            {"path": "two.txt", "kind": "file"},
+        ]
+        calls = 0
+
+        def capture_path(*args: object, **kwargs: object) -> int:
+            nonlocal calls
+            calls += 1
+            artifact = kwargs["destination"]
+            assert isinstance(artifact, Path)
+            if calls == 1:
+                with artifact.open("ab") as handle:
+                    handle.write(b"complete-first-path")
+                return len(b"complete-first-path")
+            with artifact.open("ab") as handle:
+                handle.write(b"partial-second-path")
+            raise runner.PipelineError("simulated second-path failure", 9)
+
+        with mock.patch.object(
+            runner,
+            "stream_command_artifact",
+            side_effect=capture_path,
+        ):
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.stream_untracked_patch(
+                    self.repo,
+                    manifest,
+                    destination,
+                    1024,
+                    time.monotonic() + 5,
+                )
+        self.assertIn("two.txt", str(caught.exception))
+        self.assertEqual(calls, 2)
+        self.assertEqual(destination.read_bytes(), b"")
+
     def test_tracked_delta_budget_fails_closed_without_full_buffering(self) -> None:
         path = self.repo / "large-tracked.bin"
         path.write_bytes(os.urandom(64 * 1024))
@@ -832,6 +933,252 @@ class RunnerGateTests(unittest.TestCase):
             runner.capture_repo_state(self.repo, max_ignored_paths=2)
         self.assertEqual(caught.exception.exit_code, 9)
         self.assertIn("budget exceeded", str(caught.exception))
+
+    def test_state_path_and_byte_budgets_fail_closed(self) -> None:
+        (self.repo / "b.txt").write_text("b", encoding="utf-8")
+        git(self.repo, "add", "b.txt")
+        with self.assertRaisesRegex(runner.PipelineError, "tracked path budget"):
+            runner.capture_repo_state(
+                self.repo,
+                max_state_paths=1,
+                check_topology=False,
+            )
+        with self.assertRaisesRegex(runner.PipelineError, "Git status"):
+            runner.capture_repo_state(
+                self.repo,
+                max_state_bytes=1,
+                check_topology=False,
+            )
+        with self.assertRaisesRegex(runner.PipelineError, "tracked byte budget"):
+            runner.list_git_paths(
+                self.repo,
+                ["ls-files", "-z", "--cached"],
+                max_paths=10,
+                max_bytes=1,
+                budget_name="tracked",
+            )
+        with self.assertRaisesRegex(runner.PipelineError, "topology.*budget"):
+            runner.ensure_supported_repository_topology(self.repo, max_paths=1)
+        allowed = self.repo / "allowed"
+        allowed.mkdir()
+        (allowed / "one.txt").write_text("1", encoding="utf-8")
+        (allowed / "two.txt").write_text("2", encoding="utf-8")
+        with self.assertRaisesRegex(runner.PipelineError, "allowed-path.*budget"):
+            runner.validate_allowed_path_boundaries(
+                self.repo,
+                runner.normalize_allowed_paths(["allowed/**"]),
+                max_paths=1,
+            )
+        control = self.root / "control"
+        control.mkdir()
+        (control / "one").write_text("1", encoding="utf-8")
+        with self.assertRaisesRegex(runner.PipelineError, "Git control tree budget"):
+            runner.tree_fingerprint(control, max_entries=1)
+
+    def test_snapshot_digest_cache_reuses_and_invalidates_file_hashes(self) -> None:
+        cache: dict[str, dict[str, object]] = {}
+        path = self.repo / "a.txt"
+        with mock.patch.object(
+            runner.hashlib,
+            "sha256",
+            wraps=runner.hashlib.sha256,
+        ) as sha256:
+            first = runner.file_fingerprint(path, cache)
+            first_calls = sha256.call_count
+            second = runner.file_fingerprint(path, cache)
+            self.assertEqual(second, first)
+            self.assertEqual(sha256.call_count, first_calls)
+            path.write_text("changed\n", encoding="utf-8")
+            third = runner.file_fingerprint(path, cache)
+            self.assertNotEqual(third["sha256"], first["sha256"])
+            self.assertGreater(sha256.call_count, first_calls)
+
+    def test_stage_json_and_required_isolation_fail_before_use(self) -> None:
+        output = self.root / "oversized.json"
+        output.write_text('{"value":"' + ("x" * 100) + '"}', encoding="utf-8")
+        with self.assertRaisesRegex(runner.PipelineError, "exceeds 32 bytes"):
+            runner.read_json(output, 32)
+        linked_output = self.root / "linked-output.json"
+        linked_output.symlink_to(output)
+        with self.assertRaisesRegex(runner.PipelineError, "missing or symlinked"):
+            runner.read_json(linked_output, 1024)
+        task = self.root / "oversized-task.md"
+        task.write_text("x" * 100, encoding="utf-8")
+        with self.assertRaisesRegex(runner.PipelineError, "task file exceeds 32 bytes"):
+            runner.read_text_bounded(task, 32, "task file")
+        private_target = self.root / "private-target"
+        private_target.write_text("preserve", encoding="utf-8")
+        private_link = self.root / "private-link"
+        private_link.symlink_to(private_target)
+        with self.assertRaisesRegex(runner.PipelineError, "safely openable"):
+            runner.ensure_empty_private_file(private_link)
+        self.assertEqual(private_target.read_text(encoding="utf-8"), "preserve")
+        summary_link = self.root / "summary-link.json"
+        summary_link.symlink_to(private_target)
+        runner.atomic_write_json(summary_link, {"accepted": True})
+        self.assertFalse(summary_link.is_symlink())
+        self.assertEqual(private_target.read_text(encoding="utf-8"), "preserve")
+        with self.assertRaisesRegex(runner.PipelineError, "requires --isolation-launcher"):
+            runner.normalize_isolation_launcher(None, required=True)
+        launcher = self.root / "launcher"
+        launcher.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        argv, metadata = runner.normalize_isolation_launcher(
+            str(launcher),
+            required=True,
+        )
+        self.assertEqual(argv, [str(launcher.resolve())])
+        assert metadata is not None
+        self.assertEqual(metadata["executable_sha256"], runner.file_sha256(launcher))
+
+    def test_human_review_decision_binds_artifacts_and_refuses_drift(self) -> None:
+        script = MODULE_PATH.with_name("review_decision.py")
+        first = self.root / "human-review-accept"
+        first.mkdir()
+        (first / "evidence.json").write_text("{}\n", encoding="utf-8")
+        first_core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": ["protected.txt"],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            first,
+            runner.human_review_result_core_sha256(first_core),
+        )
+        first_result = {**first_core, "human_review_binding": binding}
+        runner.write_json(
+            first / "result.json",
+            first_result,
+        )
+        tampered_result = dict(first_result)
+        tampered_result["protected_deletions"] = []
+        runner.write_json(first / "result.json", tampered_result)
+        tampered = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(first),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(tampered.returncode, 0)
+        self.assertIn("binding drifted", tampered.stderr)
+        runner.write_json(first / "result.json", first_result)
+        accepted = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(first),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        decision = json.loads((first / "human-review.ndjson").read_text())
+        self.assertEqual(decision["decision"], "accept")
+        duplicate = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(first),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(duplicate.returncode, 0)
+        self.assertIn("terminal decision", duplicate.stderr)
+
+        second = self.root / "human-review-drift"
+        second.mkdir()
+        (second / "evidence.json").write_text("{}\n", encoding="utf-8")
+        second_core = {"result": "HUMAN_REVIEW_REQUIRED"}
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            second,
+            runner.human_review_result_core_sha256(second_core),
+        )
+        runner.write_json(
+            second / "result.json",
+            {**second_core, "human_review_binding": binding},
+        )
+        (second / "evidence.json").write_text('{"drift":true}\n', encoding="utf-8")
+        refused = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(second),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("binding drifted", refused.stderr)
+
+        invalid = self.root / "human-review-invalid-entry"
+        invalid.mkdir()
+        (invalid / "nested").mkdir()
+        with self.assertRaisesRegex(runner.PipelineError, "non-file entry"):
+            runner.compute_human_review_binding(self.repo, invalid, "0" * 64)
+
+        crowded = self.root / "human-review-crowded"
+        crowded.mkdir()
+        for index in range(257):
+            (crowded / f"{index}.json").touch()
+        with self.assertRaisesRegex(runner.PipelineError, "count exceeds 256"):
+            runner.compute_human_review_binding(self.repo, crowded, "0" * 64)
+
+        full = self.root / "human-review-full-capacity"
+        full.mkdir()
+        for index in range(256):
+            (full / f"{index}.json").touch()
+        full_core = {"result": "HUMAN_REVIEW_REQUIRED"}
+        core_hash = runner.human_review_result_core_sha256(full_core)
+        full_binding = runner.compute_human_review_binding(self.repo, full, core_hash)
+        runner.write_json(
+            full / "result.json",
+            {**full_core, "human_review_binding": full_binding},
+        )
+        self.assertEqual(
+            runner.compute_human_review_binding(self.repo, full, core_hash),
+            full_binding,
+        )
 
     def test_verification_coverage_requires_successful_machine_records(self) -> None:
         diagnosis = {
@@ -1290,6 +1637,74 @@ class RunnerGateTests(unittest.TestCase):
         self.assertIn("verification command verify-1", str(caught.exception))
         self.assertFalse(marker.exists())
 
+    def test_verification_detached_delayed_mutation_cannot_auto_pass(self) -> None:
+        late_mutation = self.repo / "late-mutation.txt"
+        ready = self.root / "late-mutation-ready"
+        child = self.root / "late_mutation_child.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "target, ready = map(pathlib.Path, sys.argv[1:3])\n"
+            "ready.write_text('ready')\n"
+            "time.sleep(3)\n"
+            "target.write_text('mutated after verification returned')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "late_mutation_parent.py"
+        parent.write_text(
+            "import pathlib, subprocess, sys, time\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]],\n"
+            "    start_new_session=True,\n"
+            ")\n"
+            "ready = pathlib.Path(sys.argv[3])\n"
+            "deadline = time.monotonic() + 2\n"
+            "while not ready.exists() and time.monotonic() < deadline:\n"
+            "    time.sleep(0.01)\n"
+            "raise SystemExit(0 if ready.exists() else 2)\n",
+            encoding="utf-8",
+        )
+        commands = [
+            {
+                "id": "verify-1",
+                "argv": [
+                    sys.executable,
+                    str(parent),
+                    str(child),
+                    str(late_mutation),
+                    str(ready),
+                ],
+            }
+        ]
+        expected = runner.capture_repo_state(self.repo)
+        started = time.monotonic()
+        verified, records = runner.run_verification(
+            repo=self.repo,
+            run_dir=self.run_dir,
+            prefix="detached-verification",
+            commands=commands,
+            dry_run=False,
+            timeout_seconds=3600,
+            expected_state=expected,
+            state_supplier=lambda: runner.capture_repo_state(self.repo),
+            entrypoints={},
+            environment=runner.build_verification_environment([], {}),
+            max_output_bytes=runner.DEFAULT_MAX_COMMAND_OUTPUT_BYTES,
+            max_total_output_bytes=runner.DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES,
+        )
+        self.assertLess(time.monotonic() - started, 2.5)
+        self.assertFalse(verified)
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]["command_exit_code"], 0)
+        self.assertEqual(records[0]["runner_exit_code"], 125)
+        self.assertEqual(records[0]["exit_code"], 125)
+        self.assertTrue(records[0]["output_drain_timed_out"])
+        self.assertTrue(records[0]["detached_descendant_possible"])
+        self.assertFalse(late_mutation.exists())
+        deadline = time.monotonic() + 4
+        while not late_mutation.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        self.assertTrue(late_mutation.exists())
+
     def test_protected_deletion_mode_rejects_dirty_and_repair_cycles(self) -> None:
         with self.assertRaises(runner.PipelineError) as dirty:
             runner.validate_protected_deletion_runtime_options(
@@ -1400,7 +1815,8 @@ class RunnerGateTests(unittest.TestCase):
                 timeout=1,
             )
             elapsed = time.monotonic() - started
-            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.command_exit_code, 0)
+            self.assertEqual(result.exit_code, 125)
             self.assertFalse(result.timed_out)
             self.assertFalse(result.leftover_process_group)
             self.assertTrue(result.output_drain_timed_out)
@@ -1459,7 +1875,8 @@ class RunnerGateTests(unittest.TestCase):
                 timeout=3600,
             )
             elapsed = time.monotonic() - started
-            self.assertEqual(result.exit_code, 0)
+            self.assertEqual(result.command_exit_code, 0)
+            self.assertEqual(result.exit_code, 125)
             self.assertFalse(result.timed_out)
             self.assertFalse(result.leftover_process_group)
             self.assertTrue(result.output_drain_timed_out)
@@ -1578,6 +1995,91 @@ class RunnerGateTests(unittest.TestCase):
                 )
         self.assertEqual(artifact.read_bytes(), b"baseline")
 
+    def test_artifact_capture_completes_short_writes_before_claiming_success(self) -> None:
+        artifact = self.root / "short-write.patch"
+        artifact.write_bytes(b"baseline")
+        original_fdopen = runner.os.fdopen
+
+        class ShortWritingArtifact:
+            def __init__(self, descriptor: int, mode: str) -> None:
+                self.handle = original_fdopen(descriptor, mode, buffering=0)
+
+            def __enter__(self) -> "ShortWritingArtifact":
+                return self
+
+            def __exit__(
+                self,
+                exc_type: object,
+                exc: object,
+                traceback: object,
+            ) -> None:
+                self.handle.close()
+
+            def write(self, chunk: bytes) -> int:
+                return self.handle.write(chunk[:3])
+
+        with mock.patch.object(
+            runner.os,
+            "fdopen",
+            side_effect=lambda descriptor, mode, buffering=0: ShortWritingArtifact(
+                descriptor,
+                mode,
+            ),
+        ):
+            written = runner.stream_command_artifact(
+                [sys.executable, "-c", "import os; os.write(1, b'x' * 100)"],
+                repo=self.root,
+                destination=artifact,
+                max_bytes=1024,
+                timeout_seconds=5,
+                append=True,
+            )
+        self.assertEqual(written, 100)
+        self.assertEqual(artifact.read_bytes(), b"baseline" + (b"x" * 100))
+
+    def test_artifact_capture_rejects_zero_length_write_and_restores_artifact(self) -> None:
+        artifact = self.root / "zero-write.patch"
+        artifact.write_bytes(b"baseline")
+        original_fdopen = runner.os.fdopen
+
+        class ZeroWritingArtifact:
+            def __init__(self, descriptor: int, mode: str) -> None:
+                self.handle = original_fdopen(descriptor, mode, buffering=0)
+
+            def __enter__(self) -> "ZeroWritingArtifact":
+                return self
+
+            def __exit__(
+                self,
+                exc_type: object,
+                exc: object,
+                traceback: object,
+            ) -> None:
+                self.handle.close()
+
+            def write(self, chunk: bytes) -> int:
+                return 0
+
+        with mock.patch.object(
+            runner.os,
+            "fdopen",
+            side_effect=lambda descriptor, mode, buffering=0: ZeroWritingArtifact(
+                descriptor,
+                mode,
+            ),
+        ):
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.stream_command_artifact(
+                    [sys.executable, "-c", "import os; os.write(1, b'x' * 100)"],
+                    repo=self.root,
+                    destination=artifact,
+                    max_bytes=1024,
+                    timeout_seconds=5,
+                    append=True,
+                )
+        self.assertIn("short write", str(caught.exception))
+        self.assertEqual(artifact.read_bytes(), b"baseline")
+
     def test_artifact_capture_compensates_selector_setup_failure(self) -> None:
         artifact = self.root / "selector-setup.patch"
         artifact.write_bytes(b"baseline")
@@ -1654,6 +2156,7 @@ class RunnerGateTests(unittest.TestCase):
             environment=environment,
         )
         payload = json.loads(result.output)
+        self.assertEqual(result.command_exit_code, 0)
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(payload["payload"], "round-trip")
         self.assertNotIn("ROOTLOOM_FAKE_SECRET", payload["environment"])
@@ -1774,6 +2277,8 @@ class RunnerGateTests(unittest.TestCase):
                 encoding="utf-8"
             )
         )
+        self.assertEqual(summary["format"], "rootloom-verification-summary-v2")
+        self.assertEqual(summary["record_format"], "rootloom-verification-ndjson-v2")
         self.assertEqual(summary["artifact_bytes_written"], ndjson.stat().st_size)
         self.assertFalse((self.run_dir / "verification-budget.json").exists())
 
@@ -1817,7 +2322,9 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(len(records), 1)
         record = records[0]
         self.assertEqual(record["command_exit_code"], 0)
+        self.assertEqual(record["runner_exit_code"], 0)
         self.assertEqual(record["exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
+        self.assertEqual(record["record_schema_version"], 2)
         self.assertEqual(record["output_utf8_bytes"], 10_000)
         self.assertTrue(record["artifact_output_truncated"])
         self.assertTrue(record["verification_artifact_budget_exceeded"])
@@ -1919,6 +2426,35 @@ class RunnerGateTests(unittest.TestCase):
         self.assertIn("too small for required structured metadata", str(caught.exception))
         self.assertFalse(marker.exists())
 
+    def test_verification_ndjson_partial_write_is_rolled_back(self) -> None:
+        def partial_write(artifact: object, payload: bytes) -> int:
+            written = artifact.write(payload[:7])
+            assert written == 7
+            raise OSError("simulated NDJSON append failure")
+
+        ndjson = self.run_dir / "verification-partial-append.ndjson"
+        ndjson.write_bytes(b"")
+        with mock.patch.object(runner, "write_all", side_effect=partial_write):
+            with self.assertRaises(OSError):
+                runner.append_complete_artifact(
+                    ndjson,
+                    b"complete-record\n",
+                    expected_starting_size=0,
+                )
+        self.assertEqual(ndjson.read_bytes(), b"")
+
+        target = self.run_dir / "append-target.ndjson"
+        target.write_bytes(b"")
+        linked = self.run_dir / "append-linked.ndjson"
+        linked.symlink_to(target)
+        with self.assertRaisesRegex(runner.PipelineError, "open Artifact safely"):
+            runner.append_complete_artifact(
+                linked,
+                b"must-not-follow\n",
+                expected_starting_size=0,
+            )
+        self.assertEqual(target.read_bytes(), b"")
+
     def test_verification_batch_rejects_more_than_command_ceiling(self) -> None:
         args = mock.Mock(verify=["true"] * runner.MAX_VERIFICATION_COMMANDS)
         with self.assertRaises(runner.PipelineError):
@@ -1932,6 +2468,7 @@ class RunnerGateTests(unittest.TestCase):
             max_command_output_bytes=128,
         )
         result = runner.ManagedResult(
+            command_exit_code=0,
             exit_code=runner.COMMAND_OUTPUT_LIMIT_EXIT,
             output="bounded tail\n",
             timed_out=False,
@@ -1968,6 +2505,61 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(sidecar["output_bytes_observed"], 192)
         self.assertEqual(sidecar["output_bytes_retained"], 128)
         self.assertTrue(sidecar["output_limit_exceeded"])
+        self.assertEqual(sidecar["command_exit_code"], 0)
+        self.assertEqual(sidecar["runner_exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
+
+    def test_every_model_stage_rejects_detached_lifecycle_uncertainty(self) -> None:
+        args = mock.Mock(
+            dry_run=False,
+            codex_bin="codex",
+            stage_timeout=5,
+            max_command_output_bytes=128,
+        )
+        result = runner.ManagedResult(
+            command_exit_code=0,
+            exit_code=runner.COMMAND_LIFECYCLE_UNCERTAIN_EXIT,
+            output="detached descendant may still be running\n",
+            timed_out=False,
+            leftover_process_group=False,
+            output_bytes_observed=0,
+            output_bytes_retained=0,
+            output_truncated=False,
+            output_limit_exceeded=False,
+            output_drain_timed_out=True,
+            detached_descendant_possible=True,
+        )
+        with mock.patch.object(runner, "run_managed", return_value=result):
+            for stage in ("evidence", "diagnosis", "implementation", "review"):
+                with self.subTest(stage=stage), self.assertRaises(
+                    runner.PipelineError
+                ) as caught:
+                    runner.run_stage(
+                        args=args,
+                        repo=self.repo,
+                        run_dir=self.run_dir,
+                        stage_name=stage,
+                        artifact_prefix=f"detached-{stage}",
+                        role={
+                            "model": "test-model",
+                            "model_reasoning_effort": "high",
+                            "sandbox_mode": runner.ROLE_SANDBOXES[stage],
+                            "developer_instructions": "test",
+                        },
+                        schema={},
+                        prompt="inspect",
+                    )
+                self.assertIn("exit code 125", str(caught.exception))
+                sidecar = json.loads(
+                    (self.run_dir / f"detached-{stage}-command.json").read_text(
+                        encoding="utf-8"
+                    )
+                )
+                self.assertEqual(sidecar["command_exit_code"], 0)
+                self.assertEqual(
+                    sidecar["runner_exit_code"],
+                    runner.COMMAND_LIFECYCLE_UNCERTAIN_EXIT,
+                )
+                self.assertTrue(sidecar["detached_descendant_possible"])
 
     def test_compact_verification_preserves_structured_output_state(self) -> None:
         compact = json.loads(
@@ -1976,6 +2568,8 @@ class RunnerGateTests(unittest.TestCase):
                     {
                         "id": "verify-1",
                         "command": "python noisy_test.py",
+                        "command_exit_code": 0,
+                        "runner_exit_code": runner.COMMAND_OUTPUT_LIMIT_EXIT,
                         "exit_code": runner.COMMAND_OUTPUT_LIMIT_EXIT,
                         "output": "x" * 13000,
                         "leftover_process_group": False,
@@ -1990,6 +2584,8 @@ class RunnerGateTests(unittest.TestCase):
                 ]
             )
         )[0]
+        self.assertEqual(compact["command_exit_code"], 0)
+        self.assertEqual(compact["runner_exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
         self.assertEqual(compact["exit_code"], runner.COMMAND_OUTPUT_LIMIT_EXIT)
         self.assertEqual(compact["output_bytes_observed"], 9_000_000)
         self.assertEqual(compact["output_bytes_retained"], 8_388_608)
@@ -2091,7 +2687,9 @@ class RunnerGateTests(unittest.TestCase):
         time.sleep(0.75)
         self.assertFalse(marker.exists())
 
-    def test_failed_command_with_leftover_child_preserves_failure_and_cleans_up(self) -> None:
+    def test_failed_command_with_leftover_child_preserves_raw_failure_and_fails_closed(
+        self,
+    ) -> None:
         marker = self.root / "failed-leftover-child"
         child = self.root / "failed-linger.py"
         child.write_text(
@@ -2112,15 +2710,16 @@ class RunnerGateTests(unittest.TestCase):
             "raise SystemExit(7)\n",
             encoding="utf-8",
         )
-        return_code, output, timed_out, leftover = runner.run_managed(
+        result = runner.run_managed(
             [sys.executable, str(parent), str(child), str(marker)],
             cwd=self.root,
             timeout=5,
         )
-        self.assertEqual(return_code, 7)
-        self.assertFalse(timed_out)
-        self.assertTrue(leftover)
-        self.assertIn("left a live process group", output)
+        self.assertEqual(result.command_exit_code, 7)
+        self.assertEqual(result.exit_code, runner.COMMAND_LIFECYCLE_UNCERTAIN_EXIT)
+        self.assertFalse(result.timed_out)
+        self.assertTrue(result.leftover_process_group)
+        self.assertIn("left a live process group", result.output)
         time.sleep(0.5)
         self.assertFalse(marker.exists())
 

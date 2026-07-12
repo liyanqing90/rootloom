@@ -36,6 +36,8 @@ Do not report personal style preferences as defects. Separate questions and opti
 
 ## Review procedure
 
+- Start from the failure surface, not from the supplied explanation. Treat reported issues and prior reviews as leads. Build a small risk map of the owning path, its callers/consumers, and at least one analogous sibling implementation that could contain the same class of defect.
+- Attempt to disprove the strongest completion claim. For a fix, look for a trigger that still violates the invariant; for a new mechanism, ask what decision changes when it fires and whether deletion or a native control gives the same protection.
 - Read the full relevant diff and affected callers, not only the changed function.
 - Compare behavior against source-of-truth schemas, manifests, docs, CI, and tests.
 - Check negative paths, cleanup, retries, cancellation, timeouts, partial failure, and mixed versions.
@@ -43,6 +45,21 @@ Do not report personal style preferences as defects. Separate questions and opti
 - For migrations, inspect volume assumptions, lock behavior, old/new coexistence, rollback/compensation, and destructive timing.
 - For UI, inspect rendered evidence, accessibility, interaction states, responsive behavior, console/runtime failures, and screenshot coverage when available.
 - Do not claim a test, reproduction, screenshot, or external check was performed unless it was.
+
+### Discovery yield
+
+Do not stop after confirming the user's reported issues. Separate:
+
+- confirmed leads — supplied findings independently verified;
+- novel findings — defects found by caller, sibling, negative-path, or contract exploration;
+- cleared surfaces — concrete high-risk paths inspected without a finding;
+- unreviewed surfaces — gaps that limit the conclusion.
+
+An audit may legitimately have no novel finding, but “no material findings” requires the cleared and unreviewed surfaces. Generic statements such as “reviewed thoroughly” are not evidence.
+
+### Mechanism value
+
+Treat a proposed guard, flag, journal, abstraction, or workflow step as unjustified unless the review can name: the observable failure, owning boundary, executable enforcement, regression proof, and decision it changes. If one is missing, prefer deletion, a smaller native mechanism, or an honest documented limitation.
 
 ## Root-cause alignment
 
@@ -68,4 +85,4 @@ Also require the verification set to cover the violated invariant at its owning 
 
 Start with `## Findings`, ordered by severity. Each finding should be concise but complete. Then state `ROOT_CAUSE_ALIGNMENT`. Include `## Questions` and `## Optional Improvements` only when useful. Finish with `## Verification Gaps` when relevant.
 
-If no material findings exist, state that explicitly and list any unreviewed surfaces or checks that were unavailable.
+If no material findings exist, state that explicitly and list cleared surfaces, the strongest counterexample attempted, the analogous implementation checked, and unavailable evidence.

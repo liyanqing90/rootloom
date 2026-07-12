@@ -29,6 +29,8 @@ Use `assets/EXECPLAN.template.md`. Store the active plan in the repository's est
 
 The plan must be self-contained, grounded in verified paths and commands, and updated as evidence changes. Include observable success, baseline, invariants, impact map, staged implementation, compatibility, migration, rollout, rollback, verification, and decision log.
 
+The template is a routing aid, not a section quota. Omit inapplicable prose. A plan is invalid if its gates would not change an implementation, rollout, rollback, or stop decision.
+
 For material runtime or external evidence, include source, environment, observation time or window, stable artifact/query/issue/trace/correlation reference when available, freshness and redaction notes, and fact-versus-inference status. Keep sensitive raw payloads outside the plan and reference a sanitized repository-owned artifact when durable evidence is required. These fields support auditability; they do not prove the diagnosis.
 
 Read context progressively: start with active project guidance, then the relevant requirement or contract, target ownership paths, and verification rules. Expand only when the impact map or unresolved evidence requires it.
@@ -38,6 +40,8 @@ Read context progressively: start with active project guidance, then the relevan
 For bugs, incidents, regressions, data repair, or incorrect runtime behavior, record observed evidence, competing hypotheses, ownership path, violated invariant, and root cause before implementation. A GO decision requires evidence that explains the material symptoms and rejects plausible alternatives.
 
 If root cause remains unknown, either stop as `NO_GO` or explicitly govern a reversible `MITIGATION` with residual risk, observability, rollback, and a removal or follow-up condition. Never present symptom suppression as a complete root-cause fix.
+
+Before adding a control, pass the mechanism-value gate: identify the concrete failure, owning boundary, executable enforcement, regression proof, and operator decision changed. If the proposal only adds a flag, record, wrapper, score, or approval step without changing a decision, delete it or keep the limitation explicit.
 
 ## 4. Preserve compatibility deliberately
 
@@ -101,6 +105,8 @@ Use all applicable layers:
 For defect repair, require `ROOT_CAUSE_ALIGNMENT: PASS` before closeout. Prefer fail-before/pass-after regression evidence; when impractical, document equivalent trace or contract proof and the residual verification gap.
 
 Map behavioral verification to the violated invariant: prove the original trigger, the invariant at its owning boundary, and an adjacent negative or alternate path. A check that exercises only the newly added patch branch is insufficient evidence of a root-cause fix.
+
+After the requested checks pass, perform one fresh challenge pass that does not use the reported findings as its checklist: inspect an analogous producer/consumer, attempt the strongest counterexample, and audit the diff for removable complexity. Reopening the task after this pass is expected when it finds a material gap.
 
 When implementation accepts a durable architecture, contract, dependency, security, data, or operational choice, invoke `record-engineering-decision` when installed and link the accepted record from the ExecPlan. Do not turn transient task history into permanent documentation.
 

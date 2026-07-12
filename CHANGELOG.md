@@ -6,6 +6,32 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.12] - 2026-07-13
+
+### Security
+
+- Fail closed with Runner exit 125 whenever a managed command reaches the output-drain deadline or leaves an original process group, while retaining the direct process status separately for audit. Evidence, Diagnosis, Implementation, Review, and deterministic verification now share this owning-boundary result, so a detached child cannot preserve automatic PASS by returning 0 before a delayed mutation.
+- Complete every streamed Artifact write across valid short writes, reject zero/invalid progress, verify actual file-size growth, and compensate partial verification-NDJSON appends on one pinned no-follow regular-file descriptor.
+- Roll back the complete ordinary-untracked patch batch when any per-file capture fails instead of retaining patches from earlier files in the failed batch.
+- Bound repository-topology/allowed-path traversal, visible path manifests, Git status/index/control output, task/role input, and model structured JSON before downstream materialization; reuse content hashes only when stable file identity metadata matches inside the locked run.
+- Add a fingerprinted isolation-launcher interface with a required-mode preflight, drift-bound Human Review decisions, and phase-journaled setup orphan recovery.
+- Journal rollback before its first mutation and bind every recovery Journal to its complete Manifest. Recovery and ordinary v2 rollback verify that binding; recovery then allowlists unique managed targets and validates all backup/state bytes, hashes, before/after modes, and current before/after state before writing.
+- Bind Human Review to the canonical final Result core, hash reviewed Artifacts through stable directory-relative no-follow descriptors, create terminal records through no-follow descriptors, fsync the decision record, and atomically replace the reconstructable summary without following a destination symlink.
+
+### Changed
+
+- Version verification records as `rootloom-verification-ndjson-v2` plus `rootloom-verification-summary-v2`. Records distinguish raw `command_exit_code`, lifecycle-governed `runner_exit_code`, and final persisted `exit_code` when Artifact truncation forces output-limit failure.
+- Rootloom is now version 1.2.12 and the strict high-assurance runner is version 2.17. Reproduced defects require competing hypotheses plus contradiction evidence, GO requires a rejected alternative, and PASS requires a concrete counterexample/analog/complexity challenge. Provenance is classified as `repository` or `runtime_external`: local source records stay compact while runtime/external records machine-require their stronger attribution fields.
+- Treat supplied findings as leads across review workflows: inspect an analogous path, attempt the strongest counterexample, report discovery yield, and reject mechanisms that cannot name the decision they change. This reuses existing stages instead of adding another audit Skill or agent.
+- State limits and isolation metadata remain explicit contracts; Human Review binding/decision and setup recovery advance to version 2 for Result-core and Manifest-bound recovery semantics.
+- Replace four implementation-specific state/output knobs with `--max-state-paths` and `--max-state-bytes`.
+
+### Tests
+
+- Add detached delayed-mutation, all-model-stage lifecycle rejection, successful and zero-progress short-write, complete untracked-batch rollback, raw/effective exit-code, and partial NDJSON-append compensation regressions.
+- Add state-budget, digest-cache invalidation, structured-output, isolation, Human Review Result drift, apply/rollback interruption recovery, superseded-terminal-journal, Manifest/backup/mode tamper, unknown-target, no-follow terminal-file, and full-capacity Artifact regressions; expand CI contracts to Linux, macOS, and portable Windows scopes.
+- Add fail-before/pass-after regressions for competing hypotheses, contradiction provenance, rejected alternatives, challenged PASS, and the consolidated state limits. The release suite contains 50 repository tests and 82 focused Runner tests.
+
 ## [1.2.11] - 2026-07-12
 
 ### Security

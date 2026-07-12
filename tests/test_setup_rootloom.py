@@ -126,6 +126,161 @@ class RootloomSetupTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "applied")
 
+    def test_interrupted_setup_recovery_restores_pre_transaction_state(self) -> None:
+        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        transaction = Path(result["transaction"])
+        journal_path = transaction / "recovery.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["phase"] = "applying"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "requires 'recover'"):
+            setup.apply_plan(self.codex_home, replace_conflicts=False)
+        recovered = setup.recover(self.codex_home)
+        self.assertEqual(recovered["status"], "recovered")
+        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
+        self.assertEqual(setup.recover(self.codex_home)["status"], "no_recovery_required")
+
+    def test_superseded_terminal_recovery_journal_is_inert(self) -> None:
+        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        transaction = Path(result["transaction"])
+        journal_path = transaction / "recovery.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["format"] = "rootloom-setup-recovery-v1"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+
+        self.assertEqual(setup.unresolved_transactions(self.codex_home), [])
+        self.assertEqual(setup.recover(self.codex_home)["status"], "no_recovery_required")
+
+    def test_interrupted_setup_recovery_refuses_ambiguous_user_edit(self) -> None:
+        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        transaction = Path(result["transaction"])
+        journal_path = transaction / "recovery.json"
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        journal["phase"] = "applying"
+        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+        manifest = json.loads((transaction / "manifest.json").read_text(encoding="utf-8"))
+        target = self.codex_home / manifest["files"][0]["path"]
+        target.write_text("user changed after interruption", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "changed after interruption"):
+            setup.recover(self.codex_home)
+
+    def test_interrupted_rollback_recovery_restores_installed_state(self) -> None:
+        setup.apply_plan(self.codex_home, replace_conflicts=False)
+        installed_state = setup.load_state(self.codex_home)
+        managed = {
+            relative: (self.codex_home / relative).read_bytes()
+            for relative in installed_state["files"]
+        }
+        original_journal = setup.write_recovery_journal
+        interrupted = False
+
+        def interrupt_after_first_mutation(
+            transaction: Path,
+            phase: str,
+            applied_paths: list[str],
+        ) -> None:
+            nonlocal interrupted
+            original_journal(transaction, phase, applied_paths)
+            if phase == "applying" and not interrupted:
+                interrupted = True
+                raise SystemExit("simulated rollback interruption")
+
+        with mock.patch.object(
+            setup,
+            "write_recovery_journal",
+            side_effect=interrupt_after_first_mutation,
+        ):
+            with self.assertRaisesRegex(SystemExit, "simulated rollback interruption"):
+                setup.rollback(self.codex_home)
+
+        self.assertTrue(setup.unresolved_transactions(self.codex_home))
+        recovered = setup.recover(self.codex_home)
+        self.assertEqual(recovered["status"], "recovered")
+        self.assertEqual(setup.load_state(self.codex_home), installed_state)
+        for relative, expected in managed.items():
+            self.assertEqual((self.codex_home / relative).read_bytes(), expected)
+
+    def test_recovery_rejects_unknown_target_before_mutation(self) -> None:
+        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        transaction = Path(result["transaction"])
+        victim = self.codex_home / "unmanaged-user-file.txt"
+        victim.write_text("preserve me", encoding="utf-8")
+        manifest_path = transaction / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["files"].append(
+            {
+                "path": victim.name,
+                "before_exists": False,
+                "before_hash": None,
+                "before_mode": None,
+                "after_hash": setup.sha256_bytes(victim.read_bytes()),
+                "backup": None,
+            }
+        )
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        setup.write_recovery_journal(transaction, "applying", [])
+
+        with self.assertRaisesRegex(ValueError, "invalid recovery target"):
+            setup.recover(self.codex_home)
+        self.assertEqual(victim.read_text(encoding="utf-8"), "preserve me")
+
+    def test_recovery_preflights_backup_hash_before_mutation(self) -> None:
+        agents = self.codex_home / "AGENTS.md"
+        agents.write_text("# User policy\n", encoding="utf-8")
+        result = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=True,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        transaction = Path(result["transaction"])
+        setup.write_recovery_journal(transaction, "applying", [])
+        manifest = json.loads((transaction / "manifest.json").read_text(encoding="utf-8"))
+        entry = next(item for item in manifest["files"] if item["path"] == "AGENTS.md")
+        (transaction / entry["backup"]).write_text("corrupt backup", encoding="utf-8")
+        managed_agents = agents.read_bytes()
+        installed_state = (self.codex_home / setup.STATE_DIRNAME / "state.json").read_bytes()
+
+        with self.assertRaisesRegex(RuntimeError, "backup hash"):
+            setup.recover(self.codex_home)
+        self.assertEqual(agents.read_bytes(), managed_agents)
+        self.assertEqual(
+            (self.codex_home / setup.STATE_DIRNAME / "state.json").read_bytes(),
+            installed_state,
+        )
+
+    def test_recovery_rejects_manifest_drift_before_mutation(self) -> None:
+        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        transaction = Path(result["transaction"])
+        setup.write_recovery_journal(transaction, "applying", [])
+        manifest_path = transaction / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        omitted = manifest["files"].pop()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        target = self.codex_home / omitted["path"]
+        expected = target.read_bytes()
+
+        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
+            setup.recover(self.codex_home)
+        self.assertEqual(target.read_bytes(), expected)
+
+    def test_recovery_rejects_mode_drift_before_mutation(self) -> None:
+        result = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        transaction = Path(result["transaction"])
+        setup.write_recovery_journal(transaction, "applying", [])
+        agents = self.codex_home / "AGENTS.md"
+        state_path = self.codex_home / setup.STATE_DIRNAME / "state.json"
+        installed_state = state_path.read_bytes()
+        agents.chmod(0o644)
+
+        with self.assertRaisesRegex(RuntimeError, "mode changed"):
+            setup.recover(self.codex_home)
+        self.assertEqual(state_path.read_bytes(), installed_state)
+        self.assertEqual(setup.file_mode(agents), 0o644)
+
     def test_rollback_restores_original_file_mode(self) -> None:
         agents = self.codex_home / "AGENTS.md"
         agents.write_text("# User policy\n", encoding="utf-8")
@@ -193,6 +348,20 @@ class RootloomSetupTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "changed after setup"):
             setup.rollback(self.codex_home)
 
+    def test_rollback_refuses_post_setup_mode_drift(self) -> None:
+        setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        agents = self.codex_home / "AGENTS.md"
+        agents.chmod(0o644)
+
+        with self.assertRaisesRegex(RuntimeError, "changed after setup"):
+            setup.rollback(self.codex_home)
+        self.assertEqual(setup.file_mode(agents), 0o644)
+        self.assertEqual(setup.load_state(self.codex_home)["status"], "installed")
+
     def test_setup_refuses_symlinked_managed_directories_even_with_replace(self) -> None:
         outside = Path(self.temp_dir.name) / "outside-agents"
         outside.mkdir()
@@ -207,7 +376,7 @@ class RootloomSetupTests(unittest.TestCase):
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
         manifest["files"][0]["path"] = "../../outside"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "invalid transaction target"):
+        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
             setup.rollback(self.codex_home)
 
     def test_rollback_rejects_tampered_previous_state_before_mutation(self) -> None:
@@ -222,7 +391,7 @@ class RootloomSetupTests(unittest.TestCase):
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
         before = (self.codex_home / "AGENTS.md").read_bytes()
-        with self.assertRaisesRegex(ValueError, "invalid previous setup transaction path"):
+        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
             setup.rollback(self.codex_home)
         self.assertEqual((self.codex_home / "AGENTS.md").read_bytes(), before)
 

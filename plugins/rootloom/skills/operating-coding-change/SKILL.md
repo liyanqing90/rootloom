@@ -109,6 +109,8 @@ If a check cannot run, record the exact command or evidence that is missing, the
 
 ## 7. Review the final diff
 
+Review once from a blank-slate adversarial position rather than replaying the task checklist. Search one analogous sibling/caller for the same defect class, attempt the strongest counterexample to completion, and ask whether every new mechanism changes a real decision. Delete guards, flags, records, or abstractions that only restate an existing control.
+
 Check for:
 
 - accidental scope growth or lost user changes;

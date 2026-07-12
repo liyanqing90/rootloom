@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   test:
-    name: Python ${{ matrix.python-version }}
+    name: Linux Python ${{ matrix.python-version }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
@@ -34,6 +34,47 @@ jobs:
 
       - name: Run repository checks
         run: make check
+
+  portable-platforms:
+    name: Portable contracts (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Validate repository contracts
+        run: python scripts/validate_repo.py
+
+      - name: Run portable setup, guidance, and hook tests
+        run: python -m unittest discover -s tests -p "test_*.py" -v
+
+  macos-strict-runner:
+    name: macOS Strict Runner
+    runs-on: macos-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.11"
+
+      - name: Run POSIX Strict Runner regressions
+        run: python plugins/rootloom/skills/high-assurance-coding-change/scripts/test_run_pipeline.py
 
   codex-contracts:
     name: Codex CLI contracts

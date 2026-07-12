@@ -615,11 +615,296 @@ def make_transaction_dir(codex_home: Path) -> Path:
     return path
 
 
+RECOVERY_FORMAT = "rootloom-setup-recovery-v2"
+TERMINAL_RECOVERY_PHASES = {"committed", "compensated", "recovered"}
+
+
+def write_recovery_journal(
+    transaction: Path,
+    phase: str,
+    applied_paths: list[str],
+) -> None:
+    manifest_path = transaction / "manifest.json"
+    if has_symlink_component(manifest_path, transaction) or not manifest_path.is_file():
+        raise ValueError("setup recovery manifest is missing or symlinked")
+    manifest_sha256 = sha256_bytes(manifest_path.read_bytes())
+    atomic_write(
+        transaction / "recovery.json",
+        (
+            json.dumps(
+                {
+                    "format": RECOVERY_FORMAT,
+                    "phase": phase,
+                    "applied_paths": applied_paths,
+                    "manifest_sha256": manifest_sha256,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        ).encode(),
+    )
+
+
+def unresolved_transactions(codex_home: Path) -> list[Path]:
+    root = codex_home / STATE_DIRNAME / "backups"
+    if not root.exists():
+        return []
+    if root.is_symlink():
+        raise ValueError("refusing symlinked setup backup directory")
+    unresolved: list[Path] = []
+    for journal_path in sorted(root.glob("*/recovery.json")):
+        transaction = journal_path.parent
+        if (
+            transaction.is_symlink()
+            or not transaction.resolve().is_relative_to(root.resolve())
+            or journal_path.is_symlink()
+        ):
+            raise ValueError("refusing symlinked setup recovery journal")
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        if not isinstance(journal, dict):
+            raise ValueError(f"invalid setup recovery journal: {journal_path}")
+        if journal.get("format") != RECOVERY_FORMAT:
+            if journal.get("phase") in TERMINAL_RECOVERY_PHASES:
+                continue
+            raise ValueError(f"invalid setup recovery journal: {journal_path}")
+        if journal.get("phase") not in TERMINAL_RECOVERY_PHASES:
+            unresolved.append(journal_path.parent)
+    return unresolved
+
+
+def ensure_no_unresolved_transaction(codex_home: Path) -> None:
+    unresolved = unresolved_transactions(codex_home)
+    if unresolved:
+        raise RuntimeError(
+            "unresolved Rootloom setup transaction requires 'recover': "
+            + ", ".join(str(path) for path in unresolved)
+        )
+
+
+def _valid_recovery_hash(value: Any, *, allow_missing: bool) -> bool:
+    if value is None:
+        return allow_missing
+    return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+
+def _recovery_backup_bytes(
+    transaction: Path,
+    raw_relative: Any,
+    expected_hash: str,
+    label: str,
+) -> bytes:
+    if not isinstance(raw_relative, str):
+        raise ValueError(f"invalid {label} backup path")
+    relative = Path(raw_relative)
+    if not relative.parts or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"invalid {label} backup path")
+    backup = transaction / relative
+    if (
+        has_symlink_component(backup, transaction)
+        or not backup.resolve().is_relative_to(transaction.resolve())
+        or not backup.is_file()
+    ):
+        raise ValueError(f"invalid {label} recovery backup")
+    payload = backup.read_bytes()
+    if sha256_bytes(payload) != expected_hash:
+        raise RuntimeError(f"{label} recovery backup hash does not match its manifest")
+    return payload
+
+
+def _recovery_mode(value: Any, label: str) -> int:
+    if (
+        not isinstance(value, int)
+        or isinstance(value, bool)
+        or value < 0
+        or value > 0o7777
+    ):
+        raise ValueError(f"invalid {label} recovery mode")
+    return value
+
+
+def build_recovery_plan(
+    codex_home: Path,
+    transaction: Path,
+    manifest: dict[str, Any],
+) -> tuple[list[tuple[Path, bytes | None, int | None]], Path, bytes | None, int | None]:
+    raw_home = manifest.get("codex_home")
+    if not isinstance(raw_home, str) or Path(raw_home).resolve() != codex_home.resolve():
+        raise ValueError("setup recovery manifest targets a different Codex home")
+    if manifest.get("operation") not in {"apply", "rollback"}:
+        raise ValueError("invalid setup recovery operation")
+    entries = manifest.get("files")
+    state_contract = manifest.get("state_recovery")
+    if not isinstance(entries, list) or not isinstance(state_contract, dict):
+        raise ValueError("setup transaction has no complete recovery contract")
+
+    allowed_paths = {target.relative_path for target in all_targets(plugin_root())}
+    seen: set[str] = set()
+    plan: list[tuple[Path, bytes | None, int | None]] = []
+    for raw_entry in entries:
+        if not isinstance(raw_entry, dict):
+            raise ValueError("invalid setup recovery entry")
+        relative = raw_entry.get("path")
+        if not isinstance(relative, str) or relative not in allowed_paths or relative in seen:
+            raise ValueError(f"invalid recovery target: {relative!r}")
+        seen.add(relative)
+        destination = codex_home / relative
+        if has_symlink_component(destination, codex_home):
+            raise ValueError(f"refusing symlinked recovery target: {relative}")
+
+        before_exists = raw_entry.get("before_exists")
+        before_hash = raw_entry.get("before_hash")
+        after_hash = raw_entry.get("after_hash")
+        if not isinstance(before_exists, bool):
+            raise ValueError(f"invalid recovery existence contract for {relative}")
+        if not _valid_recovery_hash(before_hash, allow_missing=not before_exists):
+            raise ValueError(f"invalid before hash for recovery target {relative}")
+        if not _valid_recovery_hash(after_hash, allow_missing=True):
+            raise ValueError(f"invalid after hash for recovery target {relative}")
+        if after_hash is not None:
+            after_mode = _recovery_mode(raw_entry.get("after_mode"), relative)
+        else:
+            if raw_entry.get("after_mode") is not None:
+                raise ValueError(f"inconsistent deleted-file recovery contract: {relative}")
+            after_mode = None
+        if before_exists:
+            assert isinstance(before_hash, str)
+            before = _recovery_backup_bytes(
+                transaction,
+                raw_entry.get("backup"),
+                before_hash,
+                relative,
+            )
+            mode = _recovery_mode(raw_entry.get("before_mode"), relative)
+        else:
+            if (
+                before_hash is not None
+                or raw_entry.get("backup") is not None
+                or raw_entry.get("before_mode") is not None
+            ):
+                raise ValueError(f"inconsistent missing-file recovery contract: {relative}")
+            before = None
+            mode = None
+        current = read_bytes(destination)
+        current_hash = sha256_bytes(current) if current is not None else None
+        if current_hash not in {before_hash, after_hash}:
+            raise RuntimeError(f"recovery refused because {relative} changed after interruption")
+        if current is not None:
+            current_mode = file_mode(destination)
+            allowed_modes: set[int] = set()
+            if current_hash == before_hash and before_exists:
+                assert mode is not None
+                allowed_modes.add(mode)
+            if current_hash == after_hash and after_mode is not None:
+                allowed_modes.add(after_mode)
+            if current_mode not in allowed_modes:
+                raise RuntimeError(
+                    f"recovery refused because {relative} mode changed after interruption"
+                )
+        plan.append((destination, before, mode))
+
+    state_path = codex_home / STATE_DIRNAME / "state.json"
+    state_before_exists = state_contract.get("before_exists")
+    state_before_hash = state_contract.get("before_hash")
+    state_after_hash = state_contract.get("after_hash")
+    if not isinstance(state_before_exists, bool):
+        raise ValueError("invalid setup-state recovery existence contract")
+    if not _valid_recovery_hash(
+        state_before_hash,
+        allow_missing=not state_before_exists,
+    ) or not _valid_recovery_hash(state_after_hash, allow_missing=True):
+        raise ValueError("invalid setup-state recovery hash contract")
+    if state_after_hash is not None:
+        state_after_mode = _recovery_mode(
+            state_contract.get("after_mode"),
+            "setup state",
+        )
+    else:
+        if state_contract.get("after_mode") is not None:
+            raise ValueError("inconsistent deleted setup-state recovery contract")
+        state_after_mode = None
+    if state_before_exists:
+        assert isinstance(state_before_hash, str)
+        state_before = _recovery_backup_bytes(
+            transaction,
+            "state.before",
+            state_before_hash,
+            "setup state",
+        )
+        state_mode = _recovery_mode(state_contract.get("before_mode"), "setup state")
+    else:
+        if state_before_hash is not None or state_contract.get("before_mode") is not None:
+            raise ValueError("inconsistent missing setup-state recovery contract")
+        state_before = None
+        state_mode = None
+    state_current = read_bytes(state_path)
+    state_hash = sha256_bytes(state_current) if state_current is not None else None
+    if state_hash not in {state_before_hash, state_after_hash}:
+        raise RuntimeError("recovery refused because setup state changed after interruption")
+    if state_current is not None:
+        current_state_mode = file_mode(state_path)
+        allowed_state_modes: set[int] = set()
+        if state_hash == state_before_hash and state_before_exists:
+            assert state_mode is not None
+            allowed_state_modes.add(state_mode)
+        if state_hash == state_after_hash and state_after_mode is not None:
+            allowed_state_modes.add(state_after_mode)
+        if current_state_mode not in allowed_state_modes:
+            raise RuntimeError(
+                "recovery refused because setup state mode changed after interruption"
+            )
+    return plan, state_path, state_before, state_mode
+
+
+def _recover_locked(codex_home: Path) -> dict[str, Any]:
+    unresolved = unresolved_transactions(codex_home)
+    if not unresolved:
+        return {"status": "no_recovery_required", "codex_home": str(codex_home)}
+    if len(unresolved) != 1:
+        raise RuntimeError("multiple unresolved setup transactions require manual recovery")
+    transaction = unresolved[0]
+    manifest_path = transaction / "manifest.json"
+    if manifest_path.is_symlink():
+        raise ValueError("refusing symlinked transaction manifest")
+    manifest_payload = manifest_path.read_bytes()
+    journal = json.loads((transaction / "recovery.json").read_text(encoding="utf-8"))
+    if journal.get("manifest_sha256") != sha256_bytes(manifest_payload):
+        raise RuntimeError("setup recovery manifest changed after journal preparation")
+    manifest = json.loads(manifest_payload)
+    if not isinstance(manifest, dict):
+        raise ValueError("invalid setup recovery manifest")
+    plan, state_path, state_before, state_mode = build_recovery_plan(
+        codex_home,
+        transaction,
+        manifest,
+    )
+    for destination, before, mode in reversed(plan):
+        if before is not None:
+            assert mode is not None
+            atomic_write(destination, before, mode=mode)
+        else:
+            destination.unlink(missing_ok=True)
+    if state_before is not None:
+        assert state_mode is not None
+        atomic_write(state_path, state_before, mode=state_mode)
+    else:
+        state_path.unlink(missing_ok=True)
+    write_recovery_journal(transaction, "recovered", [])
+    return {"status": "recovered", "transaction": str(transaction)}
+
+
+def recover(codex_home: Path) -> dict[str, Any]:
+    with setup_lock(codex_home):
+        return _recover_locked(codex_home)
+
+
 def _apply_plan_locked(
     codex_home: Path,
     replace_conflicts: bool,
     capabilities: tuple[str, ...] = FULL_CAPABILITIES,
 ) -> dict[str, Any]:
+    ensure_no_unresolved_transaction(codex_home)
     selected_capabilities = normalize_capabilities(capabilities)
     selected_components = components_for_capabilities(selected_capabilities)
     previous_state = load_state(codex_home)
@@ -674,10 +959,12 @@ def _apply_plan_locked(
                 "before_hash": sha256_bytes(before) if before is not None else None,
                 "before_mode": before_mode,
                 "after_hash": sha256_bytes(desired[action.path]),
+                "after_mode": 0o600,
                 "backup": backup_relative,
             }
         )
     transaction_manifest = {
+        "operation": "apply",
         "version": version,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "codex_home": str(codex_home),
@@ -704,15 +991,40 @@ def _apply_plan_locked(
             for action in actions
         },
     }
+    state_payload = (json.dumps(state, indent=2, sort_keys=True) + "\n").encode()
+    if state_before is not None:
+        atomic_write(transaction / "state.before", state_before, mode=state_before_mode or 0o600)
+    transaction_manifest["state_recovery"] = {
+        "before_exists": state_before is not None,
+        "before_hash": sha256_bytes(state_before) if state_before is not None else None,
+        "before_mode": state_before_mode,
+        "after_hash": sha256_bytes(state_payload),
+        "after_mode": 0o600,
+    }
+    atomic_write(
+        transaction / "manifest.json",
+        (json.dumps(transaction_manifest, indent=2, sort_keys=True) + "\n").encode(),
+    )
+    write_recovery_journal(transaction, "prepared", [])
     mutated_entries: list[dict[str, Any]] = []
     try:
         for entry in manifest_entries:
             destination = codex_home / entry["path"]
             mutated_entries.append(entry)
             atomic_write(destination, desired[entry["path"]])
+            write_recovery_journal(
+                transaction,
+                "applying",
+                [item["path"] for item in mutated_entries],
+            )
         atomic_write(
             state_path,
-            (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+            state_payload,
+        )
+        write_recovery_journal(
+            transaction,
+            "committed",
+            [item["path"] for item in mutated_entries],
         )
     except Exception as exc:
         restore_errors: list[str] = []
@@ -746,6 +1058,7 @@ def _apply_plan_locked(
                 "setup failed and compensation was incomplete: "
                 + "; ".join(restore_errors)
             ) from exc
+        write_recovery_journal(transaction, "compensated", [])
         raise
     return {
         "status": "applied",
@@ -768,6 +1081,7 @@ def apply_plan(
 
 
 def _rollback_locked(codex_home: Path) -> dict[str, Any]:
+    ensure_no_unresolved_transaction(codex_home)
     state = load_state(codex_home)
     if state.get("status") != "installed" or not state.get("latest_transaction"):
         raise RuntimeError("no installed transaction is available to roll back")
@@ -786,7 +1100,20 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
     manifest_path = transaction / "manifest.json"
     if manifest_path.is_symlink():
         raise ValueError("refusing symlinked transaction manifest")
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_payload = manifest_path.read_bytes()
+    journal_path = transaction / "recovery.json"
+    if journal_path.exists():
+        if journal_path.is_symlink():
+            raise ValueError("refusing symlinked transaction recovery journal")
+        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+        if not isinstance(journal, dict):
+            raise ValueError("invalid transaction recovery journal")
+        if (
+            journal.get("format") == RECOVERY_FORMAT
+            and journal.get("manifest_sha256") != sha256_bytes(manifest_payload)
+        ):
+            raise RuntimeError("setup transaction manifest changed after journal commit")
+    manifest = json.loads(manifest_payload)
     entries = manifest.get("files")
     if not isinstance(entries, list):
         raise ValueError(f"invalid transaction manifest: {manifest_path}")
@@ -809,28 +1136,91 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
 
     allowed_paths = {target.relative_path for target in all_targets(plugin_root())}
     rollback_snapshots: list[tuple[str, bytes | None, int | None]] = []
+    rollback_mutations: list[tuple[str, bytes | None, int | None]] = []
+    seen_paths: set[str] = set()
     for entry in entries:
+        if not isinstance(entry, dict):
+            raise ValueError("invalid transaction manifest entry")
         relative_path = entry.get("path")
-        if relative_path not in allowed_paths:
+        if relative_path not in allowed_paths or relative_path in seen_paths:
             raise ValueError(f"invalid transaction target: {relative_path!r}")
+        seen_paths.add(relative_path)
         destination = codex_home / relative_path
         if has_symlink_component(destination, codex_home):
             raise ValueError(f"refusing symlinked rollback target: {relative_path}")
         current = read_bytes(destination)
+        current_mode = file_mode(destination) if current is not None else None
         rollback_snapshots.append(
             (
                 relative_path,
                 current,
-                file_mode(destination) if current is not None else None,
+                current_mode,
             )
         )
         current_hash = sha256_bytes(current) if current is not None else None
-        if current_hash != entry["after_hash"]:
+        after_hash = entry.get("after_hash")
+        before_hash = entry.get("before_hash")
+        before_exists = entry.get("before_exists")
+        if not _valid_recovery_hash(after_hash, allow_missing=True):
+            raise ValueError(f"invalid transaction after hash: {relative_path}")
+        raw_after_mode = entry.get("after_mode")
+        if raw_after_mode is None:
+            expected_after_mode = None
+        elif after_hash is None:
+            raise ValueError(f"invalid transaction after mode: {relative_path}")
+        else:
+            expected_after_mode = _recovery_mode(raw_after_mode, relative_path)
+        if not isinstance(before_exists, bool) or not _valid_recovery_hash(
+            before_hash,
+            allow_missing=not before_exists,
+        ):
+            raise ValueError(f"invalid transaction before contract: {relative_path}")
+        content_drift = current_hash != after_hash
+        mode_drift = (
+            expected_after_mode is not None
+            and current is not None
+            and current_mode != expected_after_mode
+        )
+        managed_config_drift = False
+        if content_drift or mode_drift:
             if relative_path == "config.toml" and current is not None:
                 if managed_agent_limits_intact(current.decode("utf-8")):
-                    continue
-            raise RuntimeError(
-                f"refusing rollback because {entry['path']} changed after setup"
+                    managed_config_drift = True
+                else:
+                    raise RuntimeError(
+                        f"refusing rollback because {entry['path']} changed after setup"
+                    )
+            else:
+                raise RuntimeError(
+                    f"refusing rollback because {entry['path']} changed after setup"
+                )
+
+        previous = b""
+        previous_mode: int | None = None
+        if before_exists:
+            assert isinstance(before_hash, str)
+            previous = _recovery_backup_bytes(
+                transaction,
+                entry.get("backup"),
+                before_hash,
+                relative_path,
+            )
+            previous_mode = _recovery_mode(entry.get("before_mode"), relative_path)
+        elif before_hash is not None or entry.get("backup") is not None:
+            raise ValueError(f"inconsistent missing transaction target: {relative_path}")
+
+        if managed_config_drift:
+            assert current is not None and current_mode is not None
+            restored = restore_agent_limits(
+                current.decode("utf-8"),
+                previous.decode("utf-8"),
+            ).encode()
+            rollback_mutations.append(
+                (relative_path, restored or None, current_mode if restored else None)
+            )
+        else:
+            rollback_mutations.append(
+                (relative_path, previous if before_exists else None, previous_mode)
             )
 
     if isinstance(previous_state, dict) and previous_state.get("status") == "installed":
@@ -846,53 +1236,83 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
     state_path = codex_home / STATE_DIRNAME / "state.json"
     state_before = read_bytes(state_path)
     state_before_mode = file_mode(state_path) if state_before is not None else None
+    if state_before is None or state_before_mode is None:
+        raise RuntimeError("installed setup state disappeared before rollback")
+    next_state_payload = (json.dumps(next_state, indent=2, sort_keys=True) + "\n").encode()
+
+    rollback_recovery = make_transaction_dir(codex_home)
+    recovery_entries: list[dict[str, Any]] = []
+    snapshots_by_path = {
+        relative: (before, mode)
+        for relative, before, mode in rollback_snapshots
+    }
+    for relative, desired, _desired_mode in rollback_mutations:
+        before, before_mode = snapshots_by_path[relative]
+        backup_relative: str | None = None
+        if before is not None:
+            assert before_mode is not None
+            backup_relative = (Path("before") / relative).as_posix()
+            atomic_write(
+                rollback_recovery / backup_relative,
+                before,
+                mode=before_mode,
+            )
+        recovery_entries.append(
+            {
+                "path": relative,
+                "before_exists": before is not None,
+                "before_hash": sha256_bytes(before) if before is not None else None,
+                "before_mode": before_mode,
+                "after_hash": sha256_bytes(desired) if desired is not None else None,
+                "after_mode": _desired_mode,
+                "backup": backup_relative,
+            }
+        )
+    atomic_write(
+        rollback_recovery / "state.before",
+        state_before,
+        mode=state_before_mode,
+    )
+    rollback_manifest = {
+        "operation": "rollback",
+        "version": plugin_version(plugin_root()),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "codex_home": str(codex_home),
+        "files": recovery_entries,
+        "state_recovery": {
+            "before_exists": True,
+            "before_hash": sha256_bytes(state_before),
+            "before_mode": state_before_mode,
+            "after_hash": sha256_bytes(next_state_payload),
+            "after_mode": 0o600,
+        },
+    }
+    atomic_write(
+        rollback_recovery / "manifest.json",
+        (json.dumps(rollback_manifest, indent=2, sort_keys=True) + "\n").encode(),
+    )
+    write_recovery_journal(rollback_recovery, "prepared", [])
+    mutated_paths: list[str] = []
     try:
-        for entry in reversed(entries):
-            destination = codex_home / entry["path"]
-            current = read_bytes(destination)
-            current_hash = sha256_bytes(current) if current is not None else None
-            if entry["path"] == "config.toml" and current_hash != entry["after_hash"]:
-                assert current is not None
-                previous = b""
-                if entry["before_exists"]:
-                    backup_relative = Path(str(entry["backup"]))
-                    if backup_relative.is_absolute() or ".." in backup_relative.parts:
-                        raise ValueError("invalid transaction backup path")
-                    backup_path = transaction / backup_relative
-                    if backup_path.is_symlink():
-                        raise ValueError("refusing symlinked transaction backup")
-                    backup = backup_path.resolve()
-                    if not backup.is_relative_to(transaction):
-                        raise ValueError("transaction backup escaped its directory")
-                    previous = backup.read_bytes()
-                restored = restore_agent_limits(
-                    current.decode("utf-8"),
-                    previous.decode("utf-8"),
-                ).encode()
-                if restored:
-                    atomic_write(destination, restored, mode=file_mode(destination))
-                else:
-                    destination.unlink(missing_ok=True)
-                continue
-            if entry["before_exists"]:
-                backup_relative = Path(str(entry["backup"]))
-                if backup_relative.is_absolute() or ".." in backup_relative.parts:
-                    raise ValueError("invalid transaction backup path")
-                backup_path = transaction / backup_relative
-                if backup_path.is_symlink():
-                    raise ValueError("refusing symlinked transaction backup")
-                backup = backup_path.resolve()
-                if not backup.is_relative_to(transaction):
-                    raise ValueError("transaction backup escaped its directory")
-                raw_mode = entry.get("before_mode")
-                mode = raw_mode if isinstance(raw_mode, int) else file_mode(backup)
-                atomic_write(destination, backup.read_bytes(), mode=mode)
+        for relative, desired, desired_mode in reversed(rollback_mutations):
+            destination = codex_home / relative
+            if desired is not None:
+                assert desired_mode is not None
+                atomic_write(destination, desired, mode=desired_mode)
             else:
                 destination.unlink(missing_ok=True)
+            mutated_paths.append(relative)
+            write_recovery_journal(
+                rollback_recovery,
+                "applying",
+                list(mutated_paths),
+            )
 
-        atomic_write(
-            state_path,
-            (json.dumps(next_state, indent=2, sort_keys=True) + "\n").encode(),
+        atomic_write(state_path, next_state_payload)
+        write_recovery_journal(
+            rollback_recovery,
+            "committed",
+            list(mutated_paths),
         )
     except Exception as exc:
         restore_errors: list[str] = []
@@ -921,6 +1341,7 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
                 "rollback failed and compensation was incomplete: "
                 + "; ".join(restore_errors)
             ) from exc
+        write_recovery_journal(rollback_recovery, "compensated", [])
         raise
     return {
         "status": rollback_status,
@@ -1119,6 +1540,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="unwind every setup transaction to the pre-install baseline",
     )
+    subparsers.add_parser(
+        "recover",
+        help="recover one interrupted setup transaction after validating no user drift",
+    )
     return parser.parse_args(argv)
 
 
@@ -1138,6 +1563,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "apply":
             selected = selected_capabilities_from_args(args, codex_home)
             payload = apply_plan(codex_home, args.replace_conflicts, selected)
+        elif args.command == "recover":
+            payload = recover(codex_home)
         else:
             payload = rollback_all(codex_home) if args.all else rollback(codex_home)
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:

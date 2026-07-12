@@ -64,7 +64,7 @@ python3 <skill-dir>/scripts/setup_rootloom.py apply --preset engineering
 
 Apply the same preset or exact capability set that was reviewed in the plan. Changing an installed capability selection requires `rollback --all` first; do not silently leave assets from the previous layer behind.
 
-The transaction prepares backups and its manifest before mutation. If target or state commit fails, it restores the prior files, state, and file modes before reporting failure.
+Apply and rollback each prepare their complete backups, Manifest-bound prior state, and phase journal before the first mutation. If target or state commit fails, they restore prior files, state, and modes before reporting failure. A later apply or rollback refuses an unresolved prepared/applying transaction. After `SIGKILL`, host interruption, or equivalent orphaning, inspect and run `python3 <skill-dir>/scripts/setup_rootloom.py recover`; recovery first validates a unique managed-target plan, every backup Hash/Mode, and all current before/after hashes, then restores the pre-operation state or refuses ambiguity without writing.
 
 If the plan contains user-owned conflicts, do not use `--replace-conflicts` until the user has seen the exact affected paths and explicitly authorizes replacement. Every replacement is backed up, but backup is not a substitute for authorization.
 

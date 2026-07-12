@@ -40,6 +40,14 @@ REQUIRED_SKILLS = {
 }
 
 WORKFLOW_CONTRACTS = {
+    ROOT / ".github" / "workflows" / "ci.yml": (
+        "ubuntu-latest",
+        "macos-latest",
+        "windows-latest",
+        "portable-platforms",
+        "macos-strict-runner",
+        "Codex CLI contracts",
+    ),
     SYSTEM_ASSETS / "AGENTS.md": (
         "Tier 0 Direct",
         "Tier 1 Scoped",
@@ -65,6 +73,9 @@ WORKFLOW_CONTRACTS = {
         "original failure path",
         "unattributed model summary",
         "adjacent negative",
+        "Discovery yield",
+        "Mechanism value",
+        "strongest counterexample",
     ),
     SKILLS_DIR / "operating-high-risk-change" / "SKILL.md": (
         "Tier 2 Governed",
@@ -74,6 +85,8 @@ WORKFLOW_CONTRACTS = {
         "MITIGATION",
         "material runtime or external evidence",
         "adjacent negative",
+        "mechanism-value gate",
+        "fresh challenge pass",
     ),
     SKILLS_DIR / "high-assurance-coding-change" / "SKILL.md": (
         "Tier 1 Scoped",
@@ -82,6 +95,20 @@ WORKFLOW_CONTRACTS = {
         "do not establish factual truth",
         "evidence provenance",
         "existing provenance ID",
+    ),
+    SYSTEM_ASSETS / "agents" / "evidence_explorer.toml": (
+        "leads, not as the investigation boundary",
+        "analogous sibling",
+        "contradicts or falsifies",
+    ),
+    SYSTEM_ASSETS / "agents" / "root_cause_reviewer.toml": (
+        "Reject at least one serious alternative",
+        "decision it changes",
+    ),
+    SYSTEM_ASSETS / "agents" / "verification_reviewer.toml": (
+        "strongest counterexample",
+        "analogous sibling",
+        "earns its complexity",
     ),
     SKILLS_DIR / "record-engineering-decision" / "SKILL.md": (
         "durable repository-owned engineering decision",
@@ -360,8 +387,15 @@ def validate_system_assets(errors: list[str]) -> None:
             '"subagent-audit-hook"',
             "setup_lock",
             '"before_mode"',
+            '"after_mode"',
             "setup failed and compensation was incomplete",
             "rollback failed and compensation was incomplete",
+            "rootloom-setup-recovery-v2",
+            "ensure_no_unresolved_transaction",
+            "build_recovery_plan",
+            '"operation": "rollback"',
+            "manifest_sha256",
+            '"recover"',
         ):
             if contract not in setup_text:
                 errors.append(f"setup script is missing capability contract: {contract}")
@@ -386,7 +420,9 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.13"',
+            'RUNNER_VERSION = "2.17"',
+            "DEFAULT_MAX_STATE_PATHS",
+            "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
             "DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES",
             "DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES",
@@ -396,8 +432,12 @@ def validate_system_assets(errors: list[str]) -> None:
             "MAX_VERIFICATION_COMMANDS",
             "MAX_VERIFICATION_PROMPT_CHARS",
             "COMMAND_OUTPUT_LIMIT_EXIT",
+            "COMMAND_LIFECYCLE_UNCERTAIN_EXIT",
             "ManagedResult",
             "managed_result_metadata",
+            "append_complete_artifact",
+            '"rootloom-verification-ndjson-v2"',
+            '"rootloom-verification-summary-v2"',
             "OutputTailBuffer",
             "build_verification_environment",
             '"--max-command-output-bytes"',
@@ -405,6 +445,10 @@ def validate_system_assets(errors: list[str]) -> None:
             '"--max-verification-artifact-bytes"',
             '"--max-delta-bytes"',
             '"--max-untracked-patch-bytes"',
+            '"--max-state-paths"',
+            '"--max-state-bytes"',
+            '"--isolation-launcher"',
+            '"--require-isolation"',
             '"--verify-env"',
             "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
             "metadata_only_floor",
@@ -422,7 +466,7 @@ def validate_system_assets(errors: list[str]) -> None:
             "verification_record_line",
             "json_string_content_byte_length",
             "empty_verification_record",
-            '"verification_artifact_format": "ndjson-v1"',
+            '"verification_artifact_format": "ndjson-v2"',
             "redacted_untracked_metadata",
             '"--sensitive-path"',
             '"--redact-untracked-dotfiles"',
@@ -438,17 +482,44 @@ def validate_system_assets(errors: list[str]) -> None:
             "normalize_verification_bindings",
             "validate_verification_entrypoints_unchanged",
             "ensure_process_group_finished",
+            "repository topology budget exceeded",
+            "iter_nul_fields",
+            "byte budget exceeded",
+            "read_text_bounded",
             '"HUMAN_REVIEW_REQUIRED"',
             "post_implementation_state = capture_state(check_topology=True)",
             "post_verification_state = capture_state(check_topology=True)",
             "post_review_state = capture_state(check_topology=True)",
             "max_ignored_paths",
             "validate_verification_coverage",
+            "compute_human_review_binding",
+            "human_review_result_core_sha256",
+            "ensure_empty_private_file",
+            "atomic_write_json",
             '"provenance_ids"',
             '"evidence_ids"',
+            '"source_type"',
+            '"runtime_external"',
+            '"strongest_counterexample"',
+            '"adjacent_analog_checked"',
+            '"complexity_value"',
+            "reproduced defects require competing hypotheses",
+            "rejected_alternatives",
         ):
             if contract not in runner_text:
                 errors.append(f"high-assurance runner is missing contract: {contract}")
+    review_decision = runner.with_name("review_decision.py")
+    if not review_decision.is_file():
+        errors.append("human review decision command is missing")
+    else:
+        review_text = review_decision.read_text(encoding="utf-8")
+        for contract in (
+            "rootloom-human-review-decision-v2",
+            "human review binding drifted",
+            "human review already has a terminal decision",
+        ):
+            if contract not in review_text:
+                errors.append(f"human review command is missing contract: {contract}")
 
 
 def validate_workflow_contracts(errors: list[str]) -> None:

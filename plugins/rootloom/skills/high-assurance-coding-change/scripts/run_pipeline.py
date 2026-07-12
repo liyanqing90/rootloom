@@ -16,8 +16,10 @@ import re
 import selectors
 import shlex
 import signal
+import stat
 import subprocess
 import sys
+import tempfile
 import textwrap
 import time
 import tomllib
@@ -56,8 +58,11 @@ VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
 HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
+DEFAULT_MAX_STATE_PATHS = 200_000
+DEFAULT_MAX_STATE_BYTES = 16 * 1024 * 1024
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
+COMMAND_LIFECYCLE_UNCERTAIN_EXIT = 125
 COMMAND_OUTPUT_LIMIT_EXIT = 126
 DEFAULT_MAX_COMMAND_OUTPUT_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES = 32 * 1024 * 1024
@@ -68,7 +73,7 @@ MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.13"
+RUNNER_VERSION = "2.17"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -131,6 +136,10 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
                     "id": {"type": "string"},
                     "claim": {"type": "string"},
                     "kind": {"type": "string", "enum": ["fact", "inference", "unknown"]},
+                    "source_type": {
+                        "type": "string",
+                        "enum": ["repository", "runtime_external"],
+                    },
                     "source_environment": {"type": "string"},
                     "observed_at": {"type": "string"},
                     "reference": {"type": "string"},
@@ -140,10 +149,8 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
                     "id",
                     "claim",
                     "kind",
-                    "source_environment",
-                    "observed_at",
+                    "source_type",
                     "reference",
-                    "freshness_redaction",
                 ],
             },
         },
@@ -330,6 +337,20 @@ REVIEW_SCHEMA: dict[str, Any] = {
         "contract_compliance": {"type": "array", "items": {"type": "string"}},
         "test_adequacy": {"type": "string"},
         "residual_risks": {"type": "array", "items": {"type": "string"}},
+        "challenge": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "strongest_counterexample": {"type": "string"},
+                "adjacent_analog_checked": {"type": "string"},
+                "complexity_value": {"type": "string"},
+            },
+            "required": [
+                "strongest_counterexample",
+                "adjacent_analog_checked",
+                "complexity_value",
+            ],
+        },
     },
     "required": [
         "verdict",
@@ -337,6 +358,7 @@ REVIEW_SCHEMA: dict[str, Any] = {
         "contract_compliance",
         "test_adequacy",
         "residual_risks",
+        "challenge",
     ],
 }
 
@@ -475,7 +497,16 @@ def validate_repo_path_symlink_boundary(repo: Path, path: str, label: str) -> No
             _check_existing_symlink_target(repo, current, label)
 
 
-def validate_allowed_path_boundaries(repo: Path, rules: list[tuple[str, bool]]) -> None:
+def validate_allowed_path_boundaries(
+    repo: Path,
+    rules: list[tuple[str, bool]],
+    max_paths: int = DEFAULT_MAX_STATE_PATHS,
+    max_path_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> None:
+    if max_paths <= 0 or max_path_bytes <= 0:
+        raise PipelineError("allowed-path traversal budgets must be positive", 9)
+    observed_paths: set[str] = set()
+    observed_path_bytes = 0
     for base, recursive in rules:
         validate_repo_path_symlink_boundary(repo, base, "allowed path")
         root = repo / base
@@ -483,15 +514,34 @@ def validate_allowed_path_boundaries(repo: Path, rules: list[tuple[str, bool]]) 
             continue
         if not root.is_dir():
             continue
-        for current_raw, directories, files in os.walk(root, followlinks=False):
-            current = Path(current_raw)
-            for name in list(directories):
-                candidate = current / name
-                if candidate.is_symlink():
+        pending = [root]
+        while pending:
+            current = pending.pop()
+            try:
+                entries = os.scandir(current)
+            except OSError as exc:
+                raise PipelineError(
+                    f"allowed-path traversal failed at {current}: {exc}",
+                    9,
+                ) from exc
+            with entries:
+                for entry in entries:
+                    candidate = Path(entry.path)
+                    relative = candidate.relative_to(repo).as_posix()
+                    if relative in observed_paths:
+                        continue
+                    observed_paths.add(relative)
+                    observed_path_bytes += len(
+                        relative.encode("utf-8", errors="surrogateescape")
+                    )
+                    if (
+                        len(observed_paths) > max_paths
+                        or observed_path_bytes > max_path_bytes
+                    ):
+                        raise PipelineError("allowed-path traversal budget exceeded", 9)
                     _check_existing_symlink_target(repo, candidate, "allowed path")
-                    directories.remove(name)
-            for name in files:
-                _check_existing_symlink_target(repo, current / name, "allowed path")
+                    if entry.is_dir(follow_symlinks=False):
+                        pending.append(candidate)
 
 
 def validate_verification_command_boundaries(
@@ -805,16 +855,21 @@ def validate_evidence(value: dict[str, Any]) -> None:
                 f"semantic gate failed: evidence_provenance[{index}] must be an object",
                 8,
             )
-        for field in (
-            "id",
-            "claim",
-            "kind",
-            "source_environment",
-            "observed_at",
-            "reference",
-            "freshness_redaction",
-        ):
+        for field in ("id", "claim", "kind", "source_type", "reference"):
             require_nonempty_text(record.get(field), f"evidence_provenance[{index}].{field}")
+        runtime_external = record.get("source_type") == "runtime_external"
+        if record.get("source_type") not in {"repository", "runtime_external"}:
+            raise PipelineError(
+                f"semantic gate failed: evidence_provenance[{index}].source_type "
+                "must be repository or runtime_external",
+                8,
+            )
+        for field in ("source_environment", "observed_at", "freshness_redaction"):
+            if runtime_external or field in record:
+                require_nonempty_text(
+                    record.get(field),
+                    f"evidence_provenance[{index}].{field}",
+                )
         provenance_id = record["id"].strip()
         if provenance_id in provenance_ids:
             raise PipelineError(
@@ -878,6 +933,7 @@ def validate_evidence(value: dict[str, Any]) -> None:
                 f"semantic gate failed: hypotheses[{index}] must be an object",
                 8,
             )
+        require_nonempty_text(hypothesis.get("hypothesis"), f"hypotheses[{index}].hypothesis")
         validate_references(
             hypothesis.get("supporting_provenance_ids"),
             f"hypotheses[{index}].supporting_provenance_ids",
@@ -888,6 +944,18 @@ def validate_evidence(value: dict[str, Any]) -> None:
             f"hypotheses[{index}].contradicting_provenance_ids",
             required=False,
         )
+    if reproduction.get("status") == "reproduced":
+        if len(hypotheses) < 2:
+            raise PipelineError(
+                "semantic gate failed: reproduced defects require competing hypotheses",
+                8,
+            )
+        if not any(item.get("contradicting_provenance_ids") for item in hypotheses):
+            raise PipelineError(
+                "semantic gate failed: reproduced defects require a falsified or "
+                "contradicted hypothesis",
+                8,
+            )
 
 
 def validate_diagnosis(
@@ -899,6 +967,7 @@ def validate_diagnosis(
         return []
     require_nonempty_text(value.get("root_cause"), "root_cause")
     require_nonempty_text(value.get("violated_invariant"), "violated_invariant")
+    require_nonempty_list(value.get("rejected_alternatives"), "rejected_alternatives")
     contract = value.get("change_contract")
     if not isinstance(contract, dict):
         raise PipelineError("semantic gate failed: GO requires a change_contract", 8)
@@ -1028,59 +1097,126 @@ def validate_review(value: dict[str, Any]) -> None:
         raise PipelineError("semantic gate failed: FAIL review must include findings", 8)
     require_nonempty_list(value.get("contract_compliance"), "contract_compliance")
     require_nonempty_text(value.get("test_adequacy"), "test_adequacy")
+    if not isinstance(value.get("residual_risks"), list):
+        raise PipelineError("semantic gate failed: residual_risks must be a list", 8)
+    challenge = value.get("challenge")
+    if not isinstance(challenge, dict):
+        raise PipelineError("semantic gate failed: review challenge must be an object", 8)
+    for field in (
+        "strongest_counterexample",
+        "adjacent_analog_checked",
+        "complexity_value",
+    ):
+        require_nonempty_text(challenge.get(field), f"challenge.{field}")
 
 
-def run_bytes(argv: list[str], cwd: Path) -> bytes:
-    result = subprocess.run(
-        argv,
-        cwd=cwd,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode != 0:
-        message = result.stderr.decode("utf-8", errors="replace")
-        raise PipelineError(
-            f"command failed ({result.returncode}): {shlex.join(argv)}\n{message}",
-        )
-    return result.stdout
+def run_bytes(
+    argv: list[str],
+    cwd: Path,
+    *,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+    budget_name: str = "command",
+    accepted_exit_codes: set[int] | None = None,
+) -> bytes:
+    """Capture complete bytes through the bounded Artifact producer."""
+
+    with tempfile.TemporaryDirectory(prefix="rootloom-bounded-capture-") as raw:
+        destination = Path(raw) / "stdout"
+        try:
+            stream_command_artifact(
+                argv,
+                repo=cwd,
+                destination=destination,
+                max_bytes=max_bytes,
+                timeout_seconds=60,
+                accepted_exit_codes=accepted_exit_codes,
+            )
+        except PipelineError as exc:
+            raise PipelineError(f"{budget_name} capture failed: {exc}", exc.exit_code) from exc
+        return destination.read_bytes()
 
 
 def run_text_exact(argv: list[str], cwd: Path) -> str:
     return run_bytes(argv, cwd).decode("utf-8", errors="backslashreplace")
 
 
-def git_status_raw(repo: Path) -> bytes:
+def git_status_raw(repo: Path, max_bytes: int = DEFAULT_MAX_STATE_BYTES) -> bytes:
     return run_bytes(
         ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
         repo,
+        max_bytes=max_bytes,
+        budget_name="Git status",
     )
 
 
-def ensure_supported_repository_topology(repo: Path) -> None:
-    stage_entries = run_bytes(["git", "ls-files", "--stage", "-z"], repo)
+def iter_nul_fields(raw: bytes) -> Iterator[bytes]:
+    """Yield NUL-delimited fields without allocating a full split list."""
+
+    start = 0
+    while start < len(raw):
+        end = raw.find(b"\x00", start)
+        if end < 0:
+            yield raw[start:]
+            return
+        yield raw[start:end]
+        start = end + 1
+
+
+def ensure_supported_repository_topology(
+    repo: Path,
+    max_paths: int = DEFAULT_MAX_STATE_PATHS,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> None:
+    if max_paths <= 0 or max_bytes <= 0:
+        raise PipelineError("repository topology budgets must be positive", 9)
+    stage_entries = run_bytes(
+        ["git", "ls-files", "--stage", "-z"],
+        repo,
+        max_bytes=max_bytes,
+        budget_name="Git topology index",
+    )
     gitlinks: list[str] = []
-    for entry in stage_entries.split(b"\x00"):
+    stage_record_count = 0
+    for entry in iter_nul_fields(stage_entries):
         if not entry:
             continue
+        stage_record_count += 1
+        if stage_record_count > max_paths:
+            raise PipelineError(f"Git topology path budget exceeded ({max_paths})", 9)
         if entry.startswith(b"160000 "):
             _, _, raw_path = entry.partition(b"\t")
             gitlinks.append(os.fsdecode(raw_path))
 
     nested: list[str] = []
-    root_git = repo / ".git"
-    for current_raw, directories, files in os.walk(repo, followlinks=False):
-        current = Path(current_raw)
-        candidate = current / ".git"
-        if candidate == root_git:
-            if ".git" in directories:
-                directories.remove(".git")
-            continue
-        if ".git" in directories:
-            nested.append(str(candidate.relative_to(repo)))
-            directories.remove(".git")
-        if ".git" in files:
-            nested.append(str(candidate.relative_to(repo)))
+    pending = [repo]
+    observed_paths = 0
+    observed_path_bytes = 0
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError as exc:
+            raise PipelineError(
+                f"repository topology scan failed at {current}: {exc}",
+                9,
+            ) from exc
+        with entries:
+            for entry in entries:
+                candidate = Path(entry.path)
+                relative = candidate.relative_to(repo).as_posix()
+                if current == repo and entry.name == ".git":
+                    continue
+                observed_paths += 1
+                observed_path_bytes += len(
+                    relative.encode("utf-8", errors="surrogateescape")
+                )
+                if observed_paths > max_paths or observed_path_bytes > max_bytes:
+                    raise PipelineError("repository topology budget exceeded", 9)
+                if entry.name == ".git":
+                    nested.append(relative)
+                    continue
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(candidate)
 
     if gitlinks or nested:
         details = []
@@ -1096,23 +1232,26 @@ def ensure_supported_repository_topology(repo: Path) -> None:
         )
 
 
-def optional_git_bytes(argv: list[str], repo: Path) -> bytes:
-    result = subprocess.run(
+def optional_git_bytes(
+    argv: list[str],
+    repo: Path,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> bytes:
+    return run_bytes(
         argv,
-        cwd=repo,
-        check=False,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    if result.returncode in (0, 1):
-        return result.stdout
-    message = result.stderr.decode("utf-8", errors="replace")
-    raise PipelineError(
-        f"command failed ({result.returncode}): {shlex.join(argv)}\n{message}",
+        repo,
+        max_bytes=max_bytes,
+        budget_name="optional Git control",
+        accepted_exit_codes={0, 1},
     )
 
 
-def tree_fingerprint(root: Path) -> dict[str, Any]:
+def tree_fingerprint(
+    root: Path,
+    *,
+    max_entries: int = DEFAULT_MAX_STATE_PATHS,
+    max_path_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> dict[str, Any]:
     def metadata_fingerprint(path: Path) -> dict[str, Any]:
         try:
             info = path.lstat()
@@ -1127,12 +1266,35 @@ def tree_fingerprint(root: Path) -> dict[str, Any]:
     if not root.is_dir() or root.is_symlink():
         return {".": file_fingerprint(root)}
     values: dict[str, Any] = {".": metadata_fingerprint(root)}
-    for path in sorted(root.rglob("*")):
-        values[path.relative_to(root).as_posix()] = metadata_fingerprint(path)
+    path_bytes = 0
+    pending = [root]
+    while pending:
+        current = pending.pop()
+        try:
+            entries = os.scandir(current)
+        except OSError as exc:
+            raise PipelineError(
+                f"Git control tree scan failed at {current}: {exc}",
+                9,
+            ) from exc
+        with entries:
+            for entry in entries:
+                path = Path(entry.path)
+                relative = path.relative_to(root).as_posix()
+                path_bytes += len(relative.encode("utf-8", errors="surrogateescape"))
+                if len(values) >= max_entries or path_bytes > max_path_bytes:
+                    raise PipelineError("Git control tree budget exceeded", 9)
+                values[relative] = metadata_fingerprint(path)
+                if entry.is_dir(follow_symlinks=False):
+                    pending.append(path)
     return values
 
 
-def git_control_state(repo: Path) -> dict[str, Any]:
+def git_control_state(
+    repo: Path,
+    max_paths: int = DEFAULT_MAX_STATE_PATHS,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> dict[str, Any]:
     common_raw = run_checked(["git", "rev-parse", "--git-common-dir"], repo)
     common_dir = Path(common_raw)
     if not common_dir.is_absolute():
@@ -1157,8 +1319,15 @@ def git_control_state(repo: Path) -> dict[str, Any]:
         else file_fingerprint(gitfile_path)
     )
     return {
-        "head": run_bytes(["git", "rev-parse", "--verify", "HEAD"], repo),
-        "symbolic_head": optional_git_bytes(["git", "symbolic-ref", "-q", "HEAD"], repo),
+        "head": run_bytes(
+            ["git", "rev-parse", "--verify", "HEAD"],
+            repo,
+            max_bytes=max_bytes,
+            budget_name="Git HEAD",
+        ),
+        "symbolic_head": optional_git_bytes(
+            ["git", "symbolic-ref", "-q", "HEAD"], repo, max_bytes
+        ),
         "refs": run_bytes(
             [
                 "git",
@@ -1167,30 +1336,41 @@ def git_control_state(repo: Path) -> dict[str, Any]:
                 "--format=%(refname)%00%(objectname)%00%(symref)",
             ],
             repo,
+            max_bytes=max_bytes,
+            budget_name="Git refs",
         ),
         "config": file_fingerprint(common_dir / "config"),
         "config_worktree": file_fingerprint(git_dir / "config.worktree"),
         "gitfile": gitfile_state,
-        "hooks": tree_fingerprint(common_dir / "hooks"),
-        "info": tree_fingerprint(common_dir / "info"),
-        "logs": tree_fingerprint(git_dir / "logs"),
+        "hooks": tree_fingerprint(
+            common_dir / "hooks", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
+        "info": tree_fingerprint(
+            common_dir / "info", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
+        "logs": tree_fingerprint(
+            git_dir / "logs", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
         "operation_files": {
             name: file_fingerprint(git_dir / name) for name in operation_files
         },
-        "sequencer": tree_fingerprint(git_dir / "sequencer"),
-        "rebase_apply": tree_fingerprint(git_dir / "rebase-apply"),
-        "rebase_merge": tree_fingerprint(git_dir / "rebase-merge"),
+        "sequencer": tree_fingerprint(
+            git_dir / "sequencer", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
+        "rebase_apply": tree_fingerprint(
+            git_dir / "rebase-apply", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
+        "rebase_merge": tree_fingerprint(
+            git_dir / "rebase-merge", max_entries=max_paths, max_path_bytes=max_bytes
+        ),
         "alternates": file_fingerprint(common_dir / "objects" / "info" / "alternates"),
     }
 
 
 def parse_status_paths(raw: bytes) -> set[str]:
-    fields = raw.split(b"\x00")
     paths: set[str] = set()
-    index = 0
-    while index < len(fields):
-        entry = fields[index]
-        index += 1
+    fields = iter(iter_nul_fields(raw))
+    for entry in fields:
         if not entry:
             continue
         if len(entry) < 4 or entry[2:3] != b" ":
@@ -1198,14 +1378,17 @@ def parse_status_paths(raw: bytes) -> set[str]:
         status = entry[:2].decode("ascii", errors="strict")
         paths.add(normalize_repo_path(os.fsdecode(entry[3:])))
         if "R" in status or "C" in status:
-            if index >= len(fields) or not fields[index]:
+            renamed = next(fields, b"")
+            if not renamed:
                 raise PipelineError("could not parse renamed/copied git status entry")
-            paths.add(normalize_repo_path(os.fsdecode(fields[index])))
-            index += 1
+            paths.add(normalize_repo_path(os.fsdecode(renamed)))
     return paths
 
 
-def file_fingerprint(path: Path) -> dict[str, Any]:
+def file_fingerprint(
+    path: Path,
+    digest_cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     try:
         info = path.lstat()
     except FileNotFoundError:
@@ -1220,11 +1403,28 @@ def file_fingerprint(path: Path) -> dict[str, Any]:
         )
         return base
     if path.is_file():
+        identity = {
+            "device": info.st_dev,
+            "inode": info.st_ino,
+            "mode": info.st_mode,
+            "size": info.st_size,
+            "mtime_ns": info.st_mtime_ns,
+            "ctime_ns": info.st_ctime_ns,
+        }
+        cache_key = str(path)
+        cached = digest_cache.get(cache_key) if digest_cache is not None else None
+        if cached is not None and cached.get("identity") == identity:
+            return dict(cached["fingerprint"])
         digest = hashlib.sha256()
         with path.open("rb") as handle:
             for chunk in iter(lambda: handle.read(1024 * 1024), b""):
                 digest.update(chunk)
         base.update(kind="file", size=info.st_size, sha256=digest.hexdigest())
+        if digest_cache is not None:
+            digest_cache[cache_key] = {
+                "identity": identity,
+                "fingerprint": dict(base),
+            }
         return base
     if path.is_dir():
         nested = subprocess.run(
@@ -1283,10 +1483,13 @@ def list_git_paths(
     argv: list[str],
     *,
     max_paths: int | None = None,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
     budget_name: str = "path",
 ) -> set[str]:
     """Stream NUL-delimited Git paths and fail closed before an unbounded manifest."""
 
+    if max_bytes <= 0:
+        raise PipelineError(f"{budget_name} byte budget must be positive", 9)
     process = subprocess.Popen(
         ["git", *argv],
         cwd=repo,
@@ -1296,11 +1499,20 @@ def list_git_paths(
     assert process.stdout is not None
     pending = b""
     paths: set[str] = set()
+    observed_bytes = 0
     try:
         while True:
             chunk = process.stdout.read(64 * 1024)
             if not chunk:
                 break
+            observed_bytes += len(chunk)
+            if observed_bytes > max_bytes:
+                process.kill()
+                process.communicate()
+                raise PipelineError(
+                    f"{budget_name} byte budget exceeded ({max_bytes})",
+                    9,
+                )
             pending += chunk
             items = pending.split(b"\x00")
             pending = items.pop()
@@ -1376,23 +1588,38 @@ def capture_repo_state(
     repo: Path,
     *,
     max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
+    max_state_paths: int = DEFAULT_MAX_STATE_PATHS,
+    max_state_bytes: int = DEFAULT_MAX_STATE_BYTES,
+    digest_cache: dict[str, dict[str, Any]] | None = None,
     sensitive_rules: list[tuple[str, bool]] | None = None,
     redact_untracked_dotfiles: bool = False,
     metadata_only_floor: set[str] | None = None,
     check_topology: bool = True,
 ) -> dict[str, Any]:
     if check_topology:
-        ensure_supported_repository_topology(repo)
+        ensure_supported_repository_topology(repo, max_state_paths, max_state_bytes)
     if max_ignored_paths <= 0:
         raise PipelineError("ignored path budget must be positive", 9)
-    status_raw = git_status_raw(repo)
+    for value, name in (
+        (max_state_paths, "state path"),
+        (max_state_bytes, "state byte"),
+    ):
+        if value <= 0:
+            raise PipelineError(f"{name} budget must be positive", 9)
+    status_raw = git_status_raw(repo, max_state_bytes)
     tracked_paths = list_git_paths(
         repo,
         ["ls-files", "-z", "--cached"],
+        max_paths=max_state_paths,
+        max_bytes=max_state_bytes,
+        budget_name="tracked",
     )
     untracked_paths = list_git_paths(
         repo,
         ["ls-files", "-z", "--others", "--exclude-standard"],
+        max_paths=max_state_paths,
+        max_bytes=max_state_bytes,
+        budget_name="ordinary untracked",
     )
     sensitive_untracked_paths = {
         path
@@ -1404,10 +1631,16 @@ def capture_repo_state(
         )
     }
     visible_paths = tracked_paths | untracked_paths
+    if len(visible_paths) > max_state_paths:
+        raise PipelineError(
+            f"visible path budget exceeded ({max_state_paths})",
+            9,
+        )
     ignored_paths = list_git_paths(
         repo,
         ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
         max_paths=max_ignored_paths,
+        max_bytes=max_state_bytes,
         budget_name="ignored",
     ) - visible_paths
     metadata_only_paths = (
@@ -1417,7 +1650,14 @@ def capture_repo_state(
     )
     content_paths = (tracked_paths | untracked_paths) - metadata_only_paths
     present_metadata_only_paths = metadata_only_paths & (visible_paths | ignored_paths)
-    worktree = {path: file_fingerprint(repo / path) for path in content_paths}
+    worktree = {
+        path: (
+            file_fingerprint(repo / path, digest_cache)
+            if digest_cache is not None
+            else file_fingerprint(repo / path)
+        )
+        for path in content_paths
+    }
     worktree.update(
         {
             path: file_metadata_fingerprint(repo / path)
@@ -1432,8 +1672,13 @@ def capture_repo_state(
         "sensitive_untracked_paths": sensitive_untracked_paths,
         "metadata_only_paths": metadata_only_paths,
         "worktree": worktree,
-        "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
-        "git_control": git_control_state(repo),
+        "index": run_bytes(
+            ["git", "ls-files", "--stage", "-v", "-z"],
+            repo,
+            max_bytes=max_state_bytes,
+            budget_name="Git index",
+        ),
+        "git_control": git_control_state(repo, max_state_paths, max_state_bytes),
     }
 
 
@@ -1507,6 +1752,97 @@ def state_untracked_manifests(
     metadata_only = selected & protected_metadata_paths(state)
     ordinary = selected - metadata_only
     return metadata_manifest(state, ordinary), metadata_manifest(state, metadata_only)
+
+
+def write_all(artifact: Any, chunk: bytes) -> int:
+    """Write a complete chunk or fail before claiming Artifact completeness."""
+
+    offset = 0
+    view = memoryview(chunk)
+    while offset < len(chunk):
+        count = artifact.write(view[offset:])
+        remaining = len(chunk) - offset
+        valid_count = (
+            isinstance(count, int)
+            and not isinstance(count, bool)
+            and 0 < count <= remaining
+        )
+        if not valid_count:
+            raise PipelineError(
+                "artifact short write returned no forward progress or an invalid byte count",
+                9,
+            )
+        offset += count
+    return offset
+
+
+def append_complete_artifact(
+    destination: Path,
+    payload: bytes,
+    *,
+    expected_starting_size: int,
+) -> int:
+    """Append one complete payload and compensate every partial-write path."""
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks no-follow Artifact append support", 9)
+    flags = os.O_WRONLY | os.O_APPEND | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(destination, flags)
+    except OSError as exc:
+        raise PipelineError(
+            f"could not open Artifact safely before append: {destination}",
+            9,
+        ) from exc
+    try:
+        artifact = os.fdopen(descriptor, "ab", buffering=0)
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+    with artifact:
+        descriptor = artifact.fileno()
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise PipelineError(
+                f"Artifact append target is not a regular file: {destination}",
+                9,
+            )
+        if info.st_size != expected_starting_size:
+            raise PipelineError(
+                f"Artifact size drifted before append for {destination}: expected "
+                f"{expected_starting_size}, observed {info.st_size}",
+                9,
+            )
+
+        def restore() -> None:
+            try:
+                os.ftruncate(descriptor, expected_starting_size)
+            except OSError as exc:
+                raise PipelineError(
+                    f"could not restore partial Artifact append: {destination}",
+                    9,
+                ) from exc
+
+        try:
+            written = write_all(artifact, payload)
+            observed_size = os.fstat(descriptor).st_size
+            expected_size = expected_starting_size + written
+            if written != len(payload) or observed_size != expected_size:
+                raise PipelineError(
+                    f"Artifact append accounting drifted for {destination}: expected "
+                    f"{len(payload)} new bytes and total {expected_size}, observed total "
+                    f"{observed_size}",
+                    9,
+                )
+            os.fsync(descriptor)
+            return written
+        except BaseException as exc:
+            try:
+                restore()
+            except PipelineError as restore_error:
+                raise restore_error from exc
+            raise
 
 
 def stream_command_artifact(
@@ -1623,13 +1959,11 @@ def stream_command_artifact(
                     remaining = max_bytes - written
                     if len(chunk) > remaining:
                         if remaining > 0:
-                            artifact.write(chunk[:remaining])
-                            written += remaining
+                            written += write_all(artifact, chunk[:remaining])
                         exceeded = True
                         terminate_process_group(process)
                         break
-                    artifact.write(chunk)
-                    written += len(chunk)
+                    written += write_all(artifact, chunk)
                 if exceeded:
                     break
     except BaseException as exc:
@@ -1671,6 +2005,11 @@ def stream_command_artifact(
                     stream.close()
                 except OSError:
                     pass
+        if process.poll() is None:
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                terminate_process_group(process)
 
     if timed_out or output_drain_timed_out or exceeded:
         restore_artifact()
@@ -1690,6 +2029,21 @@ def stream_command_artifact(
         raise PipelineError(
             f"could not capture artifact with {shlex.join(argv)} "
             f"(exit {process.returncode}): {stderr.text().strip()}",
+        )
+    try:
+        artifact_growth = destination.stat().st_size - starting_size
+    except OSError as exc:
+        restore_artifact()
+        raise PipelineError(
+            f"could not verify completed artifact size: {destination}",
+            9,
+        ) from exc
+    if artifact_growth != written:
+        restore_artifact()
+        raise PipelineError(
+            f"artifact size accounting drifted for {destination}: "
+            f"expected {written} bytes, observed {artifact_growth}",
+            9,
         )
     return written
 
@@ -1738,40 +2092,50 @@ def stream_untracked_patch(
 ) -> int:
     destination.write_bytes(b"")
     total = 0
-    for entry in manifest:
-        if str(entry.get("kind", "")).endswith("-metadata"):
-            raise PipelineError("refusing to patch a metadata-only untracked path", 9)
-        path = entry["path"]
+    try:
+        for entry in manifest:
+            if str(entry.get("kind", "")).endswith("-metadata"):
+                raise PipelineError("refusing to patch a metadata-only untracked path", 9)
+            path = entry["path"]
+            try:
+                written = stream_command_artifact(
+                    [
+                        "git",
+                        "diff",
+                        "--no-index",
+                        "--binary",
+                        "--full-index",
+                        "--no-ext-diff",
+                        "--no-textconv",
+                        "--",
+                        os.devnull,
+                        path,
+                    ],
+                    repo=repo,
+                    destination=destination,
+                    max_bytes=max_bytes - total,
+                    timeout_seconds=remaining_deadline_seconds(
+                        deadline,
+                        "untracked Delta capture",
+                    ),
+                    append=True,
+                    accepted_exit_codes={0, 1},
+                )
+            except PipelineError as exc:
+                raise PipelineError(
+                    f"could not fully capture untracked delta for {path}: {exc}",
+                    exc.exit_code,
+                ) from exc
+            total += written
+    except BaseException as exc:
         try:
-            written = stream_command_artifact(
-                [
-                    "git",
-                    "diff",
-                    "--no-index",
-                    "--binary",
-                    "--full-index",
-                    "--no-ext-diff",
-                    "--no-textconv",
-                    "--",
-                    os.devnull,
-                    path,
-                ],
-                repo=repo,
-                destination=destination,
-                max_bytes=max_bytes - total,
-                timeout_seconds=remaining_deadline_seconds(
-                    deadline,
-                    "untracked Delta capture",
-                ),
-                append=True,
-                accepted_exit_codes={0, 1},
-            )
-        except PipelineError as exc:
+            os.truncate(destination, 0)
+        except OSError as rollback_error:
             raise PipelineError(
-                f"could not fully capture untracked delta for {path}: {exc}",
-                exc.exit_code,
-            ) from exc
-        total += written
+                f"could not roll back failed untracked Delta batch: {destination}",
+                9,
+            ) from rollback_error
+        raise
     return total
 
 
@@ -2023,6 +2387,9 @@ def enforce_repository_contract(
     baseline: dict[str, Any],
     allowed_rules: list[tuple[str, bool]],
     max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
+    max_state_paths: int = DEFAULT_MAX_STATE_PATHS,
+    max_state_bytes: int = DEFAULT_MAX_STATE_BYTES,
+    digest_cache: dict[str, dict[str, Any]] | None = None,
     sensitive_rules: list[tuple[str, bool]] | None = None,
     redact_untracked_dotfiles: bool = False,
     check_topology: bool = True,
@@ -2034,6 +2401,9 @@ def enforce_repository_contract(
     current = capture_repo_state(
         repo,
         max_ignored_paths=max_ignored_paths,
+        max_state_paths=max_state_paths,
+        max_state_bytes=max_state_bytes,
+        digest_cache=digest_cache,
         sensitive_rules=sensitive_rules,
         redact_untracked_dotfiles=redact_untracked_dotfiles,
         metadata_only_floor=protected_metadata_paths(baseline),
@@ -2116,6 +2486,7 @@ def wait_for_process_group_exit(process_group_id: int, timeout: float) -> bool:
 
 class ManagedResult:
     __slots__ = (
+        "command_exit_code",
         "exit_code",
         "output",
         "timed_out",
@@ -2131,6 +2502,7 @@ class ManagedResult:
     def __init__(
         self,
         *,
+        command_exit_code: int,
         exit_code: int,
         output: str,
         timed_out: bool,
@@ -2142,6 +2514,7 @@ class ManagedResult:
         output_drain_timed_out: bool,
         detached_descendant_possible: bool,
     ) -> None:
+        self.command_exit_code = command_exit_code
         self.exit_code = exit_code
         self.output = output
         self.timed_out = timed_out
@@ -2164,6 +2537,8 @@ class ManagedResult:
 
 def managed_result_metadata(result: ManagedResult) -> dict[str, Any]:
     return {
+        "command_exit_code": result.command_exit_code,
+        "runner_exit_code": result.exit_code,
         "exit_code": result.exit_code,
         "leftover_process_group": result.leftover_process_group,
         "timed_out": result.timed_out,
@@ -2412,13 +2787,14 @@ def run_managed(
         close_selector_stream(selector, process.stdout)
         selector.close()
 
-    exit_code = process.returncode if process.returncode is not None else 1
+    command_exit_code = process.returncode if process.returncode is not None else 1
+    exit_code = command_exit_code
     if timed_out:
         exit_code = 124
     elif output_limit_exceeded:
         exit_code = COMMAND_OUTPUT_LIMIT_EXIT
-    elif leftover_process_group and exit_code == 0:
-        exit_code = 125
+    elif leftover_process_group or output_drain_timed_out:
+        exit_code = COMMAND_LIFECYCLE_UNCERTAIN_EXIT
 
     output_text = output.text()
     if output_limit_exceeded:
@@ -2438,6 +2814,7 @@ def run_managed(
             "terminated\n"
         )
     return ManagedResult(
+        command_exit_code=command_exit_code,
         exit_code=exit_code,
         output=output_text,
         timed_out=timed_out,
@@ -2591,6 +2968,31 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--max-state-paths",
+        type=int,
+        default=DEFAULT_MAX_STATE_PATHS,
+        help="Maximum paths accepted from any repository-state producer",
+    )
+    parser.add_argument(
+        "--max-state-bytes",
+        type=int,
+        default=DEFAULT_MAX_STATE_BYTES,
+        help=(
+            "Maximum bytes accepted from any repository-state, task/role input, "
+            "or stage-JSON producer"
+        ),
+    )
+    parser.add_argument(
+        "--isolation-launcher",
+        default=None,
+        help="Shell-like argv prefix placed before '--' and every managed command",
+    )
+    parser.add_argument(
+        "--require-isolation",
+        action="store_true",
+        help="Fail before stages unless an isolation launcher is configured",
+    )
+    parser.add_argument(
         "--sensitive-path",
         action="append",
         default=[],
@@ -2626,28 +3028,28 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run_checked(argv: list[str], cwd: Path) -> str:
-    result = subprocess.run(
+def run_checked(
+    argv: list[str],
+    cwd: Path,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> str:
+    return run_bytes(
         argv,
-        cwd=cwd,
-        check=False,
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-    )
-    if result.returncode != 0:
-        raise PipelineError(
-            f"command failed ({result.returncode}): {shlex.join(argv)}\n{result.stdout}",
-        )
-    return result.stdout.strip()
+        cwd,
+        max_bytes=max_bytes,
+        budget_name="checked command",
+    ).decode("utf-8", errors="backslashreplace").strip()
 
 
-def load_role(codex_home: Path, stage: str) -> dict[str, Any]:
+def load_role(
+    codex_home: Path,
+    stage: str,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> dict[str, Any]:
     path = codex_home / "agents" / ROLE_FILES[stage]
     if not path.is_file():
         raise PipelineError(f"missing role file: {path}")
-    with path.open("rb") as handle:
-        role = tomllib.load(handle)
+    role = tomllib.loads(read_text_bounded(path, max_bytes, "role file"))
     for key in (
         "model",
         "model_reasoning_effort",
@@ -2673,12 +3075,177 @@ def write_json(path: Path, value: Any) -> None:
     path.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
+def atomic_write_private(path: Path, payload: bytes, mode: int = 0o600) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    temp_path = Path(temp_name)
+    try:
+        with os.fdopen(descriptor, "wb", buffering=0) as handle:
+            write_all(handle, payload)
+            os.fsync(handle.fileno())
+        os.chmod(temp_path, mode)
+        os.replace(temp_path, path)
+    finally:
+        temp_path.unlink(missing_ok=True)
+
+
+def atomic_write_json(path: Path, value: Any) -> None:
+    atomic_write_private(
+        path,
+        (json.dumps(value, ensure_ascii=False, indent=2) + "\n").encode("utf-8"),
+    )
+
+
+def ensure_empty_private_file(path: Path) -> None:
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks no-follow file creation support", 9)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o600)
+    except FileExistsError:
+        try:
+            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise PipelineError(f"private Artifact is not safely openable: {path}", 9) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != 0:
+            raise PipelineError(f"private Artifact is not an empty regular file: {path}", 9)
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def private_artifact_fingerprint(
+    directory_descriptor: int,
+    name: str,
+    display_path: Path,
+) -> dict[str, Any]:
+    """Hash one private Artifact through a stable, no-follow descriptor."""
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks no-follow Artifact read support", 9)
+    try:
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=directory_descriptor,
+        )
+    except OSError as exc:
+        raise PipelineError(
+            f"could not open human review Artifact safely: {display_path}",
+            9,
+        ) from exc
+    try:
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise PipelineError(
+                f"human review run contains a non-file entry: {name}",
+                9,
+            )
+        digest = hashlib.sha256()
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = -1
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+            after = os.fstat(handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        raise PipelineError(
+            f"human review Artifact changed while it was being bound: {display_path}",
+            9,
+        )
+    return {"size": after.st_size, "sha256": digest.hexdigest()}
+
+
+def human_review_result_core_sha256(result: dict[str, Any]) -> str:
+    core = {
+        key: value
+        for key, value in result.items()
+        if key != "human_review_binding"
+    }
+    payload = json.dumps(
+        core,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def compute_human_review_binding(
+    repo: Path,
+    run_dir: Path,
+    result_core_sha256: str,
+) -> dict[str, Any]:
+    """Bind a human decision to current Git state and reviewed private Artifacts."""
+
+    if re.fullmatch(r"[0-9a-f]{64}", result_core_sha256) is None:
+        raise PipelineError("human review result-core hash is invalid", 9)
+    artifacts: dict[str, dict[str, Any]] = {}
+    excluded = {"result.json", "human-review.ndjson", "human-review-summary.json"}
+    entry_count = 0
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks safe human review directory support", 9)
+    try:
+        directory_descriptor = os.open(
+            run_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise PipelineError(f"could not open human review run safely: {run_dir}", 9) from exc
+    try:
+        try:
+            entries = os.scandir(directory_descriptor)
+        except OSError as exc:
+            raise PipelineError(
+                f"could not enumerate human review run: {run_dir}",
+                9,
+            ) from exc
+        with entries:
+            for entry in entries:
+                path = run_dir / entry.name
+                fingerprint = private_artifact_fingerprint(
+                    directory_descriptor,
+                    entry.name,
+                    path,
+                )
+                if entry.name in excluded:
+                    continue
+                entry_count += 1
+                if entry_count > 256:
+                    raise PipelineError("human review Artifact count exceeds 256", 9)
+                artifacts[entry.name] = fingerprint
+    finally:
+        os.close(directory_descriptor)
+    status = git_status_raw(repo)
+    return {
+        "format": "rootloom-human-review-binding-v2",
+        "repo": str(repo.resolve()),
+        "git_head": run_checked(["git", "rev-parse", "HEAD"], repo),
+        "git_status_sha256": hashlib.sha256(status).hexdigest(),
+        "result_core_sha256": result_core_sha256,
+        "artifacts": artifacts,
+    }
 
 
 def best_effort_command(argv: list[str], cwd: Path) -> str:
@@ -2698,14 +3265,62 @@ def best_effort_command(argv: list[str], cwd: Path) -> str:
     return output if result.returncode == 0 else f"unavailable ({result.returncode}): {output}"
 
 
-def read_json(path: Path) -> dict[str, Any]:
+def read_json(
+    path: Path,
+    max_bytes: int = DEFAULT_MAX_STATE_BYTES,
+) -> dict[str, Any]:
+    if path.is_symlink() or not path.is_file():
+        raise PipelineError(f"structured stage output is missing or symlinked: {path}")
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        value = json.loads(
+            read_text_bounded(
+                path,
+                max_bytes,
+                "structured stage output",
+                reject_symlink=True,
+            )
+        )
+    except json.JSONDecodeError as exc:
         raise PipelineError(f"invalid structured stage output {path}: {exc}") from exc
     if not isinstance(value, dict):
         raise PipelineError(f"stage output must be a JSON object: {path}")
     return value
+
+
+def read_text_bounded(
+    path: Path,
+    max_bytes: int,
+    label: str,
+    *,
+    reject_symlink: bool = False,
+) -> str:
+    if max_bytes <= 0:
+        raise PipelineError(f"{label} byte budget must be positive", 9)
+    flags = os.O_RDONLY
+    if reject_symlink:
+        if path.is_symlink():
+            raise PipelineError(f"{label} must not be a symlink: {path}", 9)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor: int | None = None
+    try:
+        descriptor = os.open(path, flags)
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode):
+            raise PipelineError(f"{label} is not a regular file: {path}", 9)
+        with os.fdopen(descriptor, "rb") as handle:
+            descriptor = None
+            payload = handle.read(max_bytes + 1)
+    except OSError as exc:
+        raise PipelineError(f"could not read {label} {path}: {exc}") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if len(payload) > max_bytes:
+        raise PipelineError(f"{label} exceeds {max_bytes} bytes: {path}", 9)
+    try:
+        return payload.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise PipelineError(f"{label} is not valid UTF-8: {path}") from exc
 
 
 def run_stage(
@@ -2718,7 +3333,11 @@ def run_stage(
     role: dict[str, Any],
     schema: dict[str, Any],
     prompt: str,
+    isolation_launcher: list[str] | None = None,
 ) -> dict[str, Any]:
+    if isolation_launcher is None:
+        configured = getattr(args, "isolation_argv", [])
+        isolation_launcher = configured if isinstance(configured, list) else []
     schema_path = run_dir / f"{artifact_prefix}-schema.json"
     output_path = run_dir / f"{artifact_prefix}.json"
     log_path = run_dir / f"{artifact_prefix}.log"
@@ -2753,6 +3372,8 @@ def run_stage(
     for feature in COMMON_DISABLED_FEATURES:
         command.extend(("--disable", feature))
     command.append("-")
+    if isolation_launcher:
+        command = [*isolation_launcher, "--", *command]
 
     print(
         f"[{stage_name}] {role['model']} / {role['model_reasoning_effort']} / "
@@ -2763,6 +3384,7 @@ def run_stage(
         print(f"  {shlex.join(command)}", flush=True)
         return {"dry_run": True}
 
+    output_path.unlink(missing_ok=True)
     write_json(schema_path, schema)
     effective_prompt = "RUNNER STAGE INSTRUCTIONS:\n" + prompt
     start_error: OSError | None = None
@@ -2777,6 +3399,7 @@ def run_stage(
     except OSError as exc:
         start_error = exc
         result = ManagedResult(
+            command_exit_code=127,
             exit_code=127,
             output=f"could not start {stage_name}: {exc}",
             timed_out=False,
@@ -2822,7 +3445,7 @@ def run_stage(
         )
     if not output_path.is_file():
         raise PipelineError(f"{stage_name} produced no output: {output_path}")
-    return read_json(output_path)
+    return read_json(output_path, args.max_state_bytes)
 
 
 def verification_commands(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -2870,6 +3493,37 @@ def build_verification_environment(
     }
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     return environment
+
+
+def normalize_isolation_launcher(
+    raw: str | None,
+    *,
+    required: bool,
+) -> tuple[list[str], dict[str, Any] | None]:
+    if not raw:
+        if required:
+            raise PipelineError(
+                "--require-isolation requires --isolation-launcher",
+                9,
+            )
+        return [], None
+    argv = shlex.split(raw)
+    if not argv:
+        raise PipelineError("--isolation-launcher must not be empty", 9)
+    supplied_executable = Path(argv[0]).expanduser()
+    if not supplied_executable.is_absolute():
+        raise PipelineError("isolation launcher executable must be an absolute path", 9)
+    if supplied_executable.is_symlink():
+        raise PipelineError("isolation launcher must not be a symlink", 9)
+    executable = supplied_executable.resolve()
+    if not executable.is_file() or not os.access(executable, os.X_OK):
+        raise PipelineError("isolation launcher must be an executable regular file", 9)
+    argv[0] = str(executable)
+    return argv, {
+        "argv": argv,
+        "executable_sha256": file_sha256(executable),
+        "attestation": "operator-supplied-launcher-not-kernel-attested",
+    }
 
 
 def json_string_content_byte_length(value: str) -> int:
@@ -2931,14 +3585,15 @@ def verification_record_line(
     def prepare(output: str, truncated: bool) -> tuple[dict[str, Any], int]:
         candidate = dict(original)
         candidate["output"] = ""
-        candidate["record_schema_version"] = 1
+        candidate["record_schema_version"] = 2
+        candidate.setdefault("command_exit_code", candidate.get("exit_code"))
+        candidate.setdefault("runner_exit_code", candidate.get("exit_code"))
         candidate["output_utf8_bytes"] = original_output_utf8_bytes
         candidate["artifact_output_utf8_bytes"] = len(
             output.encode("utf-8", errors="backslashreplace")
         )
         candidate["artifact_output_truncated"] = truncated
         if truncated:
-            candidate["command_exit_code"] = candidate.get("exit_code")
             candidate["exit_code"] = COMMAND_OUTPUT_LIMIT_EXIT
             candidate["verification_artifact_budget_exceeded"] = True
         else:
@@ -3007,6 +3662,8 @@ def empty_verification_record(
         "id": command_id,
         "command": shlex.join(argv),
         "output": "",
+        "command_exit_code": None,
+        "runner_exit_code": COMMAND_OUTPUT_LIMIT_EXIT,
         "exit_code": COMMAND_OUTPUT_LIMIT_EXIT,
         "leftover_process_group": False,
         "timed_out": False,
@@ -3035,6 +3692,7 @@ def run_verification(
     max_output_bytes: int,
     max_total_output_bytes: int,
     max_artifact_bytes: int = DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES,
+    isolation_launcher: list[str] | None = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     if max_total_output_bytes <= 0:
         raise PipelineError("verification output byte limit must be positive", 9)
@@ -3056,9 +3714,11 @@ def run_verification(
             max_bytes=remaining,
             artifact_bytes_written=artifact_bytes_written,
         )
-        with ndjson_path.open("ab") as artifact:
-            artifact.write(payload)
-        artifact_bytes_written += len(payload)
+        artifact_bytes_written += append_complete_artifact(
+            ndjson_path,
+            payload,
+            expected_starting_size=artifact_bytes_written,
+        )
         if artifact_bytes_written != persisted["artifact_bytes_written_total"]:
             raise PipelineError("verification artifact byte accounting drifted", 9)
         records.append(persisted)
@@ -3135,8 +3795,11 @@ def run_verification(
             {command_id},
         )
         try:
+            managed_argv = (
+                [*isolation_launcher, "--", *argv] if isolation_launcher else argv
+            )
             result = run_managed(
-                argv,
+                managed_argv,
                 cwd=repo,
                 timeout=timeout_seconds,
                 max_output_bytes=effective_output_limit,
@@ -3151,6 +3814,7 @@ def run_verification(
                 )
         except OSError as exc:
             result = ManagedResult(
+                command_exit_code=127,
                 exit_code=127,
                 output=f"could not start verification command: {exc}",
                 timed_out=False,
@@ -3195,8 +3859,8 @@ def run_verification(
         write_json(
             summary_path,
             {
-                "format": "rootloom-verification-summary-v1",
-                "record_format": "rootloom-verification-ndjson-v1",
+                "format": "rootloom-verification-summary-v2",
+                "record_format": "rootloom-verification-ndjson-v2",
                 "ndjson": ndjson_path.name,
                 "record_count": len(records),
                 "verified": verified,
@@ -3250,6 +3914,11 @@ def compact_verification(records: list[dict[str, Any]]) -> str:
             {
                 "id": record.get("id"),
                 "command": record.get("command"),
+                "command_exit_code": record.get("command_exit_code"),
+                "runner_exit_code": record.get(
+                    "runner_exit_code",
+                    record.get("exit_code"),
+                ),
                 "exit_code": record.get("exit_code"),
                 "leftover_process_group": record.get("leftover_process_group", False),
                 "timed_out": record.get("timed_out", False),
@@ -3304,7 +3973,6 @@ def run_pipeline_locked(
     repo: Path,
     task_path: Path,
 ) -> int:
-    ensure_supported_repository_topology(repo)
     if args.max_command_output_bytes <= 0:
         raise PipelineError("--max-command-output-bytes must be positive", 9)
     if args.max_verification_output_bytes <= 0:
@@ -3315,6 +3983,22 @@ def run_pipeline_locked(
         raise PipelineError("--max-delta-bytes must be positive", 9)
     if args.max_untracked_patch_bytes <= 0:
         raise PipelineError("--max-untracked-patch-bytes must be positive", 9)
+    for option in (
+        "max_state_paths",
+        "max_state_bytes",
+    ):
+        if getattr(args, option) <= 0:
+            raise PipelineError(f"--{option.replace('_', '-')} must be positive", 9)
+    ensure_supported_repository_topology(
+        repo,
+        args.max_state_paths,
+        args.max_state_bytes,
+    )
+    isolation_argv, isolation_metadata = normalize_isolation_launcher(
+        args.isolation_launcher,
+        required=args.require_isolation,
+    )
+    args.isolation_argv = isolation_argv
     verification_environment = build_verification_environment(args.verify_env)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
     allowed_protected_deletions = normalize_protected_deletions(
@@ -3327,11 +4011,15 @@ def run_pipeline_locked(
     )
 
     metadata_only_floor: set[str] | None = None
+    digest_cache: dict[str, dict[str, Any]] = {}
 
     def capture_state(*, check_topology: bool = False) -> dict[str, Any]:
         return capture_repo_state(
             repo,
             max_ignored_paths=args.max_ignored_paths,
+            max_state_paths=args.max_state_paths,
+            max_state_bytes=args.max_state_bytes,
+            digest_cache=digest_cache,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             metadata_only_floor=metadata_only_floor,
@@ -3350,7 +4038,10 @@ def run_pipeline_locked(
         )
 
     codex_home = Path(os.environ.get("CODEX_HOME", Path.home() / ".codex"))
-    roles = {stage: load_role(codex_home, stage) for stage in ROLE_FILES}
+    roles = {
+        stage: load_role(codex_home, stage, args.max_state_bytes)
+        for stage in ROLE_FILES
+    }
     role_hashes = {
         stage: file_sha256(codex_home / "agents" / filename)
         for stage, filename in ROLE_FILES.items()
@@ -3374,7 +4065,7 @@ def run_pipeline_locked(
         run_dir.mkdir(mode=0o700, parents=True, exist_ok=False)
         run_dir.chmod(0o700)
 
-    task = task_path.read_text(encoding="utf-8")
+    task = read_text_bounded(task_path, args.max_state_bytes, "task file")
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
     bound_verification_paths = normalize_verification_bindings(
@@ -3401,12 +4092,15 @@ def run_pipeline_locked(
         "baseline_redacted_untracked_metadata": baseline_redacted_untracked,
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "max_ignored_paths": args.max_ignored_paths,
+        "max_state_paths": args.max_state_paths,
+        "max_state_bytes": args.max_state_bytes,
+        "isolation": isolation_metadata,
         "max_command_output_bytes": args.max_command_output_bytes,
         "max_verification_output_bytes": args.max_verification_output_bytes,
         "max_verification_artifact_bytes": args.max_verification_artifact_bytes,
         "max_delta_bytes": args.max_delta_bytes,
         "max_untracked_patch_bytes": args.max_untracked_patch_bytes,
-        "verification_artifact_format": "ndjson-v1",
+        "verification_artifact_format": "ndjson-v2",
         "delta_artifact_format": "complete-patch-with-bounded-prompt-excerpt-v1",
         "max_verification_commands": MAX_VERIFICATION_COMMANDS,
         "max_verification_prompt_chars": MAX_VERIFICATION_PROMPT_CHARS,
@@ -3485,9 +4179,14 @@ def run_pipeline_locked(
         {json.dumps(args.sensitive_path, ensure_ascii=False)}; untracked dotfile
         redaction is {args.redact_untracked_dotfiles}.
         Inspect repository instructions, relevant source, tests, and local git state.
-        Distinguish facts, inference, and unknowns. Do not choose the final fix.
-        Attribute material evidence with source/environment, observed time or window,
-        stable reference when available, and freshness/redaction notes. The schema
+        Treat the task's explanation and prior reviews as leads, not the audit scope.
+        Trace the owning path and inspect at least one analogous sibling producer or
+        consumer for the same defect class. Attempt to contradict the leading
+        hypothesis. Distinguish facts, inference, and unknowns. Do not choose the final
+        fix. Mark stable local source facts as source_type=repository; they need only a
+        precise reference. Mark material runtime or external evidence as
+        source_type=runtime_external; it also needs source_environment, observed_at,
+        and freshness_redaction. The schema
         enforces shape and process discipline, not factual truth. Give every provenance
         record a stable id and make every observed fact, reproduction item, and
         hypothesis evidence list reference existing provenance ids.
@@ -3556,6 +4255,10 @@ def run_pipeline_locked(
         paths, or caller-configured sensitive paths. Recheck material evidence against
         the repository. Return GO
         only when the root cause and a focused, testable change contract are supported.
+        Reject at least one serious alternative with evidence. Prefer deletion or an
+        existing native boundary over a new guard, flag, journal, or abstraction. A new
+        mechanism is justified only if it names the failure, owner, enforcement, proof,
+        and decision it changes.
         Map verification to the original failure path, the owning-boundary invariant,
         and an adjacent negative or alternate path. Each verification-map item must
         name one or more ids from the machine command catalog below. This proves that
@@ -3591,7 +4294,12 @@ def run_pipeline_locked(
     )
     if diagnosis.get("decision") != "GO":
         raise PipelineError(f"diagnosis returned NO_GO; see {run_dir / '02-diagnosis.json'}", 2)
-    validate_allowed_path_boundaries(repo, allowed_rules)
+    validate_allowed_path_boundaries(
+        repo,
+        allowed_rules,
+        args.max_state_paths,
+        args.max_state_bytes,
+    )
     validate_protected_deletion_preflight(
         repo=repo,
         baseline=baseline,
@@ -3641,7 +4349,12 @@ def run_pipeline_locked(
             prompt=implementation_prompt,
         )
         post_implementation_state = capture_state(check_topology=True)
-        validate_allowed_path_boundaries(repo, allowed_rules)
+        validate_allowed_path_boundaries(
+            repo,
+            allowed_rules,
+            args.max_state_paths,
+            args.max_state_bytes,
+        )
         validate_verification_command_boundaries(repo, commands)
         validate_verification_entrypoints_unchanged(
             repo,
@@ -3664,6 +4377,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            max_state_paths=args.max_state_paths,
+            max_state_bytes=args.max_state_bytes,
+            digest_cache=digest_cache,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
@@ -3673,7 +4389,12 @@ def run_pipeline_locked(
             timeout_seconds=args.stage_timeout,
         )
 
-        validate_allowed_path_boundaries(repo, allowed_rules)
+        validate_allowed_path_boundaries(
+            repo,
+            allowed_rules,
+            args.max_state_paths,
+            args.max_state_bytes,
+        )
         validate_verification_command_boundaries(repo, commands)
         validate_verification_entrypoints_unchanged(
             repo,
@@ -3694,6 +4415,7 @@ def run_pipeline_locked(
             max_output_bytes=args.max_command_output_bytes,
             max_total_output_bytes=args.max_verification_output_bytes,
             max_artifact_bytes=args.max_verification_artifact_bytes,
+            isolation_launcher=isolation_argv,
         )
         post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(
@@ -3708,6 +4430,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            max_state_paths=args.max_state_paths,
+            max_state_bytes=args.max_state_bytes,
+            digest_cache=digest_cache,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
@@ -3736,9 +4461,13 @@ def run_pipeline_locked(
         review_prompt = textwrap.dedent(
             f"""
             Act as an independent final reviewer. Do not modify files and do not call
-            external tools. Inspect the actual current diff and repository state. Check
-            the original task, approved contract, implementation, and raw deterministic
-            verification. Any BLOCKER or HIGH finding requires FAIL.
+            external tools. Start from the actual diff and repository state, not from
+            the reported findings. Attempt the strongest counterexample to completion,
+            inspect at least one analogous sibling/caller for the same defect class,
+            and decide whether each added mechanism changes a real decision or is
+            removable ceremony. Check the task, contract, implementation, and raw
+            verification. Any BLOCKER or HIGH finding requires FAIL. Fill the compact
+            challenge record with concrete paths/probes, not generic assurance.
 
             TASK:
             {task}
@@ -3780,6 +4509,9 @@ def run_pipeline_locked(
             baseline=baseline,
             allowed_rules=allowed_rules,
             max_ignored_paths=args.max_ignored_paths,
+            max_state_paths=args.max_state_paths,
+            max_state_bytes=args.max_state_bytes,
+            digest_cache=digest_cache,
             sensitive_rules=sensitive_rules,
             redact_untracked_dotfiles=args.redact_untracked_dotfiles,
             check_topology=False,
@@ -3801,14 +4533,24 @@ def run_pipeline_locked(
                 "allowed_paths": diagnosis["change_contract"]["allowed_paths"],
                 "git_index_unchanged": True,
                 "git_status": delta["status"],
-                "git_diff_stat": run_checked(["git", "diff", "HEAD", "--stat"], repo),
+                "git_diff_stat": run_checked(
+                    ["git", "diff", "HEAD", "--stat"],
+                    repo,
+                    args.max_state_bytes,
+                ),
                 "untracked": delta["untracked"],
                 "ignored_metadata": delta["ignored_metadata"],
                 "redacted_untracked_metadata": delta["redacted_untracked_metadata"],
                 "protected_deletions": delta["protected_deletions"],
                 "delta_artifacts": delta["artifacts"],
             }
-            write_json(run_dir / "result.json", summary)
+            if result_status == "HUMAN_REVIEW_REQUIRED":
+                summary["human_review_binding"] = compute_human_review_binding(
+                    repo,
+                    run_dir,
+                    human_review_result_core_sha256(summary),
+                )
+            atomic_write_json(run_dir / "result.json", summary)
             print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
             return result_exit_code
 

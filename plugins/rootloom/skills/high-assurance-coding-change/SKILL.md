@@ -74,8 +74,9 @@ capture and an additional 8 MiB ordinary-untracked budget. Override them with
 `--max-delta-bytes` and `--max-untracked-patch-bytes` only after reviewing the resource
 cost. A partial or oversized Delta stops before automated Review and cannot receive PASS.
 All Git commands in one Runner-owned capture share the stage deadline and immediate
-parent-exit drain, disable external diff and textconv drivers, restore partial artifacts
-on failure, and retain
+parent-exit drain, disable external diff and textconv drivers, complete valid short
+writes, reject invalid progress, verify actual Artifact growth, roll back a failed
+ordinary-untracked batch, and retain
 only a fixed excerpt from each complete patch in model-facing memory.
 
 After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules fail, the path must pass pre-writer checks against the baseline protected set and diagnosis `allowed_paths`, and the run must use a clean baseline with `--max-repair-cycles 0`. Any authorized protected deletion makes the run deletion-only: no ordinary code edits, renames, moves, or visible file creations are accepted in the same run. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Do not translate that state into automated acceptance. Topology is checked after every writer, after deterministic verification, and after final review.
@@ -94,8 +95,11 @@ developer instructions and enforces the following locally, without trusting mode
 - protected metadata-only path rejection before Delta capture, with only exact preflighted deletion-only exceptions and mandatory human acceptance;
 - exact agreement between the writer's `files_changed` report and its real stage delta;
 - semantic consistency for GO, completed, PASS, FAIL, and finding severity;
-- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and an immediate final hard deadline for draining inherited output pipes after direct-parent exit;
+- process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and an immediate final hard deadline for draining inherited output pipes after direct-parent exit; a drain cutoff forces effective exit 125 for Evidence, Diagnosis, Implementation, Review, and deterministic verification while retaining the direct process status separately;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
+- source-bounded repository topology, visible paths, status, Git control/index, task/role input, and model structured-output capture through the shared `--max-state-paths` and `--max-state-bytes` controls;
+- optional fingerprinted isolation-launcher wrapping and a required-isolation preflight; the launcher, not Rootloom, owns host containment;
+- drift-bound Human Review accept/reject records for protected-deletion results, with Artifact hashes captured through stable directory-relative no-follow descriptors.
 
 The artifact root must be outside the target repository. The runner saves staged,
 unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked
@@ -104,7 +108,10 @@ The complete patch artifacts remain private on disk; prompts receive bounded exc
 structured byte/completeness state rather than reloading each complete patch into memory.
 The process boundary is the original POSIX process group. A descendant that creates a
 new session can survive outside it; the Runner closes local output capture at a bounded
-deadline so that such a descendant cannot hold the stage or repository lock forever.
+deadline and fails closed with effective exit 125 so that such a descendant cannot hold
+the stage or repository lock forever or preserve automatic PASS through an early parent
+exit. The escaped process can still act after failure or evade this signal by closing
+inherited output.
 Use container, cgroup, or equivalent job isolation for hostile verification commands.
 Treat these artifacts as sensitive source material and delete old runs according to the
 repository's retention policy.
@@ -136,7 +143,9 @@ Require each explorer to return:
 - direct, possible, and excluded impact scope;
 - unknowns and competing hypotheses.
 
-For runtime or external evidence, require an evidence provenance record with a stable ID, source, environment, observed time or window, stable artifact/query/trace/correlation reference when available, freshness/redaction notes, and fact-versus-inference status. Every observed fact, reproduction item, and hypothesis evidence entry must reference an existing provenance ID. The strict runner is offline and disables external tools; collect authorized external evidence in the parent, sanitize or materialize the necessary artifact outside the run directory, and pass only the bounded evidence required by the task.
+Treat the request and prior reviews as leads rather than scope. Inspect at least one analogous sibling path and attempt to contradict the leading hypothesis. A reproduced defect requires at least two serious hypotheses and evidence that falsifies or contradicts one.
+
+The evidence provenance contract classifies every material claim as `repository` or `runtime_external` and gives it a stable ID and precise reference. Stable local source facts do not need synthetic timestamps or environment prose. Runtime or external evidence additionally requires source environment, observed time or window, stable artifact/query/trace/correlation reference when available, freshness/redaction notes, and fact-versus-inference status. Every observed fact, reproduction item, and hypothesis evidence entry must reference an existing provenance ID. The strict runner is offline and disables external tools; collect authorized external evidence in the parent, sanitize or materialize the necessary artifact outside the run directory, and pass only the bounded evidence required by the task.
 
 Do not edit source during this stage.
 
@@ -149,6 +158,8 @@ Spawn exactly one agent with `agent_type = "root_cause_reviewer"`. Provide the o
 - rejected alternatives;
 - an explicit change contract with allowed and forbidden scope;
 - required tests and material risks.
+
+Before `GO`, reject at least one serious alternative with evidence. A new guard, flag, journal, abstraction, or workflow step must name the observable failure, owning boundary, executable enforcement, regression proof, and decision it changes; otherwise delete it or use a smaller native control.
 
 The diagnosis must also establish `ROOT_CAUSE_ALIGNMENT: PASS`. A mitigation, unsupported hypothesis, or downstream symptom patch cannot receive `GO` as a complete fix.
 
@@ -172,7 +183,7 @@ In the strict runner, every diagnosis verification item must reference one or mo
 
 ## Stage 5: Review independently
 
-Spawn exactly one agent with `agent_type = "verification_reviewer"`. Provide the original task, approved diagnosis and contract, current diff, and verification logs. Require `VERDICT: PASS` or `VERDICT: FAIL`, findings ordered by severity, contract compliance, test adequacy, and residual risk.
+Spawn exactly one agent with `agent_type = "verification_reviewer"`. Provide the original task, approved diagnosis and contract, current diff, and verification logs. Require `VERDICT: PASS` or `VERDICT: FAIL`, findings ordered by severity, contract compliance, test adequacy, residual risk, and a concrete challenge record naming the strongest counterexample attempted, analogous implementation checked, and whether the change earns its complexity. The reviewer must start from the actual diff rather than replaying reported findings.
 
 Any blocker or high-severity finding requires `FAIL`. Permit one targeted repair cycle through the same implementation worker, then rerun deterministic verification and independent review. If review fails again, stop with the unresolved findings instead of entering an open-ended loop.
 
