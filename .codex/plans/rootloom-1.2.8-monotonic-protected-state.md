@@ -106,6 +106,8 @@ Keep every path classified as ignored or sensitive at the run baseline metadata-
 - 2026-07-12 — Pre-release review reproduced a direct timed-out process that ignored SIGTERM being killed but misreported as surviving because the post-SIGKILL group check ran before reaping that process. The release gate was reopened for a targeted repair and regression.
 - 2026-07-12 — The targeted repair now reaps the direct process after SIGKILL before confirming the remaining process group. Final verification passed: 41 repository tests, 48 Runner tests, repository validation, diff checks, and the Codex CLI compatibility smoke with no managed leftovers and exact config restoration.
 - 2026-07-12 — User explicitly authorized “修复后 发布新版本”. Publication target is `liyanqing90/rootloom` `main`, annotated tag `v1.2.8`, and a non-draft GitHub Release; no force-push or pull request is required by the repository's established release sequence.
+- 2026-07-12 — Published code commit `d5ce40cb005721981bac2f2d22b8cbe9389b37e8`. Its tree `b37c00e5b7ca7bebcf294904b64a877e1f968c3e` exactly matches the locally verified release tree. GitHub CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29188066531`.
+- 2026-07-12 — Created annotated tag object `bfa6219291168f763ad445ccf3355bc15e0f7a7a` for `v1.2.8` and published `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.8` as a non-draft, non-prerelease Release.
 
 ## Durable decision records
 
