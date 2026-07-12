@@ -124,6 +124,25 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         self.assertEqual(probe["name"], "Real Project")
         self.assertEqual(probe["description"], "A real project description.")
 
+    def test_probe_rejects_evidence_symlinks_outside_repository(self) -> None:
+        subprocess.run(["git", "init", "-q", str(self.root)], check=True)
+        workflows = self.root / ".github" / "workflows"
+        workflows.mkdir(parents=True)
+        (workflows / "outside.yml").symlink_to("/etc/hosts")
+        outside_package = self.root.parent / "outside-package.json"
+        outside_package.write_text(
+            json.dumps({"name": "outside-name", "description": "outside evidence"}),
+            encoding="utf-8",
+        )
+        (self.root / "package.json").symlink_to(outside_package)
+
+        result = seeder.probe(self.root)
+
+        self.assertEqual(result["status"], "ready")
+        self.assertEqual(result["ci"], [])
+        self.assertNotEqual(result["name"], "outside-name")
+        self.assertNotIn("package.json", result["manifests"])
+
     def test_refresh_preserves_unmanaged_content(self) -> None:
         self.init_repo()
         seeder.seed(self.root, allow_untrusted=True)
@@ -143,6 +162,43 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         self.assertIn("`pnpm run typecheck`", refreshed)
         self.assertIn("`src/domain.ts` owns the domain state machine", refreshed)
         self.assertTrue(seeder.validate(agents_path)["valid"])
+
+    def test_refresh_refuses_concurrent_guidance_edit(self) -> None:
+        self.init_repo()
+        seeder.seed(self.root, allow_untrusted=True)
+        agents_path = self.root / "AGENTS.md"
+        package = json.loads((self.root / "package.json").read_text(encoding="utf-8"))
+        package["scripts"]["typecheck"] = "tsc --noEmit"
+        (self.root / "package.json").write_text(
+            json.dumps(package, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        original_reader = seeder._read_guidance_bytes
+        calls = 0
+
+        def inject_edit(path: Path) -> bytes | None:
+            nonlocal calls
+            calls += 1
+            value = original_reader(path)
+            if calls == 2 and value is not None:
+                value += b"\nCONCURRENT_USER_RULE\n"
+                path.write_bytes(value)
+            return value
+
+        with mock.patch.object(seeder, "_read_guidance_bytes", side_effect=inject_edit):
+            result = seeder.seed(self.root, allow_untrusted=True)
+
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "guidance_changed_during_seed")
+        self.assertIn("CONCURRENT_USER_RULE", agents_path.read_text(encoding="utf-8"))
+
+    def test_seed_skips_when_guidance_lock_is_busy(self) -> None:
+        self.init_repo()
+        with seeder.guidance_lock(self.root):
+            result = seeder.seed(self.root, allow_untrusted=True)
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["reason"], "guidance_lock_busy")
+        self.assertFalse((self.root / "AGENTS.md").exists())
 
     def test_existing_user_guidance_and_override_are_preserved(self) -> None:
         self.init_repo()

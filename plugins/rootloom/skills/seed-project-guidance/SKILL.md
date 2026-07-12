@@ -11,6 +11,7 @@ Build a useful project map from repository evidence while keeping code, tests, s
 
 - Never overwrite an existing `AGENTS.md` that lacks the seeder-managed markers.
 - Never modify `AGENTS.override.md`, symlinked guidance, untrusted projects, temporary paths, vendor/cache trees, or projects with `.codex/disable-project-guidance-seeding`.
+- Never read evidence through a symlink or from a resolved path outside the selected repository scope.
 - Keep the generated block deterministic. Route semantic notes outside the managed block to `$refine-project-guidance`.
 - Do not add personality text, generic engineering advice, private-reasoning instructions, file inventories, speculative architecture, or L3 comments.
 - Stay single-agent. This workflow does not justify delegation.
@@ -24,7 +25,7 @@ python3 <skill-dir>/scripts/seed_project_guidance.py probe --cwd "$PWD"
 python3 <skill-dir>/scripts/seed_project_guidance.py seed --cwd "$PWD"
 ```
 
-The script derives only observable facts from manifests, lockfiles, package scripts, Make/Just targets, canonical docs, CI files, and bounded module discovery. It writes atomically and updates only its managed block.
+The script derives only observable facts from manifests, lockfiles, package scripts, Make/Just targets, canonical docs, CI files, and bounded module discovery. It serializes Rootloom writers through the Git common directory, verifies that `AGENTS.md` still matches its initial snapshot, writes atomically, and updates only its managed block. A concurrent edit causes a safe skip instead of an overwrite.
 
 If the result is `user_owned_guidance`, `override_exists`, `untrusted_project`, `disabled`, or another skip reason, respect it. Do not bypass the gate unless the user explicitly asks to seed that exact project and the project has been reviewed as safe.
 

@@ -81,6 +81,7 @@ WORKFLOW_CONTRACTS = {
         "ROOT_CAUSE_ALIGNMENT: PASS",
         "do not establish factual truth",
         "evidence provenance",
+        "existing provenance ID",
     ),
     SKILLS_DIR / "record-engineering-decision" / "SKILL.md": (
         "durable repository-owned engineering decision",
@@ -357,9 +358,41 @@ def validate_system_assets(errors: list[str]) -> None:
             '"high-assurance"',
             '"project-guidance-hook"',
             '"subagent-audit-hook"',
+            "setup_lock",
+            '"before_mode"',
+            "setup failed and compensation was incomplete",
+            "rollback failed and compensation was incomplete",
         ):
             if contract not in setup_text:
                 errors.append(f"setup script is missing capability contract: {contract}")
+
+    scanner_text = SCANNER.read_text(encoding="utf-8") if SCANNER.is_file() else ""
+    for contract in (
+        "guidance_lock",
+        "guidance_changed_during_seed",
+        "_safe_repo_file",
+    ):
+        if contract not in scanner_text:
+            errors.append(f"project seeder is missing safety contract: {contract}")
+
+    runner = (
+        SKILLS_DIR
+        / "high-assurance-coding-change"
+        / "scripts"
+        / "run_pipeline.py"
+    )
+    if not runner.is_file():
+        errors.append("high-assurance runner is missing")
+    else:
+        runner_text = runner.read_text(encoding="utf-8")
+        for contract in (
+            'RUNNER_VERSION = "2.2"',
+            "file_metadata_fingerprint",
+            '"provenance_ids"',
+            '"evidence_ids"',
+        ):
+            if contract not in runner_text:
+                errors.append(f"high-assurance runner is missing contract: {contract}")
 
 
 def validate_workflow_contracts(errors: list[str]) -> None:
@@ -482,6 +515,7 @@ def validate_repository_hygiene(errors: list[str]) -> None:
         ROOT / "docs" / "setup.md",
         ROOT / "docs" / "setup.zh-CN.md",
         ROOT / "examples" / "AGENTS.project.md",
+        ROOT / "tests" / "compatibility_smoke.py",
     )
     for path in required:
         if not path.is_file():
@@ -544,7 +578,8 @@ def validate_maturity_contract(errors: list[str]) -> None:
         "schedule:",
         "workflow_dispatch:",
         "@openai/codex@latest",
-        "test_rules_distinguish_commit_push_and_destructive_reset",
+        "make check",
+        "make compatibility-smoke",
     ):
         if contract not in content:
             errors.append(f"Codex compatibility probe is missing contract: {contract}")

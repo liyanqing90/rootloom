@@ -36,7 +36,8 @@ The explicit global setup path:
 - gates the two lifecycle Hooks independently through a managed, fail-closed component policy;
 - refuses unmanaged conflicts and symlinks;
 - backs up replacements and records pre/post hashes;
-- writes atomically, refuses rollback over later managed edits, and preserves unrelated `config.toml` additions during semantic rollback;
+- serializes setup/rollback, prepares recovery state before mutation, compensates failed state commits, writes atomically, refuses rollback over later managed edits, restores recorded modes, and preserves unrelated `config.toml` additions during semantic rollback;
+- serializes project-guidance writes, rejects symlinked/out-of-repository evidence, and rechecks the exact guidance snapshot before replacement;
 - does not change credentials, providers, MCP servers, plugins, apps, or remote systems.
 
 When `delegation-control` is selected, the SubagentStart budget Hook is advisory. It records opaque session hashes and child IDs under the plugin's private data directory, but the current Hook API cannot cancel a newly starting child. The deterministic runner provides stronger local stage gates; neither path replaces external OS/container, credential, network, branch, review, or CI controls.

@@ -52,7 +52,7 @@ Use `--preset full` when the user asks for the complete system. Explain every `C
 - `~/.codex/rules/rootloom.rules` — local commit allowed, destructive and remote actions separated.
 - `~/.codex/.rootloom/components.json` — managed Hook enablement and selected capability record.
 
-The script preserves unrelated `config.toml` keys. It refuses symlinks and unmanaged files, except when an existing file exactly matches the managed template before ownership markers.
+The script preserves unrelated `config.toml` keys. It refuses symlinks and unmanaged files, except when an existing file exactly matches the managed template before ownership markers. Apply and rollback hold one non-blocking lock per Codex home; a competing transaction stops before mutation.
 
 ## 3. Apply only with authority
 
@@ -63,6 +63,8 @@ python3 <skill-dir>/scripts/setup_rootloom.py apply --preset engineering
 ```
 
 Apply the same preset or exact capability set that was reviewed in the plan. Changing an installed capability selection requires `rollback --all` first; do not silently leave assets from the previous layer behind.
+
+The transaction prepares backups and its manifest before mutation. If target or state commit fails, it restores the prior files, state, and file modes before reporting failure.
 
 If the plan contains user-owned conflicts, do not use `--replace-conflicts` until the user has seen the exact affected paths and explicitly authorizes replacement. Every replacement is backed up, but backup is not a substitute for authorization.
 
@@ -98,7 +100,7 @@ When the user asks to undo the most recent setup transaction, preview status and
 python3 <skill-dir>/scripts/setup_rootloom.py rollback
 ```
 
-Rollback refuses to overwrite managed files changed after setup. For `config.toml`, it restores only the three setup-owned `[agents]` keys and preserves unrelated settings that Codex or the user added later; it still stops if one of those managed keys changed. Resolve real conflicts manually with the user instead of forcing them.
+Rollback refuses to overwrite managed files changed after setup. For `config.toml`, it restores only the three setup-owned `[agents]` keys and preserves unrelated settings that Codex or the user added later; it still stops if one of those managed keys changed. Exact file restoration also restores the recorded pre-setup mode. Resolve real conflicts manually with the user instead of forcing them.
 
 To change from one installed preset/capability set to another, run `rollback --all`, plan the new selection, then apply it. A normal rollback restores only the latest update; `--all` follows the safe transaction chain to the original pre-install baseline and avoids ambiguous partial removal.
 

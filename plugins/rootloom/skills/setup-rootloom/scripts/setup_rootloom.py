@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -12,10 +13,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import tomllib
-from typing import Any
+from typing import Any, Iterator
 
 
 MANAGED_TOKEN = "rootloom:managed"
@@ -108,6 +110,66 @@ def read_bytes(path: Path) -> bytes | None:
         return path.read_bytes()
     except FileNotFoundError:
         return None
+
+
+def file_mode(path: Path, fallback: int = 0o600) -> int:
+    try:
+        return stat.S_IMODE(path.stat(follow_symlinks=False).st_mode)
+    except FileNotFoundError:
+        return fallback
+
+
+@contextmanager
+def setup_lock(codex_home: Path) -> Iterator[Path]:
+    """Serialize setup mutations for one Codex home without waiting indefinitely."""
+
+    state_root = codex_home / STATE_DIRNAME
+    if state_root.is_symlink():
+        raise ValueError("refusing symlinked setup state directory")
+    state_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(state_root, 0o700)
+    lock_path = state_root / "setup.lock"
+    if lock_path.is_symlink():
+        raise ValueError("refusing symlinked setup lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        os.fchmod(descriptor, 0o600)
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError(
+                    f"another Rootloom setup transaction holds {lock_path}"
+                ) from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError(
+                    f"another Rootloom setup transaction holds {lock_path}"
+                ) from exc
+        locked = True
+        yield lock_path
+    finally:
+        if locked:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def plugin_root() -> Path:
@@ -399,6 +461,8 @@ def load_state(codex_home: Path) -> dict[str, Any]:
     if state_root.is_symlink():
         raise ValueError("refusing symlinked setup state directory")
     path = state_root / "state.json"
+    if path.is_symlink():
+        raise ValueError("refusing symlinked setup state file")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
@@ -551,7 +615,7 @@ def make_transaction_dir(codex_home: Path) -> Path:
     return path
 
 
-def apply_plan(
+def _apply_plan_locked(
     codex_home: Path,
     replace_conflicts: bool,
     capabilities: tuple[str, ...] = FULL_CAPABILITIES,
@@ -590,40 +654,29 @@ def apply_plan(
 
     transaction = make_transaction_dir(codex_home)
     manifest_entries: list[dict[str, Any]] = []
-    targets_by_path = {item.relative_path: item for item in targets}
-    try:
-        for action in changed:
-            target = targets_by_path[action.path]
-            destination = codex_home / action.path
-            if has_symlink_component(destination, codex_home):
-                raise ValueError(f"refusing symlinked setup target: {action.path}")
-            before = read_bytes(destination)
-            backup_relative: str | None = None
-            if before is not None:
-                backup = transaction / action.path
-                backup.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(destination, backup, follow_symlinks=False)
-                backup_relative = action.path
-            atomic_write(destination, desired[action.path])
-            manifest_entries.append(
-                {
-                    "path": action.path,
-                    "before_exists": before is not None,
-                    "before_hash": sha256_bytes(before) if before is not None else None,
-                    "after_hash": sha256_bytes(desired[action.path]),
-                    "backup": backup_relative,
-                }
-            )
-    except Exception:
-        for entry in reversed(manifest_entries):
-            destination = codex_home / entry["path"]
-            if entry["before_exists"]:
-                backup = transaction / entry["backup"]
-                atomic_write(destination, backup.read_bytes())
-            else:
-                destination.unlink(missing_ok=True)
-        raise
-
+    for action in changed:
+        destination = codex_home / action.path
+        if has_symlink_component(destination, codex_home):
+            raise ValueError(f"refusing symlinked setup target: {action.path}")
+        before = read_bytes(destination)
+        backup_relative: str | None = None
+        before_mode: int | None = None
+        if before is not None:
+            backup = transaction / action.path
+            backup.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(destination, backup, follow_symlinks=False)
+            backup_relative = action.path
+            before_mode = file_mode(destination)
+        manifest_entries.append(
+            {
+                "path": action.path,
+                "before_exists": before is not None,
+                "before_hash": sha256_bytes(before) if before is not None else None,
+                "before_mode": before_mode,
+                "after_hash": sha256_bytes(desired[action.path]),
+                "backup": backup_relative,
+            }
+        )
     transaction_manifest = {
         "version": version,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -637,6 +690,9 @@ def apply_plan(
         transaction / "manifest.json",
         (json.dumps(transaction_manifest, indent=2, sort_keys=True) + "\n").encode(),
     )
+    state_path = codex_home / STATE_DIRNAME / "state.json"
+    state_before = read_bytes(state_path)
+    state_before_mode = file_mode(state_path) if state_before is not None else None
     state = {
         "status": "installed",
         "version": version,
@@ -648,10 +704,49 @@ def apply_plan(
             for action in actions
         },
     }
-    atomic_write(
-        codex_home / STATE_DIRNAME / "state.json",
-        (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
-    )
+    mutated_entries: list[dict[str, Any]] = []
+    try:
+        for entry in manifest_entries:
+            destination = codex_home / entry["path"]
+            mutated_entries.append(entry)
+            atomic_write(destination, desired[entry["path"]])
+        atomic_write(
+            state_path,
+            (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+        )
+    except Exception as exc:
+        restore_errors: list[str] = []
+        for entry in reversed(mutated_entries):
+            destination = codex_home / entry["path"]
+            try:
+                if entry["before_exists"]:
+                    backup = transaction / entry["backup"]
+                    atomic_write(
+                        destination,
+                        backup.read_bytes(),
+                        mode=entry.get("before_mode") or file_mode(backup),
+                    )
+                else:
+                    destination.unlink(missing_ok=True)
+            except Exception as restore_exc:  # pragma: no cover - catastrophic double fault
+                restore_errors.append(f"{entry['path']}: {restore_exc}")
+        try:
+            if state_before is None:
+                state_path.unlink(missing_ok=True)
+            else:
+                atomic_write(
+                    state_path,
+                    state_before,
+                    mode=state_before_mode or 0o600,
+                )
+        except Exception as restore_exc:  # pragma: no cover - catastrophic double fault
+            restore_errors.append(f"{STATE_DIRNAME}/state.json: {restore_exc}")
+        if restore_errors:
+            raise RuntimeError(
+                "setup failed and compensation was incomplete: "
+                + "; ".join(restore_errors)
+            ) from exc
+        raise
     return {
         "status": "applied",
         "version": version,
@@ -663,7 +758,16 @@ def apply_plan(
     }
 
 
-def rollback(codex_home: Path) -> dict[str, Any]:
+def apply_plan(
+    codex_home: Path,
+    replace_conflicts: bool,
+    capabilities: tuple[str, ...] = FULL_CAPABILITIES,
+) -> dict[str, Any]:
+    with setup_lock(codex_home):
+        return _apply_plan_locked(codex_home, replace_conflicts, capabilities)
+
+
+def _rollback_locked(codex_home: Path) -> dict[str, Any]:
     state = load_state(codex_home)
     if state.get("status") != "installed" or not state.get("latest_transaction"):
         raise RuntimeError("no installed transaction is available to roll back")
@@ -704,6 +808,7 @@ def rollback(codex_home: Path) -> dict[str, Any]:
         active_capabilities = None
 
     allowed_paths = {target.relative_path for target in all_targets(plugin_root())}
+    rollback_snapshots: list[tuple[str, bytes | None, int | None]] = []
     for entry in entries:
         relative_path = entry.get("path")
         if relative_path not in allowed_paths:
@@ -712,6 +817,13 @@ def rollback(codex_home: Path) -> dict[str, Any]:
         if has_symlink_component(destination, codex_home):
             raise ValueError(f"refusing symlinked rollback target: {relative_path}")
         current = read_bytes(destination)
+        rollback_snapshots.append(
+            (
+                relative_path,
+                current,
+                file_mode(destination) if current is not None else None,
+            )
+        )
         current_hash = sha256_bytes(current) if current is not None else None
         if current_hash != entry["after_hash"]:
             if relative_path == "config.toml" and current is not None:
@@ -720,47 +832,6 @@ def rollback(codex_home: Path) -> dict[str, Any]:
             raise RuntimeError(
                 f"refusing rollback because {entry['path']} changed after setup"
             )
-
-    for entry in reversed(entries):
-        destination = codex_home / entry["path"]
-        current = read_bytes(destination)
-        current_hash = sha256_bytes(current) if current is not None else None
-        if entry["path"] == "config.toml" and current_hash != entry["after_hash"]:
-            assert current is not None
-            previous = b""
-            if entry["before_exists"]:
-                backup_relative = Path(str(entry["backup"]))
-                if backup_relative.is_absolute() or ".." in backup_relative.parts:
-                    raise ValueError("invalid transaction backup path")
-                backup_path = transaction / backup_relative
-                if backup_path.is_symlink():
-                    raise ValueError("refusing symlinked transaction backup")
-                backup = backup_path.resolve()
-                if not backup.is_relative_to(transaction):
-                    raise ValueError("transaction backup escaped its directory")
-                previous = backup.read_bytes()
-            restored = restore_agent_limits(
-                current.decode("utf-8"),
-                previous.decode("utf-8"),
-            ).encode()
-            if restored:
-                atomic_write(destination, restored)
-            else:
-                destination.unlink(missing_ok=True)
-            continue
-        if entry["before_exists"]:
-            backup_relative = Path(str(entry["backup"]))
-            if backup_relative.is_absolute() or ".." in backup_relative.parts:
-                raise ValueError("invalid transaction backup path")
-            backup_path = transaction / backup_relative
-            if backup_path.is_symlink():
-                raise ValueError("refusing symlinked transaction backup")
-            backup = backup_path.resolve()
-            if not backup.is_relative_to(transaction):
-                raise ValueError("transaction backup escaped its directory")
-            atomic_write(destination, backup.read_bytes())
-        else:
-            destination.unlink(missing_ok=True)
 
     if isinstance(previous_state, dict) and previous_state.get("status") == "installed":
         next_state = previous_state
@@ -772,10 +843,85 @@ def rollback(codex_home: Path) -> dict[str, Any]:
             "rolled_back_at": datetime.now(timezone.utc).isoformat(),
         }
         rollback_status = "rolled_back"
-    atomic_write(
-        codex_home / STATE_DIRNAME / "state.json",
-        (json.dumps(next_state, indent=2, sort_keys=True) + "\n").encode(),
-    )
+    state_path = codex_home / STATE_DIRNAME / "state.json"
+    state_before = read_bytes(state_path)
+    state_before_mode = file_mode(state_path) if state_before is not None else None
+    try:
+        for entry in reversed(entries):
+            destination = codex_home / entry["path"]
+            current = read_bytes(destination)
+            current_hash = sha256_bytes(current) if current is not None else None
+            if entry["path"] == "config.toml" and current_hash != entry["after_hash"]:
+                assert current is not None
+                previous = b""
+                if entry["before_exists"]:
+                    backup_relative = Path(str(entry["backup"]))
+                    if backup_relative.is_absolute() or ".." in backup_relative.parts:
+                        raise ValueError("invalid transaction backup path")
+                    backup_path = transaction / backup_relative
+                    if backup_path.is_symlink():
+                        raise ValueError("refusing symlinked transaction backup")
+                    backup = backup_path.resolve()
+                    if not backup.is_relative_to(transaction):
+                        raise ValueError("transaction backup escaped its directory")
+                    previous = backup.read_bytes()
+                restored = restore_agent_limits(
+                    current.decode("utf-8"),
+                    previous.decode("utf-8"),
+                ).encode()
+                if restored:
+                    atomic_write(destination, restored, mode=file_mode(destination))
+                else:
+                    destination.unlink(missing_ok=True)
+                continue
+            if entry["before_exists"]:
+                backup_relative = Path(str(entry["backup"]))
+                if backup_relative.is_absolute() or ".." in backup_relative.parts:
+                    raise ValueError("invalid transaction backup path")
+                backup_path = transaction / backup_relative
+                if backup_path.is_symlink():
+                    raise ValueError("refusing symlinked transaction backup")
+                backup = backup_path.resolve()
+                if not backup.is_relative_to(transaction):
+                    raise ValueError("transaction backup escaped its directory")
+                raw_mode = entry.get("before_mode")
+                mode = raw_mode if isinstance(raw_mode, int) else file_mode(backup)
+                atomic_write(destination, backup.read_bytes(), mode=mode)
+            else:
+                destination.unlink(missing_ok=True)
+
+        atomic_write(
+            state_path,
+            (json.dumps(next_state, indent=2, sort_keys=True) + "\n").encode(),
+        )
+    except Exception as exc:
+        restore_errors: list[str] = []
+        for relative_path, before, before_mode in reversed(rollback_snapshots):
+            destination = codex_home / relative_path
+            try:
+                if before is None:
+                    destination.unlink(missing_ok=True)
+                else:
+                    atomic_write(destination, before, mode=before_mode or 0o600)
+            except Exception as restore_exc:  # pragma: no cover - catastrophic double fault
+                restore_errors.append(f"{relative_path}: {restore_exc}")
+        try:
+            if state_before is None:
+                state_path.unlink(missing_ok=True)
+            else:
+                atomic_write(
+                    state_path,
+                    state_before,
+                    mode=state_before_mode or 0o600,
+                )
+        except Exception as restore_exc:  # pragma: no cover - catastrophic double fault
+            restore_errors.append(f"{STATE_DIRNAME}/state.json: {restore_exc}")
+        if restore_errors:
+            raise RuntimeError(
+                "rollback failed and compensation was incomplete: "
+                + "; ".join(restore_errors)
+            ) from exc
+        raise
     return {
         "status": rollback_status,
         "codex_home": str(codex_home),
@@ -786,7 +932,17 @@ def rollback(codex_home: Path) -> dict[str, Any]:
     }
 
 
+def rollback(codex_home: Path) -> dict[str, Any]:
+    with setup_lock(codex_home):
+        return _rollback_locked(codex_home)
+
+
 def rollback_all(codex_home: Path) -> dict[str, Any]:
+    with setup_lock(codex_home):
+        return _rollback_all_locked(codex_home)
+
+
+def _rollback_all_locked(codex_home: Path) -> dict[str, Any]:
     transactions: list[dict[str, Any]] = []
     for _attempt in range(100):
         state = load_state(codex_home)
@@ -799,7 +955,7 @@ def rollback_all(codex_home: Path) -> dict[str, Any]:
                 "active_capabilities": [],
                 "transactions": transactions,
             }
-        transactions.append(rollback(codex_home))
+        transactions.append(_rollback_locked(codex_home))
     raise RuntimeError("rollback chain exceeded 100 transactions")
 
 

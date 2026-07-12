@@ -80,6 +80,8 @@ The setup transaction writes only:
 
 It does not change the default model, reasoning effort, approval policy, sandbox, providers, MCP servers, plugins, or apps.
 
+Setup and rollback take a non-blocking cross-process lock under `~/.codex/.rootloom/`; a competing operation fails without touching managed targets. Apply prepares all backups and the transaction manifest before its first target mutation. Apply target writes, rollback target writes, and their final state commits each share a compensation boundary, so a failure restores the previous files and state. Manifests record original file modes, and rollback restores those modes instead of inheriting a temporary-file default.
+
 ## Conflicts
 
 The default apply is atomic and refuses:
@@ -139,4 +141,4 @@ Use `rollback --all` when removing the global setup or changing capability level
 codex plugin remove rootloom@rootloom
 ```
 
-Rollback requires each fully managed file to retain its recorded post-apply hash. `config.toml` is handled semantically: the installer verifies that its three managed `[agents]` values are intact, restores their previous values, and preserves unrelated settings added later—including Codex project-trust entries. If a managed file or managed config value changed, rollback stops instead of deleting that work.
+Rollback requires each fully managed file to retain its recorded post-apply hash. `config.toml` is handled semantically: the installer verifies that its three managed `[agents]` values are intact, restores their previous values, and preserves unrelated settings added later—including Codex project-trust entries. Restored files recover their recorded pre-apply mode. If a managed file or managed config value changed, rollback stops instead of deleting that work.

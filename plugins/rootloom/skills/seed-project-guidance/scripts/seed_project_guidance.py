@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -12,7 +13,7 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 try:
     import tomllib
@@ -189,6 +190,66 @@ def _is_within(path: Path, parent: Path) -> bool:
     return True
 
 
+def _safe_repo_file(path: Path, root: Path) -> bool:
+    return path.is_file() and not path.is_symlink() and _is_within(path, root)
+
+
+def _git_common_dir(root: Path) -> Path:
+    result = subprocess.run(
+        ["git", "-C", str(root), "rev-parse", "--git-common-dir"],
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=5,
+    )
+    common = Path(result.stdout.strip())
+    return common.resolve() if common.is_absolute() else (root / common).resolve()
+
+
+@contextmanager
+def guidance_lock(project_root: Path) -> Iterator[Path]:
+    """Serialize Rootloom guidance writers for one Git common directory."""
+
+    lock_path = _git_common_dir(project_root) / "rootloom-guidance.lock"
+    if lock_path.is_symlink():
+        raise ValueError("refusing symlinked guidance lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    locked = False
+    try:
+        os.fchmod(descriptor, 0o600)
+        if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
+            import msvcrt
+
+            if os.fstat(descriptor).st_size == 0:
+                os.write(descriptor, b"\0")
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            try:
+                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+            except OSError as exc:
+                raise RuntimeError("guidance lock is busy") from exc
+        else:
+            import fcntl
+
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as exc:
+                raise RuntimeError("guidance lock is busy") from exc
+        locked = True
+        yield lock_path
+    finally:
+        if locked:
+            if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
+                import msvcrt
+
+                os.lseek(descriptor, 0, os.SEEK_SET)
+                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
 def _git_root(cwd: Path) -> Path | None:
     try:
         result = subprocess.run(
@@ -241,7 +302,7 @@ def _unsafe_location(root: Path) -> bool:
 
 def _readme_metadata(root: Path) -> tuple[str, str, str | None]:
     readmes = sorted(
-        path for path in root.glob("README*") if path.is_file() and not path.is_symlink()
+        path for path in root.glob("README*") if _safe_repo_file(path, root)
     )
     if not readmes:
         return "", "", None
@@ -283,7 +344,7 @@ def _project_metadata(root: Path) -> tuple[str, str, str | None]:
     source: str | None = None
 
     package_path = root / "package.json"
-    package = _load_json(package_path)
+    package = _load_json(package_path) if _safe_repo_file(package_path, root) else {}
     if package:
         name = _clean_inline(package.get("name"), 100) or name
         package_description = _clean_inline(package.get("description"))
@@ -292,7 +353,7 @@ def _project_metadata(root: Path) -> tuple[str, str, str | None]:
             source = "package.json"
 
     pyproject_path = root / "pyproject.toml"
-    pyproject = _load_toml(pyproject_path)
+    pyproject = _load_toml(pyproject_path) if _safe_repo_file(pyproject_path, root) else {}
     project = pyproject.get("project", {}) if pyproject else {}
     poetry = pyproject.get("tool", {}).get("poetry", {}) if pyproject else {}
     if isinstance(project, dict) and project:
@@ -308,7 +369,8 @@ def _project_metadata(root: Path) -> tuple[str, str, str | None]:
             description = poetry_description
             source = "pyproject.toml"
 
-    cargo = _load_toml(root / "Cargo.toml")
+    cargo_path = root / "Cargo.toml"
+    cargo = _load_toml(cargo_path) if _safe_repo_file(cargo_path, root) else {}
     cargo_package = cargo.get("package", {}) if cargo else {}
     if isinstance(cargo_package, dict) and cargo_package:
         name = _clean_inline(cargo_package.get("name"), 100) or name
@@ -338,16 +400,18 @@ def _detect_documents(root: Path) -> list[str]:
         "docs/quality/verification-matrix*",
     )
     for pattern in patterns:
-        candidates.extend(path for path in root.glob(pattern) if path.is_file())
+        candidates.extend(path for path in root.glob(pattern) if _safe_repo_file(path, root))
     return sorted({_relative(path, root) for path in candidates})[:16]
 
 
 def _detect_ci(root: Path) -> list[str]:
     candidates: list[Path] = []
-    candidates.extend(path for path in root.glob(".github/workflows/*") if path.is_file())
+    candidates.extend(
+        path for path in root.glob(".github/workflows/*") if _safe_repo_file(path, root)
+    )
     for name in (".gitlab-ci.yml", "Jenkinsfile", "azure-pipelines.yml", ".circleci/config.yml"):
         path = root / name
-        if path.is_file():
+        if _safe_repo_file(path, root):
             candidates.append(path)
     return sorted({_relative(path, root) for path in candidates})[:20]
 
@@ -365,7 +429,7 @@ def _detect_root_dirs(root: Path) -> list[dict[str, str]]:
             continue
         purpose = KNOWN_DIR_PURPOSES.get(path.name.lower())
         if purpose is None:
-            if not any((path / name).is_file() for name in MANIFEST_NAMES):
+            if not any(_safe_repo_file(path / name, root) for name in MANIFEST_NAMES):
                 continue
             purpose = "independent module or toolchain boundary"
         directories.append({"path": path.name + "/", "purpose": purpose})
@@ -406,7 +470,7 @@ def _detect_package_manager(root: Path, package: dict[str, Any]) -> str:
         ("bun.lockb", "bun"),
         ("package-lock.json", "npm"),
     ):
-        if (root / filename).exists():
+        if _safe_repo_file(root / filename, root):
             return manager
     return "npm"
 
@@ -421,7 +485,8 @@ def _detect_commands(root: Path) -> tuple[list[dict[str, str]], str | None]:
         seen.add(command)
         commands.append({"command": command, "source": source, "category": category})
 
-    package = _load_json(root / "package.json")
+    package_path = root / "package.json"
+    package = _load_json(package_path) if _safe_repo_file(package_path, root) else {}
     package_manager: str | None = None
     scripts = package.get("scripts", {}) if package else {}
     if package:
@@ -434,7 +499,7 @@ def _detect_commands(root: Path) -> tuple[list[dict[str, str]], str | None]:
 
     for filename, runner in (("Makefile", "make"), ("justfile", "just")):
         path = root / filename
-        if not path.is_file():
+        if not _safe_repo_file(path, root):
             continue
         for line in _read_text(path, 128 * 1024).splitlines():
             match = re.match(r"^([A-Za-z][A-Za-z0-9_.-]*):(?:\s|$)", line)
@@ -445,18 +510,18 @@ def _detect_commands(root: Path) -> tuple[list[dict[str, str]], str | None]:
             if category:
                 add(f"{runner} {target}", f"{filename} target {target}", category)
 
-    if (root / "Cargo.toml").is_file():
+    if _safe_repo_file(root / "Cargo.toml", root):
         add("cargo test", "Cargo.toml", "test")
         add("cargo check", "Cargo.toml", "check")
         add("cargo fmt --check", "Cargo.toml", "format")
-    if (root / "go.mod").is_file():
+    if _safe_repo_file(root / "go.mod", root):
         add("go test ./...", "go.mod", "test")
         add("go vet ./...", "go.mod", "check")
-    if (root / "Package.swift").is_file():
+    if _safe_repo_file(root / "Package.swift", root):
         add("swift test", "Package.swift", "test")
 
     pyproject_path = root / "pyproject.toml"
-    if pyproject_path.is_file():
+    if _safe_repo_file(pyproject_path, root):
         pyproject_text = _read_text(pyproject_path)
         prefix = "uv run " if (root / "uv.lock").exists() else ""
         if "[tool.pytest" in pyproject_text or re.search(r"\bpytest\b", pyproject_text):
@@ -471,8 +536,8 @@ def _detect_commands(root: Path) -> tuple[list[dict[str, str]], str | None]:
 
 
 def _detect_manifests(root: Path) -> tuple[list[str], list[str]]:
-    manifests = [name for name in MANIFEST_NAMES if (root / name).is_file()]
-    lockfiles = [name for name in LOCKFILE_NAMES if (root / name).is_file()]
+    manifests = [name for name in MANIFEST_NAMES if _safe_repo_file(root / name, root)]
+    lockfiles = [name for name in LOCKFILE_NAMES if _safe_repo_file(root / name, root)]
     return manifests, lockfiles
 
 
@@ -485,7 +550,11 @@ def _detect_module_candidates(root: Path) -> list[dict[str, Any]]:
             relative = directory.relative_to(root)
             if len(relative.parts) > MAX_MODULE_DEPTH or any(part in IGNORED_DIRS for part in relative.parts):
                 continue
-            manifests = [name for name in MANIFEST_NAMES if (directory / name).is_file()]
+            manifests = [
+                name
+                for name in MANIFEST_NAMES
+                if _safe_repo_file(directory / name, root)
+            ]
             if not manifests:
                 continue
             found.setdefault(relative.as_posix(), set()).update(manifests)
@@ -509,7 +578,9 @@ def _resolve_scope(project_root: Path, target: Path | None) -> tuple[Path | None
     relative = scope_root.relative_to(project_root)
     if len(relative.parts) > MAX_MODULE_DEPTH:
         return None, "target_too_deep"
-    if scope_root != project_root and not any((scope_root / name).is_file() for name in MANIFEST_NAMES):
+    if scope_root != project_root and not any(
+        _safe_repo_file(scope_root / name, project_root) for name in MANIFEST_NAMES
+    ):
         return None, "not_a_module_boundary"
     return scope_root, None
 
@@ -642,6 +713,8 @@ def _contains_secret(text: str) -> bool:
 
 def _atomic_write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise ValueError(f"refusing to write symlinked guidance: {path}")
     descriptor, temp_name = tempfile.mkstemp(prefix=".AGENTS.md.", dir=str(path.parent), text=True)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
@@ -657,38 +730,32 @@ def _atomic_write(path: Path, content: str) -> None:
             pass
 
 
-def seed(
-    cwd: Path,
-    target: Path | None = None,
-    *,
-    allow_untrusted: bool = False,
-    dry_run: bool = False,
-) -> dict[str, Any]:
-    data = probe(cwd, target)
-    if data.get("status") != "ready":
-        return data
+def _read_guidance_bytes(path: Path) -> bytes | None:
+    if path.is_symlink():
+        raise ValueError(f"refusing symlinked guidance: {path}")
+    try:
+        with path.open("rb") as handle:
+            return handle.read(MAX_GUIDANCE_BYTES + 1)
+    except FileNotFoundError:
+        return None
 
+
+def _seed_locked(data: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     project_root = Path(data["project_root"])
     scope_root = Path(data["scope_root"])
     agents_path = Path(data["agents_path"])
     override_path = scope_root / "AGENTS.override.md"
-
-    if _disabled(project_root):
-        return {**data, "status": "skipped", "reason": "disabled"}
-    if _unsafe_location(project_root):
-        return {**data, "status": "skipped", "reason": "unsafe_location"}
-    if not allow_untrusted and not _is_trusted(project_root):
-        return {**data, "status": "skipped", "reason": "untrusted_project"}
     if override_path.exists():
         return {**data, "status": "skipped", "reason": "override_exists"}
     if agents_path.is_symlink() or override_path.is_symlink():
         return {**data, "status": "skipped", "reason": "symlinked_guidance"}
 
     managed = _render_managed(data)
-    if agents_path.exists():
-        existing = _read_text(agents_path, MAX_GUIDANCE_BYTES + 1)
-        if len(existing.encode("utf-8")) > MAX_GUIDANCE_BYTES:
+    original = _read_guidance_bytes(agents_path)
+    if original is not None:
+        if len(original) > MAX_GUIDANCE_BYTES:
             return {**data, "status": "skipped", "reason": "existing_guidance_too_large"}
+        existing = original.decode("utf-8", errors="replace")
         content, reason = _replace_managed(existing, managed)
         if content is None:
             return {**data, "status": "skipped", "reason": reason}
@@ -701,11 +768,52 @@ def seed(
         return {**data, "status": "error", "reason": "secret_like_content_detected"}
     if len(content.encode("utf-8")) > MAX_GUIDANCE_BYTES:
         return {**data, "status": "error", "reason": "generated_guidance_too_large"}
-    if agents_path.exists() and _read_text(agents_path, MAX_GUIDANCE_BYTES + 1) == content:
+    if original is not None and original.decode("utf-8", errors="replace") == content:
         return {**data, "status": "unchanged", "reason": "fingerprint_current"}
     if not dry_run:
+        if _read_guidance_bytes(agents_path) != original:
+            return {
+                **data,
+                "status": "skipped",
+                "reason": "guidance_changed_during_seed",
+            }
         _atomic_write(agents_path, content)
     return {**data, "status": status, "dry_run": dry_run}
+
+
+def seed(
+    cwd: Path,
+    target: Path | None = None,
+    *,
+    allow_untrusted: bool = False,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    data = probe(cwd, target)
+    if data.get("status") != "ready":
+        return data
+
+    project_root = Path(data["project_root"])
+    if _disabled(project_root):
+        return {**data, "status": "skipped", "reason": "disabled"}
+    if _unsafe_location(project_root):
+        return {**data, "status": "skipped", "reason": "unsafe_location"}
+    if not allow_untrusted and not _is_trusted(project_root):
+        return {**data, "status": "skipped", "reason": "untrusted_project"}
+
+    try:
+        with guidance_lock(project_root):
+            refreshed = probe(cwd, target)
+            if refreshed.get("status") != "ready":
+                return refreshed
+            return _seed_locked(refreshed, dry_run=dry_run)
+    except RuntimeError as exc:
+        if str(exc) == "guidance lock is busy":
+            return {**data, "status": "skipped", "reason": "guidance_lock_busy"}
+        raise
+    except ValueError as exc:
+        if str(exc) == "refusing symlinked guidance":
+            return {**data, "status": "skipped", "reason": "symlinked_guidance"}
+        raise
 
 
 def validate(file_path: Path) -> dict[str, Any]:

@@ -1,4 +1,4 @@
-.PHONY: check test validate smoke
+.PHONY: check test validate smoke compatibility-smoke
 
 check: validate test
 
@@ -11,3 +11,6 @@ test:
 
 smoke:
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/live_smoke.py
+
+compatibility-smoke:
+	PYTHONDONTWRITEBYTECODE=1 python3 tests/compatibility_smoke.py

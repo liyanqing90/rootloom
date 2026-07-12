@@ -80,6 +80,8 @@ python3 <skill-dir>/scripts/setup_rootloom.py plan \
 
 它不会改变默认模型、推理等级、审批策略、sandbox、模型供应商、MCP、插件或 Apps。
 
+Setup 与 rollback 会在 `~/.codex/.rootloom/` 下获取非阻塞跨进程锁；竞争操作会在不触碰受管目标的前提下失败。Apply 在第一次修改目标前准备全部备份与事务清单。Apply 目标写入、rollback 目标写入及各自的最终状态提交都位于补偿边界，因此失败会恢复旧文件与旧状态。清单记录原始权限模式，回滚会恢复这些模式，而不是继承临时文件的默认权限。
+
 ## 冲突处理
 
 默认 apply 是原子的，并拒绝：
@@ -139,4 +141,4 @@ python3 <skill-dir>/scripts/setup_rootloom.py rollback
 codex plugin remove rootloom@rootloom
 ```
 
-完整托管文件只有在仍匹配 apply 后哈希时才会回滚。`config.toml` 采用语义回滚：安装器确认三个受管 `[agents]` 值未变，只恢复它们的旧值，并保留后来新增的其他设置——包括 Codex 写入的项目信任记录。若受管文件或受管配置值发生变化，回滚会停止，不会删除这些新工作。
+完整托管文件只有在仍匹配 apply 后哈希时才会回滚。`config.toml` 采用语义回滚：安装器确认三个受管 `[agents]` 值未变，只恢复它们的旧值，并保留后来新增的其他设置——包括 Codex 写入的项目信任记录。恢复的文件会取回 apply 前记录的权限模式。若受管文件或受管配置值发生变化，回滚会停止，不会删除这些新工作。

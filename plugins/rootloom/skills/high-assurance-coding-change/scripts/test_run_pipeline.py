@@ -11,6 +11,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 MODULE_PATH = Path(__file__).with_name("run_pipeline.py")
@@ -83,20 +84,64 @@ class RunnerGateTests(unittest.TestCase):
         with self.assertRaises(runner.PipelineError):
             runner.validate_evidence(
                 {
-                    "reproduction": {},
+                    "observed_facts": [
+                        {
+                            "id": "fact-1",
+                            "statement": "failure observed",
+                            "provenance_ids": ["missing-source"],
+                        }
+                    ],
+                    "reproduction": {
+                        "status": "not_reproduced",
+                        "evidence_ids": [],
+                    },
+                    "hypotheses": [],
                     "evidence_provenance": [
                         {
+                            "id": "source-1",
                             "claim": "failure observed",
                             "kind": "fact",
                             "source_environment": "focused test / local",
                             "observed_at": "2026-07-12",
                             "reference": "tests/test_failure.py",
                             "freshness_redaction": "fresh",
-                        },
-                        {"claim": "missing fields"},
+                        }
                     ],
                 }
             )
+
+        valid = {
+            "observed_facts": [
+                {
+                    "id": "fact-1",
+                    "statement": "failure observed",
+                    "provenance_ids": ["source-1"],
+                }
+            ],
+            "evidence_provenance": [
+                {
+                    "id": "source-1",
+                    "claim": "failure observed",
+                    "kind": "fact",
+                    "source_environment": "focused test / local",
+                    "observed_at": "2026-07-12",
+                    "reference": "tests/test_failure.py",
+                    "freshness_redaction": "fresh",
+                }
+            ],
+            "reproduction": {
+                "status": "reproduced",
+                "evidence_ids": ["source-1"],
+            },
+            "hypotheses": [
+                {
+                    "hypothesis": "owner invariant failed",
+                    "supporting_provenance_ids": ["source-1"],
+                    "contradicting_provenance_ids": [],
+                }
+            ],
+        }
+        runner.validate_evidence(valid)
 
     def test_go_diagnosis_requires_invariant_verification_map(self) -> None:
         diagnosis = {
@@ -199,6 +244,24 @@ class RunnerGateTests(unittest.TestCase):
                 runner.capture_repo_state(self.repo),
                 "hook mutation",
             )
+
+    def test_ignored_files_use_metadata_without_content_hashing(self) -> None:
+        (self.repo / ".gitignore").write_text("ignored.bin\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore generated binary")
+        ignored = self.repo / "ignored.bin"
+        ignored.write_bytes(b"x" * 1024 * 1024)
+        original = runner.file_fingerprint
+
+        def reject_ignored_content(path: Path) -> dict[str, object]:
+            if path == ignored:
+                raise AssertionError("ignored file content was hashed")
+            return original(path)
+
+        with mock.patch.object(runner, "file_fingerprint", side_effect=reject_ignored_content):
+            state = runner.capture_repo_state(self.repo)
+
+        self.assertEqual(state["worktree"]["ignored.bin"]["kind"], "file-metadata")
 
     def test_read_only_gate_and_repository_lock(self) -> None:
         before = runner.capture_repo_state(self.repo)

@@ -73,12 +73,14 @@ plugin
 Plugin installation does not silently adopt global policy. The explicit setup Skill runs a deterministic transaction:
 
 ```text
-plan → conflict gate → backup → atomic writes → hash manifest → status
-                                                   ↓
-                              hash + semantic config rollback
+process lock → plan → conflict gate → prepared backups + manifest
+                                                ↓
+                      atomic writes + state commit → status
+                                                ↓ failure
+                  complete compensation + mode restoration
 ```
 
-The transaction manages only the assets mapped from the selected capability set, plus a private component policy that independently gates the two lifecycle Hooks. A `full` transaction includes the global `AGENTS.md`, one profile, four custom-agent files, one Rules file, and only three keys inside the user's existing `[agents]` config table. Every unrelated config key is preserved. An unmanaged conflict blocks the whole apply unless the user explicitly authorizes replacement.
+The transaction manages only the assets mapped from the selected capability set, plus a private component policy that independently gates the two lifecycle Hooks. A non-blocking cross-process lock serializes setup and rollback for one Codex home. Backups and a recovery manifest are durable before the first target mutation; state commit is part of the same compensation boundary, and rollback restores recorded file modes. A `full` transaction includes the global `AGENTS.md`, one profile, four custom-agent files, one Rules file, and only three keys inside the user's existing `[agents]` config table. Every unrelated config key is preserved. An unmanaged conflict blocks the whole apply unless the user explicitly authorizes replacement.
 
 Absent policy disables both Hooks. An explicit managed policy controls them independently; malformed or symlinked policy also fails closed. Users therefore get no automatic lifecycle behavior until setup applies a selected capability level.
 
@@ -100,7 +102,7 @@ atomic managed AGENTS.md facts
 $refine-project-guidance only when semantic invariants add value
 ```
 
-The scanner is standard-library-only, local, deterministic, bounded, and network-free. It never executes repository code. It owns only its marker-delimited range and skips unmarked guidance, overrides, symlinks, untrusted repositories, temporary/vendor/cache trees, and opted-out projects.
+The scanner is standard-library-only, local, deterministic, bounded, and network-free. It never executes repository code or follows symlinked evidence outside the repository. A lock in the Git common directory serializes worktree writers; the scanner reprobes under that lock and compares the exact guidance snapshot immediately before writing, safely skipping if another tool changed it. It owns only its marker-delimited range and skips unmarked guidance, overrides, symlinks, untrusted repositories, temporary/vendor/cache trees, and opted-out projects.
 
 Semantic refinement lives in a separate Skill so model judgment cannot rewrite the managed block on every session. Nested guidance is lazy and limited to real module boundaries.
 
@@ -116,7 +118,7 @@ The global working agreement first completes the smallest useful `Intent + Conte
 
 Behavioral fixes are Tier 1 or higher unless demonstrably mechanical. Ordinary diagnosis must align the repair with the violated invariant at its owning boundary. Governed diagnosis adds competing hypotheses and a GO/NO_GO gate. The code-review workflow emits `ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE`; a transparent `MITIGATION` never satisfies a complete-fix claim.
 
-Material runtime or external evidence carries a compact provenance record: source, environment, observed time/window, stable reference, freshness/redaction, and fact-versus-inference status. Behavioral verification is derived from the violated invariant and covers the original failure path, the owning-boundary invariant, and an adjacent negative or alternate path.
+Material runtime or external evidence carries a compact provenance record: stable ID, source, environment, observed time/window, stable reference, freshness/redaction, and fact-versus-inference status. Every strict-runner observed fact and reproduction links to those IDs. Behavioral verification is derived from the violated invariant and covers the original failure path, the owning-boundary invariant, and an adjacent negative or alternate path.
 
 Accepted durable decisions route to `$record-engineering-decision`. The record preserves context, alternatives, evidence, consequences, and revisit triggers in the repository; `AGENTS.md` may point to it but must not duplicate it.
 
@@ -149,6 +151,7 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 
 - a repository lock and private artifact directory;
 - clean baseline and Git state snapshots;
+- full content fingerprints for deliverable tracked/untracked files and metadata-only fingerprints for ignored cache/build files;
 - no mutation by evidence, diagnosis, or review stages;
 - one writer with an unchanged Git index;
 - exact allowed-path and writer-report agreement;
@@ -171,7 +174,7 @@ Because the strict runner disables external tools and network access, authorized
 
 ## Maturity and compatibility boundary
 
-Rootloom is early-stage and currently single-maintainer. The pinned Codex CLI contract in normal CI is the supported reproducible baseline; a non-blocking scheduled latest-version probe detects upstream drift. See [Maturity, guarantees, and compatibility](maturity.md) for adoption, learning-cost, platform-coupling, and governance boundaries.
+Rootloom is early-stage and currently single-maintainer. The pinned Codex CLI contract in normal CI is the supported reproducible baseline; a non-blocking scheduled latest-version probe detects upstream drift. Both exercise offline marketplace installation, plugin discovery, full setup/status/validation, profile parsing, Rules decisions, rollback, and preservation of pre-existing config. See [Maturity, guarantees, and compatibility](maturity.md) for adoption, learning-cost, platform-coupling, and governance boundaries.
 
 ## Threat model
 

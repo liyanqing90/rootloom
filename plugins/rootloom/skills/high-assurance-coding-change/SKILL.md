@@ -47,7 +47,7 @@ The runner also injects each role TOML's `developer_instructions` as model-visib
 developer instructions and enforces the following locally, without trusting model prose:
 
 - one non-blocking lock per Git common directory;
-- a full tracked/untracked/ignored worktree fingerprint plus separate Git-index and HEAD/refs/config snapshots;
+- content fingerprints for tracked/untracked deliverables, metadata fingerprints for ignored paths, plus separate Git-index and HEAD/refs/config snapshots;
 - no Git-visible mutation by evidence, diagnosis, verification, or review stages;
 - no Git-index mutation by the writer;
 - exact `allowed_paths` enforcement (`path` or `directory/**`) including untracked files;
@@ -88,7 +88,7 @@ Require each explorer to return:
 - direct, possible, and excluded impact scope;
 - unknowns and competing hypotheses.
 
-For runtime or external evidence, require an evidence provenance record with source, environment, observed time or window, stable artifact/query/trace/correlation reference when available, freshness/redaction notes, and fact-versus-inference status. The strict runner is offline and disables external tools; collect authorized external evidence in the parent, sanitize or materialize the necessary artifact outside the run directory, and pass only the bounded evidence required by the task.
+For runtime or external evidence, require an evidence provenance record with a stable ID, source, environment, observed time or window, stable artifact/query/trace/correlation reference when available, freshness/redaction notes, and fact-versus-inference status. Every observed fact, reproduction item, and hypothesis evidence entry must reference an existing provenance ID. The strict runner is offline and disables external tools; collect authorized external evidence in the parent, sanitize or materialize the necessary artifact outside the run directory, and pass only the bounded evidence required by the task.
 
 Do not edit source during this stage.
 

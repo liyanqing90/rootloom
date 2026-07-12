@@ -57,8 +57,5 @@ jobs:
       - name: Install pinned Codex CLI
         run: npm install --global @openai/codex@0.144.1
 
-      - name: Verify command policy with Codex
-        run: >-
-          python3 -m unittest
-          tests.test_setup_rootloom.RootloomSetupTests.test_rules_distinguish_commit_push_and_destructive_reset
-          -v
+      - name: Run offline plugin compatibility smoke
+        run: make compatibility-smoke

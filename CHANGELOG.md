@@ -17,7 +17,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- The strict runner now requires attributable evidence records and a three-part verification map before a GO diagnosis.
+- The strict runner now requires every observed fact and reproduction to reference stable provenance IDs, plus a three-part verification map before a GO diagnosis.
+- The strict runner content-hashes deliverable tracked/untracked files while using metadata fingerprints for ignored cache/build files.
+- Setup now serializes operations with a cross-process lock, prepares recovery state before mutation, compensates apply and rollback state-commit failures, and restores original file modes.
+- Project guidance seeding now excludes symlinked/out-of-repository evidence and protects writes with a Git-common-dir lock plus an exact pre-write snapshot check.
+- Pinned and latest Codex compatibility jobs now exercise the full offline plugin lifecycle rather than only command-policy parsing.
 - Security response windows are documented as single-maintainer, best-effort targets rather than service-level guarantees.
 
 ## [1.1.0] - 2026-07-12

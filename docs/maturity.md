@@ -8,10 +8,10 @@ Rootloom is an early-stage, single-maintainer project. Its repository structure,
 
 | Claim | Current evidence | Not guaranteed |
 | --- | --- | --- |
-| Setup is transactional | conflict refusal, backups, hashes, atomic writes, rollback tests | every external Codex configuration or filesystem failure |
-| Project seeding is bounded | deterministic local scanner and regression tests | semantic completeness or perfectly current architecture knowledge |
-| Command policy is intentional | pinned CLI contract test for commit, push, and destructive reset | every administrator, platform, or future CLI policy composition |
-| High-assurance execution is deterministic | fixed stage order, repository-state gates, allowed paths, command results, and bounded repair cycles | factual truth of model evidence, correct root cause, business correctness, or production safety |
+| Setup is transactional | cross-process lock, prepared recovery manifest, fault-injected state-commit compensation, hashes, mode-preserving rollback tests | failures outside the managed Codex home or simultaneous mutation by software that ignores the lock |
+| Project seeding is bounded | deterministic local scanner, repository-contained non-symlink evidence, Git-common-dir writer lock, snapshot recheck, and regression tests | semantic completeness or perfectly current architecture knowledge |
+| Command policy is intentional | pinned and latest-CLI offline lifecycle smoke for commit, push, and destructive reset | every administrator, platform, or future CLI policy composition |
+| High-assurance execution is deterministic | fixed stage order, linked provenance IDs, repository-state gates, allowed paths, command results, and bounded repair cycles | factual truth of model evidence, correct root cause, business correctness, or production safety |
 | Review is independent by role | separate read-only reviewer configuration | human-independent correctness or elimination of shared model bias |
 
 JSON Schema validates required shape. Semantic gates validate selected cross-stage consistency. Neither proves that a model's statement is true, and process discipline does not prove the conclusion true. Repository source, reproducible behavior, attributable runtime evidence, tests, reviewers, CI, and production controls remain necessary.
@@ -35,6 +35,8 @@ The compatibility policy has two tracks:
 
 1. a pinned Codex CLI version is the required, reproducible contract in normal CI;
 2. a scheduled latest-version probe detects upstream drift early and is informational until reviewed and adopted.
+
+Both tracks run an offline lifecycle smoke: local marketplace registration, plugin installation/discovery, full setup and status, setup validation, high-assurance profile parsing, commit/push/reset Rules decisions, complete rollback, and preservation of pre-existing config. This tests integration shape without credentials or model calls; it does not prove future interactive Hook semantics or model behavior.
 
 Model IDs and configuration keys are centralized in managed assets and validated structurally, but no upper-layer tool can eliminate upstream change risk.
 

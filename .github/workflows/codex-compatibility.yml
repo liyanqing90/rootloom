@@ -38,8 +38,8 @@ jobs:
       - name: Record probed version
         run: codex --version
 
-      - name: Probe command-policy contracts
-        run: >-
-          python3 -m unittest
-          tests.test_setup_rootloom.RootloomSetupTests.test_rules_distinguish_commit_push_and_destructive_reset
-          -v
+      - name: Run repository contracts with latest Codex
+        run: make check
+
+      - name: Run offline plugin compatibility smoke
+        run: make compatibility-smoke

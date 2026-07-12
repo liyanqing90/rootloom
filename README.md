@@ -96,7 +96,7 @@ After setup, open `/hooks` and review the two bundled commands. Trust the curren
 - `SessionStart` performs safe local project-guidance seeding only in `project-context`.
 - `SubagentStart` audits the cumulative child budget and named role/model routing only in `delegation-control`.
 
-The setup Skill is plan-first, backs up replacements, writes atomically, records hashes, and supports rollback. It refuses user-owned conflicts unless you explicitly authorize those exact replacements.
+The setup Skill is plan-first and serializes each Codex-home transaction with a process lock. It prepares backups and a recovery manifest before mutation, writes atomically, records hashes and modes, and compensates the complete transaction—including state-commit failures. It refuses user-owned conflicts unless you explicitly authorize those exact replacements.
 
 See [Setup, update, and rollback](docs/setup.md) for the full contract.
 
@@ -232,19 +232,19 @@ The core needs local Git/filesystem evidence and native Codex configuration. An 
 
 Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Record environment, observation time/window, a stable artifact/query/trace reference, freshness/redaction, and fact-versus-inference status for material evidence. Do not make every coding task inherit an integration merely to complete an architecture checklist.
 
-The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Evidence provenance improves auditability; it does not prove a diagnosis.
+The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Facts and reproductions must reference stable provenance IDs; this improves auditability but does not prove a diagnosis. Repository snapshots content-hash deliverable tracked/untracked files and use metadata-only fingerprints for ignored files so large caches do not dominate every gate.
 
 ## Safety model
 
-- Project seeding is local, bounded, deterministic, standard-library-only, and network-free.
+- Project seeding is local, bounded, deterministic, standard-library-only, and network-free. It excludes symlinked/out-of-repository evidence, serializes writers through the Git common directory, and skips safely if guidance changes during generation.
 - Unmarked guidance, overrides, symlinks, untrusted repositories, opted-out projects, temporary/vendor/cache trees, secret-like content, and malformed managed blocks are preserved or rejected.
-- Global setup is explicit, atomic, backed up, hash-checked, and rollback-aware.
+- Global setup is explicit, process-locked, pre-manifested, fully compensating, hash-checked, mode-preserving, and rollback-aware.
 - Read-only roles disable apps by default; only one standard role is write-capable.
 - Rules, sandboxing, Hooks, Skills, and model instructions are defense in depth, not a substitute for OS policy, credentials, branch protection, review, or CI.
 
 ## Compatibility policy
 
-Normal CI tests a pinned Codex CLI baseline. A separate scheduled workflow probes the latest CLI and is informational until maintainers review and adopt an upstream change. This catches drift without making every release depend on an unpinned toolchain. See [Maturity, guarantees, and compatibility](docs/maturity.md).
+Normal CI tests a pinned Codex CLI baseline. A separate scheduled workflow probes the latest CLI and is informational until maintainers review and adopt an upstream change. Both run an offline lifecycle smoke covering local marketplace installation, plugin discovery, full setup/status/validation, profile parsing, command Rules, complete rollback, and preservation of pre-existing config. This catches drift without making every release depend on an unpinned toolchain. See [Maturity, guarantees, and compatibility](docs/maturity.md).
 
 ## Update
 
@@ -261,9 +261,10 @@ Review the updated Hook definition, start a new task, and invoke `$setup-rootloo
 git clone https://github.com/liyanqing90/rootloom.git
 cd rootloom
 make check
+make compatibility-smoke
 ```
 
-`make check` validates the marketplace, plugin, Hooks, all Skills and UI metadata, setup assets, Python/SVG syntax, links, release hygiene, secret-like content, command Rules, seeder behavior, setup/rollback, subagent budget, and deterministic runner gates.
+`make check` validates the marketplace, plugin, Hooks, all Skills and UI metadata, setup assets, Python/SVG syntax, links, release hygiene, secret-like content, command Rules, seeder behavior, setup/rollback, subagent budget, and deterministic runner gates. `make compatibility-smoke` exercises the installed plugin lifecycle against the active Codex CLI without credentials or network-dependent model calls.
 
 The live smoke test uses a disposable `CODEX_HOME`:
 

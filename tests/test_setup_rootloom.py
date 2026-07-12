@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -87,6 +88,103 @@ class RootloomSetupTests(unittest.TestCase):
         self.assertIn("Global Codex Working Agreement", agents.read_text(encoding="utf-8"))
         setup.rollback(self.codex_home)
         self.assertEqual(agents.read_text(encoding="utf-8"), custom)
+
+    def test_apply_compensates_when_state_commit_fails(self) -> None:
+        original_atomic = setup.atomic_write
+
+        def fail_state(path: Path, value: bytes, mode: int = 0o600) -> None:
+            if path.name == "state.json":
+                raise OSError("injected state commit failure")
+            original_atomic(path, value, mode)
+
+        with mock.patch.object(setup, "atomic_write", side_effect=fail_state):
+            with self.assertRaisesRegex(OSError, "injected state commit failure"):
+                setup.apply_plan(
+                    self.codex_home,
+                    replace_conflicts=False,
+                    capabilities=setup.PRESETS["engineering"],
+                )
+
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
+        self.assertFalse((self.codex_home / "rules" / "rootloom.rules").exists())
+        self.assertFalse((self.codex_home / setup.COMPONENT_POLICY_PATH).exists())
+        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
+
+    def test_setup_lock_rejects_a_competing_transaction(self) -> None:
+        with setup.setup_lock(self.codex_home):
+            with self.assertRaisesRegex(RuntimeError, "another Rootloom setup transaction"):
+                setup.apply_plan(
+                    self.codex_home,
+                    replace_conflicts=False,
+                    capabilities=setup.PRESETS["guidance"],
+                )
+
+        result = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        self.assertEqual(result["status"], "applied")
+
+    def test_rollback_restores_original_file_mode(self) -> None:
+        agents = self.codex_home / "AGENTS.md"
+        agents.write_text("# User policy\n", encoding="utf-8")
+        agents.chmod(0o644)
+
+        setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=True,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        setup.rollback(self.codex_home)
+
+        self.assertEqual(agents.read_text(encoding="utf-8"), "# User policy\n")
+        self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o644)
+
+    def test_rollback_compensates_when_state_commit_fails(self) -> None:
+        setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["engineering"],
+        )
+        managed_paths = (
+            self.codex_home / "AGENTS.md",
+            self.codex_home / "config.toml",
+            self.codex_home / "rules" / "rootloom.rules",
+            self.codex_home / setup.COMPONENT_POLICY_PATH,
+            self.codex_home / setup.STATE_DIRNAME / "state.json",
+        )
+        before = {
+            path: (
+                path.read_bytes() if path.is_file() else None,
+                stat.S_IMODE(path.stat().st_mode) if path.is_file() else None,
+            )
+            for path in managed_paths
+        }
+        original_atomic = setup.atomic_write
+        failed = False
+
+        def fail_once(path: Path, value: bytes, mode: int = 0o600) -> None:
+            nonlocal failed
+            if path.name == "state.json" and not failed:
+                failed = True
+                raise OSError("injected rollback state commit failure")
+            original_atomic(path, value, mode)
+
+        with mock.patch.object(setup, "atomic_write", side_effect=fail_once):
+            with self.assertRaisesRegex(
+                OSError,
+                "injected rollback state commit failure",
+            ):
+                setup.rollback(self.codex_home)
+
+        for path, (content, mode) in before.items():
+            self.assertEqual(path.read_bytes() if path.is_file() else None, content)
+            self.assertEqual(
+                stat.S_IMODE(path.stat().st_mode) if path.is_file() else None,
+                mode,
+            )
+        self.assertEqual(setup.load_state(self.codex_home)["status"], "installed")
 
     def test_rollback_refuses_to_erase_post_setup_edits(self) -> None:
         setup.apply_plan(self.codex_home, replace_conflicts=False)

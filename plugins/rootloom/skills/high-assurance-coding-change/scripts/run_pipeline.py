@@ -48,19 +48,32 @@ VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
 HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
-RUNNER_VERSION = "2.1"
+RUNNER_VERSION = "2.2"
 
 EVIDENCE_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "properties": {
-        "observed_facts": {"type": "array", "items": {"type": "string"}},
+        "observed_facts": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "id": {"type": "string"},
+                    "statement": {"type": "string"},
+                    "provenance_ids": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["id", "statement", "provenance_ids"],
+            },
+        },
         "evidence_provenance": {
             "type": "array",
             "items": {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
+                    "id": {"type": "string"},
                     "claim": {"type": "string"},
                     "kind": {"type": "string", "enum": ["fact", "inference", "unknown"]},
                     "source_environment": {"type": "string"},
@@ -69,6 +82,7 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
                     "freshness_redaction": {"type": "string"},
                 },
                 "required": [
+                    "id",
                     "claim",
                     "kind",
                     "source_environment",
@@ -87,9 +101,9 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
                     "type": "string",
                     "enum": ["reproduced", "not_reproduced", "not_attempted"],
                 },
-                "evidence": {"type": "array", "items": {"type": "string"}},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}},
             },
-            "required": ["status", "evidence"],
+            "required": ["status", "evidence_ids"],
         },
         "scope": {
             "type": "object",
@@ -109,19 +123,19 @@ EVIDENCE_SCHEMA: dict[str, Any] = {
                 "additionalProperties": False,
                 "properties": {
                     "hypothesis": {"type": "string"},
-                    "supporting_evidence": {
+                    "supporting_provenance_ids": {
                         "type": "array",
                         "items": {"type": "string"},
                     },
-                    "contradicting_evidence": {
+                    "contradicting_provenance_ids": {
                         "type": "array",
                         "items": {"type": "string"},
                     },
                 },
                 "required": [
                     "hypothesis",
-                    "supporting_evidence",
-                    "contradicting_evidence",
+                    "supporting_provenance_ids",
+                    "contradicting_provenance_ids",
                 ],
             },
         },
@@ -316,14 +330,9 @@ def path_is_allowed(path: str, rules: list[tuple[str, bool]]) -> bool:
 
 
 def validate_evidence(value: dict[str, Any]) -> None:
-    reproduction = value.get("reproduction", {})
-    if reproduction.get("status") == "reproduced" and not reproduction.get("evidence"):
-        raise PipelineError(
-            "semantic gate failed: reproduced evidence must include reproduction evidence",
-            8,
-        )
     provenance = value.get("evidence_provenance")
     require_nonempty_list(provenance, "evidence_provenance")
+    provenance_ids: set[str] = set()
     for index, record in enumerate(provenance):
         if not isinstance(record, dict):
             raise PipelineError(
@@ -331,6 +340,7 @@ def validate_evidence(value: dict[str, Any]) -> None:
                 8,
             )
         for field in (
+            "id",
             "claim",
             "kind",
             "source_environment",
@@ -339,6 +349,79 @@ def validate_evidence(value: dict[str, Any]) -> None:
             "freshness_redaction",
         ):
             require_nonempty_text(record.get(field), f"evidence_provenance[{index}].{field}")
+        provenance_id = record["id"].strip()
+        if provenance_id in provenance_ids:
+            raise PipelineError(
+                f"semantic gate failed: duplicate provenance id {provenance_id!r}",
+                8,
+            )
+        provenance_ids.add(provenance_id)
+
+    def validate_references(values: Any, field: str, *, required: bool) -> None:
+        if required:
+            require_nonempty_list(values, field)
+        elif not isinstance(values, list):
+            raise PipelineError(f"semantic gate failed: {field} must be a list", 8)
+        for reference in values:
+            require_nonempty_text(reference, field)
+            if reference not in provenance_ids:
+                raise PipelineError(
+                    f"semantic gate failed: {field} references unknown provenance "
+                    f"id {reference!r}",
+                    8,
+                )
+
+    observed_facts = value.get("observed_facts")
+    require_nonempty_list(observed_facts, "observed_facts")
+    fact_ids: set[str] = set()
+    for index, fact in enumerate(observed_facts):
+        if not isinstance(fact, dict):
+            raise PipelineError(
+                f"semantic gate failed: observed_facts[{index}] must be an object",
+                8,
+            )
+        require_nonempty_text(fact.get("id"), f"observed_facts[{index}].id")
+        require_nonempty_text(
+            fact.get("statement"),
+            f"observed_facts[{index}].statement",
+        )
+        fact_id = fact["id"].strip()
+        if fact_id in fact_ids:
+            raise PipelineError(f"semantic gate failed: duplicate fact id {fact_id!r}", 8)
+        fact_ids.add(fact_id)
+        validate_references(
+            fact.get("provenance_ids"),
+            f"observed_facts[{index}].provenance_ids",
+            required=True,
+        )
+
+    reproduction = value.get("reproduction", {})
+    evidence_ids = reproduction.get("evidence_ids")
+    validate_references(
+        evidence_ids,
+        "reproduction.evidence_ids",
+        required=reproduction.get("status") == "reproduced",
+    )
+
+    hypotheses = value.get("hypotheses")
+    if not isinstance(hypotheses, list):
+        raise PipelineError("semantic gate failed: hypotheses must be a list", 8)
+    for index, hypothesis in enumerate(hypotheses):
+        if not isinstance(hypothesis, dict):
+            raise PipelineError(
+                f"semantic gate failed: hypotheses[{index}] must be an object",
+                8,
+            )
+        validate_references(
+            hypothesis.get("supporting_provenance_ids"),
+            f"hypotheses[{index}].supporting_provenance_ids",
+            required=False,
+        )
+        validate_references(
+            hypothesis.get("contradicting_provenance_ids"),
+            f"hypotheses[{index}].contradicting_provenance_ids",
+            required=False,
+        )
 
 
 def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
@@ -663,6 +746,31 @@ def file_fingerprint(path: Path) -> dict[str, Any]:
     return base
 
 
+def file_metadata_fingerprint(path: Path) -> dict[str, Any]:
+    """Detect ordinary ignored-path mutation without reading file contents."""
+
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return {"kind": "missing"}
+    base: dict[str, Any] = {
+        "mode": info.st_mode,
+        "size": info.st_size,
+        "mtime_ns": info.st_mtime_ns,
+        "ctime_ns": info.st_ctime_ns,
+    }
+    if path.is_symlink():
+        target = os.readlink(path)
+        base.update(kind="symlink", target=target)
+    elif path.is_file():
+        base.update(kind="file-metadata")
+    elif path.is_dir():
+        base.update(kind="directory-metadata")
+    else:
+        base.update(kind="other-metadata")
+    return base
+
+
 def capture_repo_state(repo: Path) -> dict[str, Any]:
     ensure_supported_repository_topology(repo)
     status_raw = git_status_raw(repo)
@@ -674,15 +782,25 @@ def capture_repo_state(repo: Path) -> dict[str, Any]:
         ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
         repo,
     )
-    paths = {
+    visible_paths = {
         normalize_repo_path(os.fsdecode(item))
-        for item in (visible_raw + ignored_raw).split(b"\x00")
+        for item in visible_raw.split(b"\x00")
         if item
     }
+    ignored_paths = {
+        normalize_repo_path(os.fsdecode(item))
+        for item in ignored_raw.split(b"\x00")
+        if item
+    } - visible_paths
+    worktree = {path: file_fingerprint(repo / path) for path in visible_paths}
+    worktree.update(
+        {path: file_metadata_fingerprint(repo / path) for path in ignored_paths}
+    )
     return {
         "status_raw": status_raw,
-        "paths": paths,
-        "worktree": {path: file_fingerprint(repo / path) for path in paths},
+        "paths": visible_paths | ignored_paths,
+        "ignored_paths": ignored_paths,
+        "worktree": worktree,
         "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
         "git_control": git_control_state(repo),
     }
@@ -724,6 +842,8 @@ def assert_repo_unchanged(
 def untracked_manifest(
     repo: Path,
     only_paths: set[str] | None = None,
+    *,
+    include_ignored: bool = True,
 ) -> list[dict[str, Any]]:
     raw = run_bytes(
         ["git", "ls-files", "--others", "--exclude-standard", "-z"],
@@ -733,18 +853,26 @@ def untracked_manifest(
         ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
         repo,
     )
+    visible_paths = {
+        normalize_repo_path(os.fsdecode(item))
+        for item in raw.split(b"\x00")
+        if item
+    }
+    ignored_paths = {
+        normalize_repo_path(os.fsdecode(item))
+        for item in ignored.split(b"\x00")
+        if item
+    } - visible_paths
     manifest: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for item in (raw + ignored).split(b"\x00"):
-        if not item:
-            continue
-        path = normalize_repo_path(os.fsdecode(item))
-        if path in seen:
-            continue
-        seen.add(path)
+    for path in sorted(visible_paths | (ignored_paths if include_ignored else set())):
         if only_paths is not None and path not in only_paths:
             continue
-        entry = {"path": path, **file_fingerprint(repo / path)}
+        fingerprint = (
+            file_metadata_fingerprint(repo / path)
+            if path in ignored_paths
+            else file_fingerprint(repo / path)
+        )
+        entry = {"path": path, **fingerprint}
         manifest.append(entry)
     return manifest
 
@@ -1260,7 +1388,7 @@ def run_pipeline_locked(
         ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
         repo,
     )
-    baseline_untracked = untracked_manifest(repo)
+    baseline_untracked = untracked_manifest(repo, include_ignored=False)
     commands = verification_commands(args)
     metadata = {
         "runner_version": RUNNER_VERSION,
@@ -1272,6 +1400,7 @@ def run_pipeline_locked(
         "git_sha": run_checked(["git", "rev-parse", "HEAD"], repo),
         "baseline_status": baseline_status,
         "baseline_untracked": baseline_untracked,
+        "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "task_file": str(task_path),
         "roles": {
             stage: {
@@ -1307,7 +1436,9 @@ def run_pipeline_locked(
         Distinguish facts, inference, and unknowns. Do not choose the final fix.
         Attribute material evidence with source/environment, observed time or window,
         stable reference when available, and freshness/redaction notes. The schema
-        enforces shape and process discipline, not factual truth.
+        enforces shape and process discipline, not factual truth. Give every provenance
+        record a stable id and make every observed fact, reproduction item, and
+        hypothesis evidence list reference existing provenance ids.
 
         TASK:
         {task}
