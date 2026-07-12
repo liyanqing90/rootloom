@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: release authorized; publication in progress
+- State: published
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security and compatibility
@@ -68,7 +68,15 @@ Ensure every known or explicitly configured sensitive visible-untracked path is 
 
 - Local implementation and tests are reversible.
 - Roll back before publication by reverting the focused 1.2.2 commit; after publication use a forward patch.
-- GitHub `main` push, annotated `v1.2.2` tag, and GitHub Release were explicitly authorized by the user in the Codex task on 2026-07-12. Post-publication branch, tag, Release, and CI evidence must be appended after verification.
+- GitHub `main` push, annotated `v1.2.2` tag, and GitHub Release were explicitly authorized by the user in the Codex task on 2026-07-12; the verified publication evidence is recorded below.
+
+### Publication record
+
+- Release commit: `754731e730a6eb0a833f80a65f7a5480e32ea220`.
+- Annotated tag: `v1.2.2`, dereferenced to the release commit.
+- Release: <https://github.com/liyanqing90/rootloom/releases/tag/v1.2.2>, published as a final release rather than a draft or prerelease.
+- Release CI: <https://github.com/liyanqing90/rootloom/actions/runs/29178637862>, conclusion `success` for the release commit.
+- Post-publication evidence was appended on `main` in a documentation-only follow-up so the immutable release commit does not falsely claim evidence that did not yet exist when it was created.
 
 ## Residual risks
 
