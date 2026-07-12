@@ -6,6 +6,23 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.6] - 2026-07-12
+
+### Security
+
+- Include missing common verification entrypoint candidates in the baseline, so writer-created `GNUmakefile`, `makefile`, `pytest.ini`, and related files are treated as verification entrypoint drift.
+- Expand verification entrypoint discovery for `./path`, `python -m pytest`, `uv run pytest`, `poetry run pytest`, `make -f`, `pytest -c`, `npm --prefix`, and explicit repeatable `--bind-verification-path` harnesses.
+- Bind repository-internal symlink entrypoints to their resolved chain and final target content, not only the symlink target string.
+- Fail closed when a successfully returned managed command leaves a live process group; leftover children are terminated.
+
+### Changed
+
+- Directory selectors such as `pytest tests/unit` are no longer treated as verification entrypoints, reducing false positives from broad directory fingerprints.
+
+### Tests
+
+- Added regression coverage for missing candidate creation, wrapper command discovery, explicit harness binding, symlink target mutation, directory selector exclusion, and successful-stage leftover child cleanup.
+
 ## [1.2.5] - 2026-07-12
 
 ### Security
@@ -140,7 +157,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...HEAD
+[1.2.6]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/liyanqing90/rootloom/compare/v1.2.3...v1.2.4
 [1.2.3]: https://github.com/liyanqing90/rootloom/compare/v1.2.2...v1.2.3

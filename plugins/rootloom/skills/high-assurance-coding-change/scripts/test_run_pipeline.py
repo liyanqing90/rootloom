@@ -745,6 +745,86 @@ class RunnerGateTests(unittest.TestCase):
             runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
         self.assertIn("verify-1:Makefile", str(caught.exception))
 
+    def test_verification_entrypoint_tracks_missing_candidates(self) -> None:
+        makefile = self.repo / "Makefile"
+        makefile.write_text("check:\n\ttrue\n", encoding="utf-8")
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["make", "check"]}],
+        )
+        self.assertEqual(baseline["verify-1"]["GNUmakefile"]["entry"]["kind"], "missing")
+        (self.repo / "GNUmakefile").write_text("check:\n\t@echo weak\n", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+        self.assertIn("verify-1:GNUmakefile", str(caught.exception))
+
+        pytest_baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-2", "argv": ["python", "-m", "pytest"]}],
+        )
+        self.assertEqual(pytest_baseline["verify-2"]["pytest.ini"]["entry"]["kind"], "missing")
+        (self.repo / "pytest.ini").write_text("[pytest]\naddopts = -q\n", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as pytest_changed:
+            runner.validate_verification_entrypoints_unchanged(self.repo, pytest_baseline)
+        self.assertIn("verify-2:pytest.ini", str(pytest_changed.exception))
+
+    def test_verification_entrypoint_recognizes_common_wrappers_and_explicit_bindings(self) -> None:
+        (self.repo / "scripts").mkdir()
+        (self.repo / "scripts" / "check.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+        (self.repo / "pytest-ci.ini").write_text("[pytest]\n", encoding="utf-8")
+        (self.repo / "Makefile.ci").write_text("check:\n\ttrue\n", encoding="utf-8")
+        (self.repo / "apps").mkdir()
+        (self.repo / "apps" / "web").mkdir()
+        (self.repo / "apps" / "web" / "package.json").write_text("{}\n", encoding="utf-8")
+        commands = [
+            {"id": "verify-1", "argv": ["./scripts/check.sh"]},
+            {"id": "verify-2", "argv": ["uv", "run", "pytest", "-c", "pytest-ci.ini"]},
+            {"id": "verify-3", "argv": ["poetry", "run", "pytest"]},
+            {"id": "verify-4", "argv": ["make", "-f", "Makefile.ci", "check"]},
+            {"id": "verify-5", "argv": ["npm", "--prefix", "apps/web", "test"]},
+        ]
+        runner.validate_verification_command_boundaries(self.repo, commands)
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            commands,
+            bound_paths={"scripts/check.sh"},
+        )
+        self.assertIn("scripts/check.sh", baseline["verify-1"])
+        self.assertIn("pytest-ci.ini", baseline["verify-2"])
+        self.assertIn("pyproject.toml", baseline["verify-3"])
+        self.assertIn("Makefile.ci", baseline["verify-4"])
+        self.assertIn("apps/web/package.json", baseline["verify-5"])
+        self.assertIn("scripts/check.sh", baseline["operator-bound"])
+
+    def test_verification_entrypoint_binds_repo_internal_symlink_target_content(self) -> None:
+        scripts = self.repo / "scripts"
+        scripts.mkdir()
+        impl = scripts / "check_impl.sh"
+        impl.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        link = scripts / "check.sh"
+        link.symlink_to("check_impl.sh")
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["scripts/check.sh"]}],
+        )
+        self.assertEqual(
+            baseline["verify-1"]["scripts/check.sh"]["chain"][0]["resolved"],
+            "scripts/check_impl.sh",
+        )
+        impl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+        self.assertIn("verify-1:scripts/check.sh", str(caught.exception))
+
+    def test_verification_entrypoint_does_not_bind_directory_selectors(self) -> None:
+        tests_dir = self.repo / "tests" / "unit"
+        tests_dir.mkdir(parents=True)
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["pytest", "tests/unit"]}],
+        )
+        self.assertNotIn("tests/unit", baseline["verify-1"])
+
     def test_protected_deletion_mode_rejects_dirty_and_repair_cycles(self) -> None:
         with self.assertRaises(runner.PipelineError) as dirty:
             runner.validate_protected_deletion_runtime_options(
@@ -792,6 +872,36 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(return_code, 124)
         self.assertTrue(timed_out)
         time.sleep(0.75)
+        self.assertFalse(marker.exists())
+
+    def test_successful_command_with_leftover_child_fails_closed(self) -> None:
+        marker = self.root / "leftover-child"
+        child = self.root / "linger.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "time.sleep(2)\n"
+            "pathlib.Path(sys.argv[1]).write_text('survived')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "success_with_child.py"
+        parent.write_text(
+            "import subprocess, sys\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2]],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n",
+            encoding="utf-8",
+        )
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.run_managed(
+                [sys.executable, str(parent), str(child), str(marker)],
+                cwd=self.root,
+                timeout=5,
+            )
+        self.assertIn("left a live process group", str(caught.exception))
+        time.sleep(0.5)
         self.assertFalse(marker.exists())
 
     def test_runner_umask_produces_private_artifacts(self) -> None:

@@ -97,7 +97,9 @@ codex execpolicy check --pretty \
 
 ## 严格 Runner 拒绝 verification entrypoint 变化
 
-Runner 会在 Writer 前为检测到的验证入口建立指纹，并在确定性验证前再次检查。如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置，或 `--verify` 使用的显式仓库相对脚本，任务会在执行验证前停止。应使用外部可信 harness，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
+Runner 会在 Writer 前为检测到的验证入口建立指纹，并在确定性验证前再次检查。它也会记录常见缺失候选，因此 Writer 在基线后新建 `GNUmakefile`、`pytest.ini` 或类似 harness 会被视为验证入口变化。它还会跟踪仓库内符号链接链路，并绑定最终目标内容。
+
+如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置、`--verify` 使用的已检测仓库相对脚本，或通过 `--bind-verification-path` 显式绑定的路径，任务会在执行验证前停止。应使用外部可信 harness，通过 `--bind-verification-path` 绑定重要的仓库内 harness 文件，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
 
 如果 Runner 报告的是未授权 protected 路径变化，说明它在 Writer 返回后停止了验收，sandbox 并未预防文件系统修改。应人工检查并恢复该路径；Rootloom 不会读取或备份 ignored/敏感内容用于自动回滚。
 

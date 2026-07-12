@@ -55,7 +55,7 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.7"
+RUNNER_VERSION = "2.8"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -471,13 +471,8 @@ def validate_verification_command_boundaries(
 ) -> None:
     for command in commands:
         for token in command["argv"]:
-            if token.startswith("-") or token.startswith("/") or "://" in token:
-                continue
-            if "/" not in token:
-                continue
-            try:
-                normalized = normalize_repo_path(token, contract=True)
-            except PipelineError:
+            normalized = _repo_path_from_token(token)
+            if normalized is None:
                 continue
             validate_repo_path_symlink_boundary(
                 repo,
@@ -486,10 +481,12 @@ def validate_verification_command_boundaries(
             )
 
 
-def _repo_path_from_token(token: str) -> str | None:
+def _repo_path_from_token(token: str, *, require_slash: bool = True) -> str | None:
+    if token.startswith("./"):
+        token = token[2:]
     if token.startswith("-") or token.startswith("/") or "://" in token:
         return None
-    if "/" not in token:
+    if require_slash and "/" not in token:
         return None
     try:
         return normalize_repo_path(token, contract=True)
@@ -497,46 +494,113 @@ def _repo_path_from_token(token: str) -> str | None:
         return None
 
 
+def _entrypoint_fingerprint(repo: Path, path: str) -> dict[str, Any]:
+    repo_root = repo.resolve()
+    current = repo / path
+    fingerprint = {
+        "path": path,
+        "entry": file_fingerprint(current),
+        "chain": [],
+    }
+    seen: set[Path] = set()
+    for _ in range(40):
+        if not current.is_symlink():
+            break
+        if current in seen:
+            raise PipelineError(f"symlink cycle in verification entrypoint: {path}", 9)
+        seen.add(current)
+        target_text = os.readlink(current)
+        target = Path(target_text)
+        if not target.is_absolute():
+            target = current.parent / target
+        resolved = target.resolve(strict=False)
+        if not _path_within(resolved, repo_root):
+            raise PipelineError(
+                f"verification entrypoint crosses a symlink outside the repository: "
+                f"{path} -> {resolved}",
+                9,
+            )
+        target_repo_path = resolved.relative_to(repo_root).as_posix()
+        fingerprint["chain"].append(
+            {
+                "link": current.relative_to(repo).as_posix(),
+                "target": target_text,
+                "resolved": target_repo_path,
+                "fingerprint": file_fingerprint(resolved),
+            }
+        )
+        current = resolved
+    return fingerprint
+
+
 def discover_verification_entrypoints(
     repo: Path,
     commands: list[dict[str, Any]],
+    bound_paths: set[str] | None = None,
 ) -> dict[str, dict[str, Any]]:
     paths: dict[str, set[str]] = {}
 
     def add(command_id: str, path: str) -> None:
         paths.setdefault(command_id, set()).add(path)
 
+    def add_common(command_id: str, candidates: tuple[str, ...]) -> None:
+        for candidate in candidates:
+            add(command_id, candidate)
+
+    def unwrap(argv: list[str]) -> list[str]:
+        if len(argv) >= 3 and Path(argv[0]).name in {"python", "python3"} and argv[1] == "-m":
+            return argv[2:]
+        if len(argv) >= 3 and Path(argv[0]).name in {"uv", "poetry"} and argv[1] == "run":
+            return argv[2:]
+        return argv
+
+    if bound_paths:
+        for path in bound_paths:
+            add("operator-bound", path)
+
     for command in commands:
         command_id = command["id"]
-        argv = command["argv"]
+        argv = unwrap(command["argv"])
         if not argv:
             continue
         executable = Path(argv[0]).name
         for token in argv:
             normalized = _repo_path_from_token(token)
-            if normalized is not None:
+            if normalized is not None and not (repo / normalized).is_dir():
                 add(command_id, normalized)
         if executable == "make":
-            for candidate in ("GNUmakefile", "makefile", "Makefile"):
-                if (repo / candidate).exists() or (repo / candidate).is_symlink():
-                    add(command_id, candidate)
+            add_common(command_id, ("GNUmakefile", "makefile", "Makefile"))
+            for index, token in enumerate(argv[:-1]):
+                if token == "-f":
+                    normalized = _repo_path_from_token(argv[index + 1], require_slash=False)
+                    if normalized is not None:
+                        add(command_id, normalized)
         elif executable in {"npm", "pnpm", "yarn", "bun"}:
-            for candidate in ("package.json", "pnpm-workspace.yaml"):
-                if (repo / candidate).exists() or (repo / candidate).is_symlink():
-                    add(command_id, candidate)
+            add_common(command_id, ("package.json", "pnpm-workspace.yaml"))
+            for index, token in enumerate(argv[:-1]):
+                if token == "--prefix":
+                    normalized = _repo_path_from_token(argv[index + 1], require_slash=False)
+                    if normalized is not None:
+                        add(command_id, f"{normalized}/package.json")
         elif executable == "pytest":
-            for candidate in (
+            add_common(
+                command_id,
+                (
                 "pyproject.toml",
                 "pytest.ini",
                 "tox.ini",
                 "setup.cfg",
-            ):
-                if (repo / candidate).exists() or (repo / candidate).is_symlink():
-                    add(command_id, candidate)
+                ),
+            )
+            for index, token in enumerate(argv[:-1]):
+                if token == "-c":
+                    normalized = _repo_path_from_token(argv[index + 1], require_slash=False)
+                    if normalized is not None:
+                        add(command_id, normalized)
 
     return {
         command_id: {
-            path: file_fingerprint(repo / path)
+            path: _entrypoint_fingerprint(repo, path)
             for path in sorted(command_paths)
         }
         for command_id, command_paths in sorted(paths.items())
@@ -550,12 +614,7 @@ def validate_verification_entrypoints_unchanged(
     changed: list[str] = []
     for command_id, paths in baseline.items():
         for path, expected in paths.items():
-            validate_repo_path_symlink_boundary(
-                repo,
-                path,
-                f"verification command {command_id}",
-            )
-            actual = file_fingerprint(repo / path)
+            actual = _entrypoint_fingerprint(repo, path)
             if actual != expected:
                 changed.append(f"{command_id}:{path}")
     if changed:
@@ -1550,6 +1609,19 @@ def terminate_process_group(process: subprocess.Popen[str]) -> str:
         return output or ""
 
 
+def ensure_process_group_finished(process: subprocess.Popen[str]) -> None:
+    try:
+        os.killpg(process.pid, 0)
+    except ProcessLookupError:
+        return
+    terminate_process_group(process)
+    raise PipelineError(
+        "managed command left a live process group after successful exit; "
+        "leftover children were terminated",
+        9,
+    )
+
+
 def run_managed(
     argv: list[str],
     *,
@@ -1571,6 +1643,8 @@ def run_managed(
     )
     try:
         output, _ = process.communicate(input=input_text, timeout=timeout)
+        if process.returncode == 0:
+            ensure_process_group_finished(process)
         return process.returncode, output or "", False
     except subprocess.TimeoutExpired:
         output = terminate_process_group(process)
@@ -1678,6 +1752,15 @@ def parse_args() -> argparse.Namespace:
         "--redact-untracked-dotfiles",
         action="store_true",
         help="Keep every visible-untracked path containing a dotfile segment metadata-only",
+    )
+    parser.add_argument(
+        "--bind-verification-path",
+        action="append",
+        default=[],
+        help=(
+            "Bind an exact repo-relative verification harness path across the writer; "
+            "repeat for multiple paths"
+        ),
     )
     parser.add_argument(
         "--allow-protected-path-delete",
@@ -1963,6 +2046,10 @@ def run_pipeline_locked(
 ) -> int:
     ensure_supported_repository_topology(repo)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
+    bound_verification_paths = {
+        normalize_repo_path(path, contract=True)
+        for path in args.bind_verification_path
+    }
     allowed_protected_deletions = normalize_protected_deletions(
         args.allow_protected_path_delete
     )
@@ -2028,7 +2115,11 @@ def run_pipeline_locked(
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
     validate_verification_command_boundaries(repo, commands)
-    verification_entrypoints = discover_verification_entrypoints(repo, commands)
+    verification_entrypoints = discover_verification_entrypoints(
+        repo,
+        commands,
+        bound_paths=bound_verification_paths,
+    )
     metadata = {
         "runner_version": RUNNER_VERSION,
         "runner_sha256": file_sha256(Path(__file__)),
@@ -2043,6 +2134,7 @@ def run_pipeline_locked(
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "max_ignored_paths": args.max_ignored_paths,
         "sensitive_paths": args.sensitive_path,
+        "bound_verification_paths": sorted(bound_verification_paths),
         "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
         "allowed_protected_path_deletions": sorted(allowed_protected_deletions),
         "task_file": str(task_path),
