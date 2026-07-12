@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: release candidate
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-12
 - Task type: security
@@ -133,14 +133,19 @@ Close the prioritized resource gaps identified in the supplied 1.2.10 review and
 - 2026-07-12 — Accept and version the private Artifact/resource contract in `docs/decisions/2026-07-12-strict-runner-resource-artifacts.md` so future format or producer changes require explicit compatibility and budget analysis.
 - 2026-07-12 — Final self-review verification passed with `ResourceWarning` promoted to an error: 41 repository tests, 71 focused Runner tests, repository/link/source validation, Python compilation, diff whitespace validation, and the `codex-cli 0.144.0-alpha.4` compatibility smoke with exact rollback and no managed leftovers.
 - 2026-07-12 — User explicitly authorized “发布”. Publication target is `liyanqing90/rootloom` `main`, annotated tag `v1.2.11`, and a non-draft/non-prerelease GitHub Release. Force-push, package publication, deployment, and unrelated external mutation remain unauthorized.
+- 2026-07-12 — Published code commit `dd773413e1201cee2fb71566deb14e41a3448fdb`; tree `1dc06b0d347fc67c8fe6839b08841faa8e9f0713` is the locally verified release tree and the remote `main` target before the publication-record commit.
+- 2026-07-12 — GitHub Actions run `29196851454` passed for Python 3.11, 3.12, 3.13, 3.14, and pinned Codex CLI contracts at the exact release commit: `https://github.com/liyanqing90/rootloom/actions/runs/29196851454`.
+- 2026-07-12 — Created annotated tag object `76f98dd5d92dddc5b552b8a555613d6a63b1f983`; `v1.2.11^{}` resolves exactly to `dd773413e1201cee2fb71566deb14e41a3448fdb` locally and remotely.
+- 2026-07-12 — Published `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.11` at `2026-07-12T14:49:42Z` as the Latest non-draft, non-prerelease Release with a `v1.2.10...v1.2.11` changelog link.
 
-## Candidate outcome
+## Outcome
 
 - Parent exit with an open stdout pipe now triggers immediate original-group cleanup and a one-second drain while preserving the direct-parent exit code for escaped-session holders.
 - Git Delta and baseline tracked patches now stream into bounded artifacts; all commands in one capture share one deadline, external diff/textconv execution is disabled, partial writes are compensated, and only fixed excerpts enter prompt memory.
 - Verification persistence is versioned append-only NDJSON with a small summary, pre-materialization JSON escape accounting, pre-command minimum-record checks, explicit UTF-8/JSON/artifact fields, and fail-closed truncation.
 - Selector initialization, write failure, timeout, output-limit, parent-exit, and nonzero-exit paths all close owned descriptors/processes and restore incomplete artifacts.
-- Public English/Chinese contracts, changelog, architecture, maturity disclosures, the accepted decision record, Runner metadata, and repository validation were updated together. Release evidence remains pending until the remote code commit, CI, annotated tag, and GitHub Release are verified.
+- Public English/Chinese contracts, changelog, architecture, maturity disclosures, the accepted decision record, Runner metadata, and repository validation were updated together.
+- Rootloom 1.2.11 is published from the exact verified code tree; remote `main`, CI, annotated tag, and the Latest formal GitHub Release were independently inspected after publication.
 
 ## Durable decision records
 
