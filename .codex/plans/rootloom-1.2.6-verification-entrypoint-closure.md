@@ -14,7 +14,7 @@ Close the Rootloom 1.2.5 verification entrypoint gaps: missing candidate entrypo
 
 ## Non-goals
 
-- No GitHub publication or release without explicit user authorization.
+- No GitHub publication or release without explicit user authorization. The user authorized publication with `继续发布` on 2026-07-12.
 - No complete shell or CLI semantic parser.
 - No container, cgroup, or OS-level sandbox.
 - No human accept/reject state machine.
@@ -83,7 +83,7 @@ Close the Rootloom 1.2.5 verification entrypoint gaps: missing candidate entrypo
 - Mixed-version behavior: 1.2.6 rejects more verification-entrypoint drift.
 - Failure detection: `make check`, focused Runner tests, compatibility smoke.
 - Rollback or compensation: revert this scoped commit before release.
-- Irreversible point: GitHub publication/release, not authorized in this task.
+- Irreversible point: GitHub publication/release, completed after explicit user authorization.
 
 ## Verification
 
@@ -97,6 +97,7 @@ Close the Rootloom 1.2.5 verification entrypoint gaps: missing candidate entrypo
 - UI/browser evidence: not applicable.
 - Security/dependency checks: repository validator secret scan via `make validate`.
 - Post-action verification: `git diff --check` — PASS.
+- Publication verification: GitHub Release `v1.2.6` is live at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.6`; remote release commit CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29182662864`.
 
 ## Risks
 
@@ -107,6 +108,7 @@ Close the Rootloom 1.2.5 verification entrypoint gaps: missing candidate entrypo
 ## Decision log
 
 - 2026-07-12 - Add explicit harness binding and entrypoint closure rather than expanding to a false-complete CLI parser.
+- 2026-07-12 - User authorized publication with `继续发布`; published release commit `b4e6abf73834c6857420a2664e84943b43ad238d`, annotated tag object `df4b4d2f0868137851a877485a2e198d0051337f`, and GitHub Release `v1.2.6`.
 
 ## Durable decision records
 
