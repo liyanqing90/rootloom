@@ -18,7 +18,7 @@ import subprocess
 import sys
 import textwrap
 import tomllib
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 if os.name == "posix":
     import fcntl
@@ -55,7 +55,7 @@ MAX_DELTA_PROMPT_CHARS = 120_000
 DEFAULT_MAX_IGNORED_PATHS = 50_000
 BUILTIN_DIFF_CHECK_ID = "verify-0"
 HUMAN_REVIEW_REQUIRED_EXIT = 10
-RUNNER_VERSION = "2.8"
+RUNNER_VERSION = "2.9"
 SENSITIVE_PATH_PARTS = {".aws", ".docker", ".gnupg", ".kube", ".ssh"}
 SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
 SENSITIVE_FILE_NAMES = {
@@ -494,54 +494,155 @@ def _repo_path_from_token(token: str, *, require_slash: bool = True) -> str | No
         return None
 
 
-def _entrypoint_fingerprint(repo: Path, path: str) -> dict[str, Any]:
+def _protected_entrypoint_reason(state: dict[str, Any], path: str) -> str | None:
+    normalized = normalize_repo_path(path, contract=True)
+    for field, label in (
+        ("ignored_paths", "ignored"),
+        ("sensitive_untracked_paths", "sensitive untracked"),
+    ):
+        for protected in state[field]:
+            if normalized == protected or normalized.startswith(protected + "/"):
+                return label
+    return None
+
+
+def _reject_protected_entrypoint(state: dict[str, Any], path: str) -> None:
+    reason = _protected_entrypoint_reason(state, path)
+    if reason is not None:
+        raise PipelineError(
+            f"verification entrypoint is {reason} and cannot be read or hashed: {path}; "
+            "move the harness to a visible, non-sensitive tracked path",
+            9,
+        )
+
+
+def _entrypoint_fingerprint(
+    repo: Path,
+    path: str,
+    state: dict[str, Any],
+    *,
+    source: str = "discovered",
+    require_existing_file: bool = False,
+) -> dict[str, Any]:
+    """Fingerprint a harness only after every resolved path passes classification."""
+
     repo_root = repo.resolve()
-    current = repo / path
-    fingerprint = {
-        "path": path,
-        "entry": file_fingerprint(current),
-        "chain": [],
-    }
-    seen: set[Path] = set()
-    for _ in range(40):
+    normalized = normalize_repo_path(path, contract=True)
+    _reject_protected_entrypoint(state, normalized)
+    remaining = list(PurePosixPath(normalized).parts)
+    current = repo_root
+    chain: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    followed = 0
+    while remaining:
+        current = current / remaining.pop(0)
+        current_path = current.relative_to(repo_root).as_posix()
+        _reject_protected_entrypoint(state, current_path)
         if not current.is_symlink():
-            break
-        if current in seen:
+            continue
+        followed += 1
+        if followed > 40 or current_path in seen:
             raise PipelineError(f"symlink cycle in verification entrypoint: {path}", 9)
-        seen.add(current)
+        seen.add(current_path)
         target_text = os.readlink(current)
         target = Path(target_text)
         if not target.is_absolute():
             target = current.parent / target
-        resolved = target.resolve(strict=False)
-        if not _path_within(resolved, repo_root):
+        lexical_target = Path(os.path.abspath(target))
+        if not _path_within(lexical_target, repo_root):
             raise PipelineError(
                 f"verification entrypoint crosses a symlink outside the repository: "
-                f"{path} -> {resolved}",
+                f"{path} -> {lexical_target}",
                 9,
             )
-        target_repo_path = resolved.relative_to(repo_root).as_posix()
-        fingerprint["chain"].append(
+        target_repo_path = lexical_target.relative_to(repo_root).as_posix()
+        _reject_protected_entrypoint(state, target_repo_path)
+        chain.append(
             {
-                "link": current.relative_to(repo).as_posix(),
+                "link": current_path,
                 "target": target_text,
                 "resolved": target_repo_path,
-                "fingerprint": file_fingerprint(resolved),
             }
         )
-        current = resolved
-    return fingerprint
+        remaining = list(PurePosixPath(target_repo_path).parts) + remaining
+        current = repo_root
+
+    resolved_path = current.relative_to(repo_root).as_posix()
+    _reject_protected_entrypoint(state, resolved_path)
+    resolved_fingerprint = file_fingerprint(current)
+    if require_existing_file and resolved_fingerprint.get("kind") != "file":
+        raise PipelineError(
+            f"explicit verification harness must resolve to an existing regular file: {path}",
+            9,
+        )
+    for link in chain:
+        link["fingerprint"] = resolved_fingerprint
+    return {
+        "path": normalized,
+        "source": source,
+        "require_existing_file": require_existing_file,
+        "entry": file_fingerprint(repo / normalized),
+        "resolved_path": resolved_path,
+        "resolved_entry": resolved_fingerprint,
+        "chain": chain,
+    }
+
+
+def normalize_verification_bindings(
+    values: list[str],
+    commands: list[dict[str, Any]],
+) -> dict[str, set[str]]:
+    command_ids = {command["id"] for command in commands}
+    user_command_ids = sorted(command_ids - {BUILTIN_DIFF_CHECK_ID})
+    bindings: dict[str, set[str]] = {}
+    for raw in values:
+        command_id: str | None = None
+        path = raw
+        prefix, separator, suffix = raw.partition(":")
+        if separator and re.fullmatch(r"verify-\d+", prefix):
+            command_id = prefix
+            path = suffix
+        elif len(user_command_ids) == 1:
+            command_id = user_command_ids[0]
+        else:
+            raise PipelineError(
+                "--bind-verification-path must use verify-N:path when more than one "
+                "user verification command is configured",
+                9,
+            )
+        if command_id not in command_ids or command_id == BUILTIN_DIFF_CHECK_ID:
+            raise PipelineError(
+                f"--bind-verification-path references unknown user command: {command_id}",
+                9,
+            )
+        normalized = normalize_repo_path(path, contract=True)
+        bindings.setdefault(command_id, set()).add(normalized)
+    return bindings
 
 
 def discover_verification_entrypoints(
     repo: Path,
     commands: list[dict[str, Any]],
-    bound_paths: set[str] | None = None,
+    state: dict[str, Any],
+    bound_paths: dict[str, set[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     paths: dict[str, set[str]] = {}
+    required: set[tuple[str, str]] = set()
+    sources: dict[tuple[str, str], str] = {}
 
-    def add(command_id: str, path: str) -> None:
+    def add(
+        command_id: str,
+        path: str,
+        *,
+        require_existing_file: bool = False,
+        source: str = "discovered",
+    ) -> None:
         paths.setdefault(command_id, set()).add(path)
+        key = (command_id, path)
+        if require_existing_file:
+            required.add(key)
+        if source == "operator-bound" or key not in sources:
+            sources[key] = source
 
     def add_common(command_id: str, candidates: tuple[str, ...]) -> None:
         for candidate in candidates:
@@ -555,8 +656,14 @@ def discover_verification_entrypoints(
         return argv
 
     if bound_paths:
-        for path in bound_paths:
-            add("operator-bound", path)
+        for command_id, command_paths in bound_paths.items():
+            for path in command_paths:
+                add(
+                    command_id,
+                    path,
+                    require_existing_file=True,
+                    source="operator-bound",
+                )
 
     for command in commands:
         command_id = command["id"]
@@ -564,10 +671,24 @@ def discover_verification_entrypoints(
         if not argv:
             continue
         executable = Path(argv[0]).name
-        for token in argv:
-            normalized = _repo_path_from_token(token)
-            if normalized is not None and not (repo / normalized).is_dir():
-                add(command_id, normalized)
+        direct = _repo_path_from_token(argv[0])
+        if direct is not None:
+            add(command_id, direct, require_existing_file=True, source="executable")
+        elif executable in {"bash", "sh", "zsh", "python", "python3", "node", "ruby", "perl"}:
+            if "-c" in argv[1:]:
+                continue
+            for token in argv[1:]:
+                if token.startswith("-"):
+                    continue
+                normalized = _repo_path_from_token(token, require_slash=False)
+                if normalized is not None:
+                    add(
+                        command_id,
+                        normalized,
+                        require_existing_file=True,
+                        source="interpreter-script",
+                    )
+                break
         if executable == "make":
             add_common(command_id, ("GNUmakefile", "makefile", "Makefile"))
             for index, token in enumerate(argv[:-1]):
@@ -600,7 +721,13 @@ def discover_verification_entrypoints(
 
     return {
         command_id: {
-            path: _entrypoint_fingerprint(repo, path)
+            path: _entrypoint_fingerprint(
+                repo,
+                path,
+                state,
+                source=sources.get((command_id, path), "discovered"),
+                require_existing_file=(command_id, path) in required,
+            )
             for path in sorted(command_paths)
         }
         for command_id, command_paths in sorted(paths.items())
@@ -610,11 +737,21 @@ def discover_verification_entrypoints(
 def validate_verification_entrypoints_unchanged(
     repo: Path,
     baseline: dict[str, dict[str, Any]],
+    state: dict[str, Any],
+    command_ids: set[str] | None = None,
 ) -> None:
     changed: list[str] = []
     for command_id, paths in baseline.items():
+        if command_ids is not None and command_id not in command_ids:
+            continue
         for path, expected in paths.items():
-            actual = _entrypoint_fingerprint(repo, path)
+            actual = _entrypoint_fingerprint(
+                repo,
+                path,
+                state,
+                source=expected["source"],
+                require_existing_file=expected["require_existing_file"],
+            )
             if actual != expected:
                 changed.append(f"{command_id}:{path}")
     if changed:
@@ -1609,17 +1746,13 @@ def terminate_process_group(process: subprocess.Popen[str]) -> str:
         return output or ""
 
 
-def ensure_process_group_finished(process: subprocess.Popen[str]) -> None:
+def ensure_process_group_finished(process: subprocess.Popen[str]) -> bool:
     try:
         os.killpg(process.pid, 0)
     except ProcessLookupError:
-        return
+        return False
     terminate_process_group(process)
-    raise PipelineError(
-        "managed command left a live process group after successful exit; "
-        "leftover children were terminated",
-        9,
-    )
+    return True
 
 
 def run_managed(
@@ -1628,7 +1761,7 @@ def run_managed(
     cwd: Path,
     timeout: int,
     input_text: str | None = None,
-) -> tuple[int, str, bool]:
+) -> tuple[int, str, bool, bool]:
     environment = os.environ.copy()
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
     process = subprocess.Popen(
@@ -1643,12 +1776,19 @@ def run_managed(
     )
     try:
         output, _ = process.communicate(input=input_text, timeout=timeout)
-        if process.returncode == 0:
-            ensure_process_group_finished(process)
-        return process.returncode, output or "", False
+        return_code = process.returncode
+        leftover_process_group = ensure_process_group_finished(process)
+        if leftover_process_group:
+            output = (output or "") + (
+                "\nmanaged command left a live process group; leftover children "
+                "were terminated\n"
+            )
+            if return_code == 0:
+                return_code = 125
+        return return_code, output or "", False, leftover_process_group
     except subprocess.TimeoutExpired:
         output = terminate_process_group(process)
-        return 124, output, True
+        return 124, output, True, False
     except BaseException:
         if process.poll() is None:
             terminate_process_group(process)
@@ -1758,8 +1898,8 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=[],
         help=(
-            "Bind an exact repo-relative verification harness path across the writer; "
-            "repeat for multiple paths"
+            "Bind VERIFY_ID:path as an existing repo-relative stability dependency; "
+            "a bare path is accepted only with one user --verify command; repeatable"
         ),
     )
     parser.add_argument(
@@ -1914,7 +2054,7 @@ def run_stage(
     write_json(schema_path, schema)
     effective_prompt = "RUNNER STAGE INSTRUCTIONS:\n" + prompt
     try:
-        return_code, output, timed_out = run_managed(
+        return_code, output, timed_out, _ = run_managed(
             command,
             cwd=repo,
             timeout=args.stage_timeout,
@@ -1961,6 +2101,9 @@ def run_verification(
     commands: list[dict[str, Any]],
     dry_run: bool,
     timeout_seconds: int,
+    expected_state: dict[str, Any],
+    state_supplier: Callable[[], dict[str, Any]],
+    entrypoints: dict[str, dict[str, Any]],
 ) -> tuple[bool, list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
     for command in commands:
@@ -1977,8 +2120,20 @@ def run_verification(
                 }
             )
             continue
+        before = state_supplier()
+        assert_repo_unchanged(
+            expected_state,
+            before,
+            f"before verification command {command_id}",
+        )
+        validate_verification_entrypoints_unchanged(
+            repo,
+            entrypoints,
+            before,
+            {command_id},
+        )
         try:
-            return_code, output, timed_out = run_managed(
+            return_code, output, timed_out, leftover_process_group = run_managed(
                 argv,
                 cwd=repo,
                 timeout=timeout_seconds,
@@ -1991,13 +2146,22 @@ def run_verification(
         except OSError as exc:
             return_code = 127
             output = f"could not start verification command: {exc}"
+            leftover_process_group = False
         records.append(
             {
                 "id": command_id,
                 "command": shlex.join(argv),
                 "exit_code": return_code,
                 "output": output,
+                "leftover_process_group": leftover_process_group,
             }
+        )
+        write_json(run_dir / f"{prefix}.json", records)
+        after = state_supplier()
+        assert_repo_unchanged(
+            expected_state,
+            after,
+            f"verification command {command_id}",
         )
     write_json(run_dir / f"{prefix}.json", records)
     return all(item["exit_code"] in (0, None) for item in records), records
@@ -2033,6 +2197,7 @@ def compact_verification(records: list[dict[str, Any]]) -> str:
                 "id": record.get("id"),
                 "command": record.get("command"),
                 "exit_code": record.get("exit_code"),
+                "leftover_process_group": record.get("leftover_process_group", False),
                 "output_tail": output[-12000:],
             }
         )
@@ -2046,10 +2211,6 @@ def run_pipeline_locked(
 ) -> int:
     ensure_supported_repository_topology(repo)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
-    bound_verification_paths = {
-        normalize_repo_path(path, contract=True)
-        for path in args.bind_verification_path
-    }
     allowed_protected_deletions = normalize_protected_deletions(
         args.allow_protected_path_delete
     )
@@ -2114,10 +2275,15 @@ def run_pipeline_locked(
     )
     baseline_untracked, baseline_redacted_untracked = state_untracked_manifests(baseline)
     commands = verification_commands(args)
+    bound_verification_paths = normalize_verification_bindings(
+        args.bind_verification_path,
+        commands,
+    )
     validate_verification_command_boundaries(repo, commands)
     verification_entrypoints = discover_verification_entrypoints(
         repo,
         commands,
+        baseline,
         bound_paths=bound_verification_paths,
     )
     metadata = {
@@ -2134,7 +2300,10 @@ def run_pipeline_locked(
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
         "max_ignored_paths": args.max_ignored_paths,
         "sensitive_paths": args.sensitive_path,
-        "bound_verification_paths": sorted(bound_verification_paths),
+        "bound_verification_paths": {
+            command_id: sorted(paths)
+            for command_id, paths in sorted(bound_verification_paths.items())
+        },
         "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
         "allowed_protected_path_deletions": sorted(allowed_protected_deletions),
         "task_file": str(task_path),
@@ -2339,7 +2508,11 @@ def run_pipeline_locked(
         post_implementation_state = capture_state(check_topology=True)
         validate_allowed_path_boundaries(repo, allowed_rules)
         validate_verification_command_boundaries(repo, commands)
-        validate_verification_entrypoints_unchanged(repo, verification_entrypoints)
+        validate_verification_entrypoints_unchanged(
+            repo,
+            verification_entrypoints,
+            post_implementation_state,
+        )
         if post_implementation_state["index"] != stage_baseline["index"]:
             raise PipelineError(f"{label} changed the Git index", 6)
         if post_implementation_state["git_control"] != stage_baseline["git_control"]:
@@ -2364,7 +2537,11 @@ def run_pipeline_locked(
 
         validate_allowed_path_boundaries(repo, allowed_rules)
         validate_verification_command_boundaries(repo, commands)
-        validate_verification_entrypoints_unchanged(repo, verification_entrypoints)
+        validate_verification_entrypoints_unchanged(
+            repo,
+            verification_entrypoints,
+            post_implementation_state,
+        )
         verified, verification = run_verification(
             repo=repo,
             run_dir=run_dir,
@@ -2372,6 +2549,9 @@ def run_pipeline_locked(
             commands=commands,
             dry_run=False,
             timeout_seconds=args.stage_timeout,
+            expected_state=post_implementation_state,
+            state_supplier=lambda: capture_state(check_topology=True),
+            entrypoints=verification_entrypoints,
         )
         post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(

@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.7] - 2026-07-12
+
+### Security
+
+- Route every verification-entrypoint content fingerprint through the repository state's ignored and sensitive-untracked classification. Protected harnesses and protected symlink targets now fail before content reads or hashes.
+- Validate every verification command immediately before execution and recheck repository state immediately after it, preventing one verification command from mutating a later command's harness before that later command runs.
+- Inspect and record symlinks in every entrypoint path component, not only a final symlink.
+- Clean up surviving process-group children after both successful and failed commands. Failed commands retain their original exit code and record that leftover children were terminated.
+
+### Changed
+
+- `--bind-verification-path` is now a command-scoped stability dependency. Use `verify-N:path` when multiple user verification commands are configured; the path-only form remains accepted for one user command.
+- Operator-bound harnesses and directly executed repository scripts must resolve to existing repository-internal regular files. Missing paths, directories, and protected paths fail closed.
+- Pytest positional paths are treated as test selectors, including missing regression-test paths that the Writer is expected to create.
+
+### Tests
+
+- Added regression coverage for ignored and sensitive harness read prevention, protected symlink targets, invalid and ambiguous explicit bindings, missing pytest selectors, parent-directory symlinks, failed-command child cleanup, and verification-batch mutation.
+
 ## [1.2.6] - 2026-07-12
 
 ### Security
@@ -157,7 +176,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.7...HEAD
+[1.2.7]: https://github.com/liyanqing90/rootloom/compare/v1.2.6...v1.2.7
 [1.2.6]: https://github.com/liyanqing90/rootloom/compare/v1.2.5...v1.2.6
 [1.2.5]: https://github.com/liyanqing90/rootloom/compare/v1.2.4...v1.2.5
 [1.2.4]: https://github.com/liyanqing90/rootloom/compare/v1.2.3...v1.2.4

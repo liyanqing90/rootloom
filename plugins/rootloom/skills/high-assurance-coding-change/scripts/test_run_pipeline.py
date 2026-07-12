@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -713,6 +714,7 @@ class RunnerGateTests(unittest.TestCase):
         baseline = runner.discover_verification_entrypoints(
             self.repo,
             [{"id": "verify-1", "argv": ["scripts/check.sh"]}],
+            runner.capture_repo_state(self.repo),
         )
         outside = self.root / "outside-check.sh"
         outside.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
@@ -720,7 +722,11 @@ class RunnerGateTests(unittest.TestCase):
         script.symlink_to(outside)
 
         with self.assertRaises(runner.PipelineError) as caught:
-            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                baseline,
+                runner.capture_repo_state(self.repo),
+            )
         self.assertIn("outside the repository", str(caught.exception))
 
     def test_verification_entrypoint_rejects_writer_modified_harness_files(self) -> None:
@@ -735,14 +741,22 @@ class RunnerGateTests(unittest.TestCase):
             {"id": "verify-2", "argv": ["npm", "test"]},
             {"id": "verify-3", "argv": ["pytest"]},
         ]
-        baseline = runner.discover_verification_entrypoints(self.repo, commands)
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            commands,
+            runner.capture_repo_state(self.repo),
+        )
         self.assertIn("Makefile", baseline["verify-1"])
         self.assertIn("package.json", baseline["verify-2"])
         self.assertIn("pyproject.toml", baseline["verify-3"])
 
         makefile.write_text("check:\n\t@echo passed\n", encoding="utf-8")
         with self.assertRaises(runner.PipelineError) as caught:
-            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                baseline,
+                runner.capture_repo_state(self.repo),
+            )
         self.assertIn("verify-1:Makefile", str(caught.exception))
 
     def test_verification_entrypoint_tracks_missing_candidates(self) -> None:
@@ -751,21 +765,31 @@ class RunnerGateTests(unittest.TestCase):
         baseline = runner.discover_verification_entrypoints(
             self.repo,
             [{"id": "verify-1", "argv": ["make", "check"]}],
+            runner.capture_repo_state(self.repo),
         )
         self.assertEqual(baseline["verify-1"]["GNUmakefile"]["entry"]["kind"], "missing")
         (self.repo / "GNUmakefile").write_text("check:\n\t@echo weak\n", encoding="utf-8")
         with self.assertRaises(runner.PipelineError) as caught:
-            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                baseline,
+                runner.capture_repo_state(self.repo),
+            )
         self.assertIn("verify-1:GNUmakefile", str(caught.exception))
 
         pytest_baseline = runner.discover_verification_entrypoints(
             self.repo,
             [{"id": "verify-2", "argv": ["python", "-m", "pytest"]}],
+            runner.capture_repo_state(self.repo),
         )
         self.assertEqual(pytest_baseline["verify-2"]["pytest.ini"]["entry"]["kind"], "missing")
         (self.repo / "pytest.ini").write_text("[pytest]\naddopts = -q\n", encoding="utf-8")
         with self.assertRaises(runner.PipelineError) as pytest_changed:
-            runner.validate_verification_entrypoints_unchanged(self.repo, pytest_baseline)
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                pytest_baseline,
+                runner.capture_repo_state(self.repo),
+            )
         self.assertIn("verify-2:pytest.ini", str(pytest_changed.exception))
 
     def test_verification_entrypoint_recognizes_common_wrappers_and_explicit_bindings(self) -> None:
@@ -787,14 +811,18 @@ class RunnerGateTests(unittest.TestCase):
         baseline = runner.discover_verification_entrypoints(
             self.repo,
             commands,
-            bound_paths={"scripts/check.sh"},
+            runner.capture_repo_state(self.repo),
+            bound_paths={"verify-1": {"scripts/check.sh"}},
         )
         self.assertIn("scripts/check.sh", baseline["verify-1"])
         self.assertIn("pytest-ci.ini", baseline["verify-2"])
         self.assertIn("pyproject.toml", baseline["verify-3"])
         self.assertIn("Makefile.ci", baseline["verify-4"])
         self.assertIn("apps/web/package.json", baseline["verify-5"])
-        self.assertIn("scripts/check.sh", baseline["operator-bound"])
+        self.assertEqual(
+            baseline["verify-1"]["scripts/check.sh"]["source"],
+            "operator-bound",
+        )
 
     def test_verification_entrypoint_binds_repo_internal_symlink_target_content(self) -> None:
         scripts = self.repo / "scripts"
@@ -806,6 +834,7 @@ class RunnerGateTests(unittest.TestCase):
         baseline = runner.discover_verification_entrypoints(
             self.repo,
             [{"id": "verify-1", "argv": ["scripts/check.sh"]}],
+            runner.capture_repo_state(self.repo),
         )
         self.assertEqual(
             baseline["verify-1"]["scripts/check.sh"]["chain"][0]["resolved"],
@@ -813,7 +842,11 @@ class RunnerGateTests(unittest.TestCase):
         )
         impl.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
         with self.assertRaises(runner.PipelineError) as caught:
-            runner.validate_verification_entrypoints_unchanged(self.repo, baseline)
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                baseline,
+                runner.capture_repo_state(self.repo),
+            )
         self.assertIn("verify-1:scripts/check.sh", str(caught.exception))
 
     def test_verification_entrypoint_does_not_bind_directory_selectors(self) -> None:
@@ -822,8 +855,210 @@ class RunnerGateTests(unittest.TestCase):
         baseline = runner.discover_verification_entrypoints(
             self.repo,
             [{"id": "verify-1", "argv": ["pytest", "tests/unit"]}],
+            runner.capture_repo_state(self.repo),
         )
         self.assertNotIn("tests/unit", baseline["verify-1"])
+
+    def test_verification_entrypoint_never_hashes_ignored_or_sensitive_paths(self) -> None:
+        (self.repo / ".gitignore").write_text("Makefile\nprivate/\n", encoding="utf-8")
+        ignored_makefile = self.repo / "Makefile"
+        ignored_makefile.write_text("check:\n\ttrue\n", encoding="utf-8")
+        private = self.repo / "private"
+        private.mkdir()
+        sensitive_script = private / "check.sh"
+        sensitive_script.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        state = runner.capture_repo_state(
+            self.repo,
+            sensitive_rules=runner.normalize_sensitive_paths(["private/**"]),
+        )
+        original = runner.file_fingerprint
+
+        def reject_protected_content(path: Path) -> dict[str, object]:
+            if path in {ignored_makefile, sensitive_script}:
+                raise AssertionError("protected verification content was hashed")
+            return original(path)
+
+        with mock.patch.object(
+            runner,
+            "file_fingerprint",
+            side_effect=reject_protected_content,
+        ):
+            with self.assertRaises(runner.PipelineError) as ignored:
+                runner.discover_verification_entrypoints(
+                    self.repo,
+                    [{"id": "verify-1", "argv": ["make", "check"]}],
+                    state,
+                )
+            self.assertIn("ignored", str(ignored.exception))
+            with self.assertRaises(runner.PipelineError) as sensitive:
+                runner.discover_verification_entrypoints(
+                    self.repo,
+                    [{"id": "verify-1", "argv": ["./private/check.sh"]}],
+                    state,
+                )
+            self.assertIn("cannot be read or hashed", str(sensitive.exception))
+
+    def test_bound_sensitive_missing_and_directory_harnesses_fail_closed(self) -> None:
+        (self.repo / ".env").write_text("TOKEN=secret\n", encoding="utf-8")
+        (self.repo / "scripts").mkdir()
+        commands = [
+            {"id": runner.BUILTIN_DIFF_CHECK_ID, "argv": ["git", "diff", "HEAD", "--check"]},
+            {"id": "verify-1", "argv": ["make", "check"]},
+        ]
+        state = runner.capture_repo_state(self.repo)
+        for raw, expected in (
+            (".env", "sensitive untracked"),
+            ("scripts/missing.sh", "existing regular file"),
+            ("scripts", "existing regular file"),
+        ):
+            bindings = runner.normalize_verification_bindings([raw], commands)
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.discover_verification_entrypoints(
+                    self.repo,
+                    commands,
+                    state,
+                    bound_paths=bindings,
+                )
+            self.assertIn(expected, str(caught.exception))
+
+    def test_bound_harness_is_scoped_to_a_real_verification_command(self) -> None:
+        harness = self.repo / "scripts" / "acceptance.sh"
+        harness.parent.mkdir()
+        harness.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        commands = [
+            {"id": runner.BUILTIN_DIFF_CHECK_ID, "argv": ["git", "diff", "HEAD", "--check"]},
+            {"id": "verify-1", "argv": ["make", "check"]},
+            {"id": "verify-2", "argv": ["pytest"]},
+        ]
+        with self.assertRaises(runner.PipelineError) as ambiguous:
+            runner.normalize_verification_bindings(["scripts/acceptance.sh"], commands)
+        self.assertIn("verify-N:path", str(ambiguous.exception))
+        bindings = runner.normalize_verification_bindings(
+            ["verify-2:scripts/acceptance.sh"],
+            commands,
+        )
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            commands,
+            runner.capture_repo_state(self.repo),
+            bound_paths=bindings,
+        )
+        self.assertNotIn("scripts/acceptance.sh", baseline["verify-1"])
+        self.assertEqual(
+            baseline["verify-2"]["scripts/acceptance.sh"]["source"],
+            "operator-bound",
+        )
+
+    def test_pytest_new_test_selector_is_not_an_immutable_entrypoint(self) -> None:
+        state = runner.capture_repo_state(self.repo)
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["pytest", "tests/test_new_regression.py"]}],
+            state,
+        )
+        self.assertNotIn("tests/test_new_regression.py", baseline["verify-1"])
+        test_path = self.repo / "tests" / "test_new_regression.py"
+        test_path.parent.mkdir()
+        test_path.write_text("def test_new():\n    assert True\n", encoding="utf-8")
+        runner.validate_verification_entrypoints_unchanged(
+            self.repo,
+            baseline,
+            runner.capture_repo_state(self.repo),
+        )
+
+    def test_entrypoint_fingerprint_records_parent_directory_symlinks(self) -> None:
+        first = self.repo / "real-scripts"
+        second = self.repo / "alternate-scripts"
+        first.mkdir()
+        second.mkdir()
+        for directory in (first, second):
+            (directory / "check.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        link = self.repo / "scripts"
+        link.symlink_to("real-scripts", target_is_directory=True)
+        baseline = runner.discover_verification_entrypoints(
+            self.repo,
+            [{"id": "verify-1", "argv": ["./scripts/check.sh"]}],
+            runner.capture_repo_state(self.repo),
+        )
+        self.assertEqual(
+            baseline["verify-1"]["scripts/check.sh"]["chain"][0]["link"],
+            "scripts",
+        )
+        link.unlink()
+        link.symlink_to("alternate-scripts", target_is_directory=True)
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_verification_entrypoints_unchanged(
+                self.repo,
+                baseline,
+                runner.capture_repo_state(self.repo),
+            )
+
+    def test_symlink_entrypoint_rejects_protected_target_without_hashing(self) -> None:
+        (self.repo / ".gitignore").write_text("private/\n", encoding="utf-8")
+        private = self.repo / "private"
+        private.mkdir()
+        target = private / "check_impl.sh"
+        target.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        scripts = self.repo / "scripts"
+        scripts.mkdir()
+        (scripts / "check.sh").symlink_to("../private/check_impl.sh")
+        state = runner.capture_repo_state(self.repo)
+        original = runner.file_fingerprint
+
+        def reject_target(path: Path) -> dict[str, object]:
+            if path == target:
+                raise AssertionError("protected symlink target was hashed")
+            return original(path)
+
+        with mock.patch.object(runner, "file_fingerprint", side_effect=reject_target):
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.discover_verification_entrypoints(
+                    self.repo,
+                    [{"id": "verify-1", "argv": ["./scripts/check.sh"]}],
+                    state,
+                )
+        self.assertIn("ignored", str(caught.exception))
+
+    def test_verification_batch_stops_before_next_command_after_mutation(self) -> None:
+        scripts = self.repo / "scripts"
+        scripts.mkdir()
+        second = scripts / "second.sh"
+        marker = self.root / "second-ran"
+        second.write_text(f"#!/bin/sh\ntouch {shlex.quote(str(marker))}\n", encoding="utf-8")
+        second.chmod(0o755)
+        commands = [
+            {
+                "id": "verify-1",
+                "argv": [
+                    sys.executable,
+                    "-c",
+                    "from pathlib import Path; Path('scripts/second.sh').write_text('changed')",
+                ],
+            },
+            {"id": "verify-2", "argv": ["./scripts/second.sh"]},
+        ]
+        expected = runner.capture_repo_state(self.repo)
+        entrypoints = runner.discover_verification_entrypoints(
+            self.repo,
+            commands,
+            expected,
+        )
+        run_dir = self.root / "verification-run"
+        run_dir.mkdir()
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.run_verification(
+                repo=self.repo,
+                run_dir=run_dir,
+                prefix="04-verification",
+                commands=commands,
+                dry_run=False,
+                timeout_seconds=5,
+                expected_state=expected,
+                state_supplier=lambda: runner.capture_repo_state(self.repo),
+                entrypoints=entrypoints,
+            )
+        self.assertIn("verification command verify-1", str(caught.exception))
+        self.assertFalse(marker.exists())
 
     def test_protected_deletion_mode_rejects_dirty_and_repair_cycles(self) -> None:
         with self.assertRaises(runner.PipelineError) as dirty:
@@ -864,13 +1099,14 @@ class RunnerGateTests(unittest.TestCase):
             "time.sleep(10)\n",
             encoding="utf-8",
         )
-        return_code, _, timed_out = runner.run_managed(
+        return_code, _, timed_out, leftover = runner.run_managed(
             [sys.executable, str(parent), str(child), str(marker)],
             cwd=self.root,
             timeout=1,
         )
         self.assertEqual(return_code, 124)
         self.assertTrue(timed_out)
+        self.assertFalse(leftover)
         time.sleep(0.75)
         self.assertFalse(marker.exists())
 
@@ -894,13 +1130,48 @@ class RunnerGateTests(unittest.TestCase):
             ")\n",
             encoding="utf-8",
         )
-        with self.assertRaises(runner.PipelineError) as caught:
-            runner.run_managed(
-                [sys.executable, str(parent), str(child), str(marker)],
-                cwd=self.root,
-                timeout=5,
-            )
-        self.assertIn("left a live process group", str(caught.exception))
+        return_code, output, timed_out, leftover = runner.run_managed(
+            [sys.executable, str(parent), str(child), str(marker)],
+            cwd=self.root,
+            timeout=5,
+        )
+        self.assertEqual(return_code, 125)
+        self.assertFalse(timed_out)
+        self.assertTrue(leftover)
+        self.assertIn("left a live process group", output)
+        time.sleep(0.5)
+        self.assertFalse(marker.exists())
+
+    def test_failed_command_with_leftover_child_preserves_failure_and_cleans_up(self) -> None:
+        marker = self.root / "failed-leftover-child"
+        child = self.root / "failed-linger.py"
+        child.write_text(
+            "import pathlib, sys, time\n"
+            "time.sleep(2)\n"
+            "pathlib.Path(sys.argv[1]).write_text('survived')\n",
+            encoding="utf-8",
+        )
+        parent = self.root / "failure_with_child.py"
+        parent.write_text(
+            "import subprocess, sys\n"
+            "subprocess.Popen(\n"
+            "    [sys.executable, sys.argv[1], sys.argv[2]],\n"
+            "    stdin=subprocess.DEVNULL,\n"
+            "    stdout=subprocess.DEVNULL,\n"
+            "    stderr=subprocess.DEVNULL,\n"
+            ")\n"
+            "raise SystemExit(7)\n",
+            encoding="utf-8",
+        )
+        return_code, output, timed_out, leftover = runner.run_managed(
+            [sys.executable, str(parent), str(child), str(marker)],
+            cwd=self.root,
+            timeout=5,
+        )
+        self.assertEqual(return_code, 7)
+        self.assertFalse(timed_out)
+        self.assertTrue(leftover)
+        self.assertIn("left a live process group", output)
         time.sleep(0.5)
         self.assertFalse(marker.exists())
 

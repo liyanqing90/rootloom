@@ -43,7 +43,7 @@ python3 <skill-dir>/scripts/run_pipeline.py \
   --verify 'your broader verification command'
 ```
 
-The runner reads model, reasoning, and sandbox settings from the same four custom-agent TOML files. It requires a clean worktree by default, uses structured stage outputs, disables user config/plugins/apps for every stage, blocks network in the workspace-write sandbox, and allows at most one targeted repair cycle. Verification commands are parsed without a shell; place pipelines or compound commands in a repository-owned script. Detected verification entrypoints are fingerprinted before the writer and rechecked before execution for explicit repository-relative path tokens, operator-supplied `--bind-verification-path` harnesses, `make` files, JavaScript package manifests, pytest configuration files, missing common candidates, and repository-internal symlink target contents. Directory selector arguments are not executable entrypoints. This is an entrypoint stability gate, not complete command semantic parsing.
+The runner reads model, reasoning, and sandbox settings from the same four custom-agent TOML files. It requires a clean worktree by default, uses structured stage outputs, disables user config/plugins/apps for every stage, blocks network in the workspace-write sandbox, and allows at most one targeted repair cycle. Verification commands are parsed without a shell; place pipelines or compound commands in a repository-owned script. Detected verification entrypoints are fingerprinted before the writer and rechecked per command for directly executed repository scripts, command-scoped `--bind-verification-path verify-N:path` stability dependencies, `make` files, JavaScript package manifests, pytest configuration files, missing common candidates, and every repository-internal symlink component plus final target content. Explicit harnesses must be existing regular files, and ignored or sensitive-untracked harnesses are rejected before content access. Pytest positional selectors are not executable entrypoints. This is an entrypoint stability gate, not complete command semantic parsing or proof that a command uses every bound dependency.
 
 Known secret-like visible-untracked paths are classified before content fingerprinting. Add repeatable exact-path or `directory/**` rules with `--sensitive-path`; use `--redact-untracked-dotfiles` when every untracked dotfile should remain metadata-only. Built-in matching is finite. These options protect runner-generated artifacts and prompts, not repository file access: all four model stages can still read files. Use a secret-free worktree or OS/container isolation when deny-read behavior is required.
 
@@ -61,7 +61,7 @@ developer instructions and enforces the following locally, without trusting mode
 - protected metadata-only path rejection before Delta capture, with only exact preflighted deletion-only exceptions and mandatory human acceptance;
 - exact agreement between the writer's `files_changed` report and its real stage delta;
 - semantic consistency for GO, completed, PASS, FAIL, and finding severity;
-- process-group termination on timeout or interruption;
+- process-group termination on timeout, interruption, or any parent exit that leaves children;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 
 The artifact root must be outside the target repository. The runner saves staged,

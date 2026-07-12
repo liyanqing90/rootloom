@@ -386,7 +386,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.8"',
+            'RUNNER_VERSION = "2.9"',
             "file_metadata_fingerprint",
             "sensitive_untracked_paths",
             "state_untracked_manifests",
@@ -401,6 +401,8 @@ def validate_system_assets(errors: list[str]) -> None:
             "validate_allowed_path_boundaries",
             "discover_verification_entrypoints",
             "_entrypoint_fingerprint",
+            "_reject_protected_entrypoint",
+            "normalize_verification_bindings",
             "validate_verification_entrypoints_unchanged",
             "ensure_process_group_finished",
             '"HUMAN_REVIEW_REQUIRED"',

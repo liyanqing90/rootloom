@@ -97,9 +97,9 @@ codex execpolicy check --pretty \
 
 ## 严格 Runner 拒绝 verification entrypoint 变化
 
-Runner 会在 Writer 前为检测到的验证入口建立指纹，并在确定性验证前再次检查。它也会记录常见缺失候选，因此 Writer 在基线后新建 `GNUmakefile`、`pytest.ini` 或类似 harness 会被视为验证入口变化。它还会跟踪仓库内符号链接链路，并绑定最终目标内容。
+Runner 会在 Writer 前为检测到的验证入口建立指纹，在每条确定性验证命令前检查对应入口，并在命令结束后立即确认仓库未变化。它也会记录常见缺失候选，因此 Writer 在基线后新建 `GNUmakefile`、`pytest.ini` 或类似 harness 会被视为验证入口变化。它会记录仓库内每个符号链接路径组件，并绑定最终目标内容。
 
-如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置、`--verify` 使用的已检测仓库相对脚本，或通过 `--bind-verification-path` 显式绑定的路径，任务会在执行验证前停止。应使用外部可信 harness，通过 `--bind-verification-path` 绑定重要的仓库内 harness 文件，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
+如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置、`--verify` 使用的已检测仓库相对脚本，或通过 `--bind-verification-path verify-N:path` 显式绑定的路径，任务会在执行验证前停止。显式绑定必须解析为已存在的普通文件，并作为按命令关联的稳定性依赖记录；它不能证明命令真实导入或执行了该文件。protected harness 会在内容访问前被拒绝。应使用外部可信 harness，把重要的仓库内依赖绑定到正确命令，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
 
 如果 Runner 报告的是未授权 protected 路径变化，说明它在 Writer 返回后停止了验收，sandbox 并未预防文件系统修改。应人工检查并恢复该路径；Rootloom 不会读取或备份 ignored/敏感内容用于自动回滚。
 
