@@ -158,6 +158,27 @@ class RunnerGateTests(unittest.TestCase):
         with self.assertRaises(runner.PipelineError):
             runner.validate_diagnosis(diagnosis)
 
+        diagnosis["verification_map"] = {
+            "original_failure_path": {
+                "requirement": "reproduce and fix the original failure",
+                "command_ids": ["verify-1"],
+            },
+            "owning_boundary_invariant": {
+                "requirement": "assert the owning invariant",
+                "command_ids": ["verify-1"],
+            },
+            "adjacent_negative_or_alternate_path": {
+                "requirement": "cover an adjacent path",
+                "command_ids": ["verify-missing"],
+            },
+        }
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+        diagnosis["verification_map"]["adjacent_negative_or_alternate_path"][
+            "command_ids"
+        ] = ["verify-0"]
+        runner.validate_diagnosis(diagnosis, {"verify-0", "verify-1"})
+
     def test_completed_report_must_match_actual_delta_and_have_no_deviation(self) -> None:
         rules = runner.normalize_allowed_paths(["a.txt"])
         report = {
@@ -215,6 +236,20 @@ class RunnerGateTests(unittest.TestCase):
             )
         self.assertEqual(caught.exception.exit_code, 6)
 
+    def test_scope_gate_precedes_delta_capture(self) -> None:
+        baseline = runner.capture_repo_state(self.repo)
+        (self.repo / "outside.txt").write_text("do not capture\n", encoding="utf-8")
+        with mock.patch.object(runner, "capture_delta") as capture:
+            with self.assertRaises(runner.PipelineError):
+                runner.enforce_repository_contract(
+                    repo=self.repo,
+                    run_dir=self.run_dir,
+                    prefix="scope-first",
+                    baseline=baseline,
+                    allowed_rules=runner.normalize_allowed_paths(["a.txt"]),
+                )
+        capture.assert_not_called()
+
     def test_ignored_files_and_head_changes_are_in_the_snapshot(self) -> None:
         (self.repo / ".gitignore").write_text("ignored.log\n", encoding="utf-8")
         git(self.repo, "add", ".gitignore")
@@ -262,6 +297,106 @@ class RunnerGateTests(unittest.TestCase):
             state = runner.capture_repo_state(self.repo)
 
         self.assertEqual(state["worktree"]["ignored.bin"]["kind"], "file-metadata")
+
+    def test_delta_never_reads_or_emits_ignored_content(self) -> None:
+        (self.repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore local environment")
+        baseline = runner.capture_repo_state(self.repo)
+        marker = "ROOTLOOM_SECRET_MUST_NOT_LEAVE_FILE_91f7"
+        ignored = self.repo / ".env"
+        ignored.write_text(f"TOKEN={marker}\n", encoding="utf-8")
+
+        original_fingerprint = runner.file_fingerprint
+
+        def reject_content_read(path: Path) -> dict[str, object]:
+            if path == ignored:
+                raise AssertionError("ignored content fingerprint attempted")
+            return original_fingerprint(path)
+
+        with (
+            mock.patch.object(
+                runner,
+                "file_fingerprint",
+                side_effect=reject_content_read,
+            ),
+            mock.patch.object(
+                runner,
+                "untracked_patch",
+                wraps=runner.untracked_patch,
+            ) as patch_capture,
+        ):
+            delta, _ = runner.enforce_repository_contract(
+                repo=self.repo,
+                run_dir=self.run_dir,
+                prefix="ignored-safe",
+                baseline=baseline,
+                allowed_rules=runner.normalize_allowed_paths([".env"]),
+            )
+
+        patch_capture.assert_called_once_with(self.repo, [])
+        self.assertEqual(delta["ignored_metadata"][0]["path"], ".env")
+        self.assertEqual(delta["untracked_patch"], "")
+        for artifact in self.run_dir.iterdir():
+            self.assertNotIn(marker, artifact.read_text(encoding="utf-8"))
+        self.assertNotIn(marker, runner.compact_delta(delta))
+
+    def test_sensitive_visible_untracked_content_is_redacted(self) -> None:
+        baseline = runner.capture_repo_state(self.repo)
+        marker = "VISIBLE_SECRET_127d"
+        (self.repo / ".env.local").write_text(marker, encoding="utf-8")
+        delta, _ = runner.enforce_repository_contract(
+            repo=self.repo,
+            run_dir=self.run_dir,
+            prefix="redacted",
+            baseline=baseline,
+            allowed_rules=runner.normalize_allowed_paths([".env.local"]),
+        )
+        self.assertEqual(delta["visible_untracked"], [])
+        self.assertEqual(delta["redacted_untracked_metadata"][0]["path"], ".env.local")
+        self.assertNotIn(marker, runner.compact_delta(delta))
+
+    def test_ignored_path_budget_fails_closed(self) -> None:
+        (self.repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore cache")
+        cache = self.repo / "cache"
+        cache.mkdir()
+        for index in range(3):
+            (cache / f"{index}.tmp").write_text("x", encoding="utf-8")
+        with self.assertRaises(runner.PipelineError) as caught:
+            runner.capture_repo_state(self.repo, max_ignored_paths=2)
+        self.assertEqual(caught.exception.exit_code, 9)
+        self.assertIn("budget exceeded", str(caught.exception))
+
+    def test_verification_coverage_requires_successful_machine_records(self) -> None:
+        diagnosis = {
+            "verification_map": {
+                field: {"requirement": field, "command_ids": ["verify-1"]}
+                for field in (
+                    "original_failure_path",
+                    "owning_boundary_invariant",
+                    "adjacent_negative_or_alternate_path",
+                )
+            }
+        }
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_verification_coverage(diagnosis, [])
+        with self.assertRaises(runner.PipelineError):
+            runner.validate_verification_coverage(
+                diagnosis,
+                [{"id": "verify-1", "exit_code": 1}],
+            )
+        runner.validate_verification_coverage(
+            diagnosis,
+            [{"id": "verify-1", "exit_code": 0}],
+        )
+
+    def test_platform_gate_rejects_missing_posix_lock_support(self) -> None:
+        with mock.patch.object(runner, "fcntl", None):
+            with self.assertRaises(runner.PipelineError) as caught:
+                runner.ensure_supported_runner_platform()
+        self.assertEqual(caught.exception.exit_code, 9)
 
     def test_read_only_gate_and_repository_lock(self) -> None:
         before = runner.capture_repo_state(self.repo)

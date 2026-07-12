@@ -27,8 +27,8 @@ The installer exposes stable capability layers instead of asking users to unders
 | `skills-only` | Bundled Skills only; no global assets; lifecycle Hooks disabled | No |
 | `guidance` | Global policy + automatic project context | No |
 | `engineering` | Guidance + command safety | No; recommended for normal coding |
-| `delegated` | Engineering + atomic delegation control | Yes |
-| `full` | Delegated + configured high-assurance profile | Yes |
+| `delegated` | Engineering + four-role configuration and advisory audit | Configured; native routing not attested |
+| `full` | Delegated + strict sequential-runner profile | Configured; runner provides attested routing |
 
 `delegation-control` is deliberately one unit: four role TOMLs, the concurrent/depth limits, and the advisory audit Hook. Installing only one role or only the counter would create a misleading half-control, so the supported installer does not expose those files as separate user-facing levels.
 
@@ -104,6 +104,8 @@ When `command-safety` is selected, the installed Rules intentionally separate lo
 
 Rules use the most restrictive matching decision. A separate broad `git` prompt rule will therefore override the narrower allow. Inspect every active `.rules` file when commits still ask for approval. In a non-interactive run with `approval_policy = "never"`, a `prompt` action cannot be approved and fails; use an allow rule for safe local operations or an interactive profile for genuinely approval-gated actions.
 
+Rules match command argv prefixes, not the contents of nested shell strings. For example, `bash -c 'git push'` is governed first as `bash`, not as a direct `git push`; it can fall through to a broader policy. Treat Rules as defense in depth, not a shell security boundary, and keep dangerous external effects behind sandbox, credentials, branch protection, CI, and human authorization.
+
 Verify the installed policy:
 
 ```bash
@@ -117,6 +119,8 @@ codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git res
 When `delegation-control` is selected, `agents.max_threads = 4` is a hard cap on concurrently open agent threads. It is not a lifetime count, so a task may close four children and later create more.
 
 The `SubagentStart` Hook keeps an advisory cumulative count per parent session only when `delegation-control` is selected. After four unique children it injects a stop-and-report instruction, but the current Hook API cannot cancel the child. The global working agreement and controlled Skills provide the behavioral total limit. Use the deterministic high-assurance runner when stage order and agent count must be enforced by code.
+
+The strict high-assurance runner supports Linux, macOS, and WSL, not native Windows. Setup and project seeding have separate Windows code paths, but current public CI validates Linux only.
 
 ## Update
 

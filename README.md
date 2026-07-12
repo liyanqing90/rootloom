@@ -79,8 +79,8 @@ Start a new Codex task and choose the capability level before trusting optional 
 | `skills-only` | Bundled Skills only; no user policy/runtime assets; lifecycle Hooks disabled | No |
 | `guidance` | Global policy + automatic project context | No |
 | `engineering` | Guidance + command safety; recommended for normal coding | No |
-| `delegated` | Engineering + atomic four-role delegation control | Yes |
-| `full` | Delegated + configured high-assurance profile | Yes |
+| `delegated` | Engineering + four-role configuration and advisory delegation audit | Configured; native role/model routing is not attested on the verified spawn surface |
+| `full` | Delegated + strict sequential-runner profile | Configured; use the runner for attested routing |
 
 Then ask Codex to plan and apply the level—no hand-editing required:
 
@@ -175,7 +175,7 @@ verification_reviewer   gpt-5.6-sol   / xhigh  / read-only
 
 Terra compresses bounded evidence. Sol makes the expensive decisions, writes the code, and verifies the result. A weaker model never owns the final root cause, implementation, or acceptance decision.
 
-Custom Agent TOMLs are the model-routing source of truth. Skills own sequence and gates; Hooks only audit. Parent live permissions can override child defaults, so use the deterministic runner when hard stage isolation matters.
+Custom Agent TOMLs are the intended model-routing source of truth. On the currently verified native multi-agent v2 surface, Rootloom cannot attest that a spawned child actually received a requested custom `agent_type`; setup validation therefore reports native routing `NOT_READY`. The files remain useful configuration input, but only the sequential runner explicitly applies and records each role/model today. Skills own sequence and gates; Hooks only audit. Parent live permissions can override child defaults, so use the runner when hard stage isolation matters.
 
 ## Why four can still look like ten
 
@@ -183,10 +183,10 @@ Custom Agent TOMLs are the model-routing source of truth. Skills own sequence an
 
 The optional `delegation-control` layer adds two more controls:
 
-- a global and Skill-level total budget of four children per task;
+- a global and Skill-level behavioral total budget of four children per task;
 - a `SubagentStart` advisory counter that warns the UI and tells the fifth child to stop and report.
 
-The current Hook API cannot cancel a child at start, so the advisory is intentionally not presented as a hard guarantee. The deterministic high-assurance runner is the strict path.
+The current Hook API cannot cancel a child at start. The over-budget child has already started; the Hook can only inject a stop-and-report instruction and depends on that model following it. This is visibility and behavioral guidance, not prevention. The deterministic high-assurance runner is the strict path.
 
 ## Git commit no longer falls into the approval trap
 
@@ -200,7 +200,7 @@ git reset --hard    → forbidden
 
 A local commit is reversible repository history; it is not remote publication. Push, release, package publication, infrastructure mutation, and destructive operations remain separately governed.
 
-Rules use the most restrictive matching result. If another broad rule says `git → prompt`, it overrides `git commit → allow`. Also, `approval_policy = "never"` cannot answer a prompt, so prompt-gated commands fail in non-interactive execution. The setup guide explains how to inspect this exact failure mode with `codex execpolicy check`.
+Rules use the most restrictive matching result. If another broad rule says `git → prompt`, it overrides `git commit → allow`. Also, `approval_policy = "never"` cannot answer a prompt, so prompt-gated commands fail in non-interactive execution. Codex command Rules are an evolving argv-prefix policy surface: a wrapped command such as `bash -c 'git ...'` is matched as `bash`, not as the nested Git argv, and may fall through to broader policy. Rootloom does not treat Rules as a shell security boundary. The setup guide explains how to inspect decisions with `codex execpolicy check`.
 
 ## High-assurance deterministic route
 
@@ -214,7 +214,7 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --verify 'make check'
 ```
 
-The runner loads the same four Agent TOMLs and enforces a repository lock, clean baseline, read-only stage snapshots, one writer, exact allowed paths, unchanged Git index, structured outputs, deterministic verification, independent review, and at most one repair cycle. Artifacts are private and must live outside the target repository.
+The runner loads the same four Agent TOMLs and enforces a repository lock, clean baseline, read-only stage snapshots, one writer, exact allowed paths, unchanged Git index, structured outputs, deterministic verification, independent review, and at most one repair cycle. It supports Linux, macOS, and WSL; native Windows is not supported. Artifacts are private and must live outside the target repository.
 
 See [Architecture](docs/architecture.md) for the complete enforcement boundary.
 
@@ -232,7 +232,7 @@ The core needs local Git/filesystem evidence and native Codex configuration. An 
 
 Use MCP narrowly when a custom role genuinely needs an external source—internal docs, issue tracking, observability, or deployment—and configure that role's tools and approvals. Record environment, observation time/window, a stable artifact/query/trace reference, freshness/redaction, and fact-versus-inference status for material evidence. Do not make every coding task inherit an integration merely to complete an architecture checklist.
 
-The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Facts and reproductions must reference stable provenance IDs; this improves auditability but does not prove a diagnosis. Repository snapshots content-hash deliverable tracked/untracked files and use metadata-only fingerprints for ignored files so large caches do not dominate every gate.
+The strict runner remains offline. Collect authorized runtime evidence before the run and pass only bounded, sanitized material. Facts and reproductions must reference stable provenance IDs; this proves reference integrity, not that the referenced path, test, line, or claim is true. Repository snapshots content-hash tracked and ordinary visible-untracked deliverables. Ignored paths and sensitive visible-untracked paths are metadata-only and never enter runner patches or Reviewer prompts. Ignored enumeration fails closed above a configurable path budget. Each diagnosis requirement must map to a successful machine command ID, which proves execution linkage—not semantic adequacy of the selected command.
 
 ## Safety model
 
@@ -244,7 +244,7 @@ The strict runner remains offline. Collect authorized runtime evidence before th
 
 ## Compatibility policy
 
-Normal CI tests a pinned Codex CLI baseline. A separate scheduled workflow probes the latest CLI and is informational until maintainers review and adopt an upstream change. Both run an offline lifecycle smoke covering local marketplace installation, plugin discovery, full setup/status/validation, profile parsing, command Rules, complete rollback, and preservation of pre-existing config. This catches drift without making every release depend on an unpinned toolchain. See [Maturity, guarantees, and compatibility](docs/maturity.md).
+Normal CI tests a pinned Codex CLI baseline on Linux. A separate scheduled Linux workflow probes the latest CLI and is informational until maintainers review and adopt an upstream change. Both run an offline integration-shape smoke covering local marketplace installation, plugin discovery, full setup/status/validation, profile parsing, command Rules, complete rollback, and preservation of pre-existing config. They do not execute live models, attest model aliases, exercise interactive Hooks, or certify Windows/macOS behavior. See [Maturity, guarantees, and compatibility](docs/maturity.md).
 
 ## Update
 

@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from contextlib import contextmanager
 from datetime import datetime, timezone
-import fcntl
 import hashlib
 import json
 import os
@@ -20,6 +19,11 @@ import sys
 import textwrap
 import tomllib
 from typing import Any, Iterator
+
+if os.name == "posix":
+    import fcntl
+else:  # pragma: no cover - import behavior is asserted through the platform gate
+    fcntl = None  # type: ignore[assignment]
 
 
 ROLE_FILES = {
@@ -48,7 +52,19 @@ VALID_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max", "ultra"}
 VALID_SANDBOX_MODES = {"read-only", "workspace-write"}
 HARD_REVIEW_SEVERITIES = {"BLOCKER", "HIGH"}
 MAX_DELTA_PROMPT_CHARS = 120_000
-RUNNER_VERSION = "2.2"
+DEFAULT_MAX_IGNORED_PATHS = 50_000
+RUNNER_VERSION = "2.3"
+SENSITIVE_PATH_PARTS = {".aws", ".gnupg", ".ssh"}
+SENSITIVE_FILE_SUFFIXES = {".jks", ".key", ".p12", ".pem", ".pfx"}
+SENSITIVE_FILE_NAMES = {
+    "credentials",
+    "credentials.json",
+    "id_dsa",
+    "id_ecdsa",
+    "id_ed25519",
+    "id_rsa",
+    "secrets.json",
+}
 
 EVIDENCE_SCHEMA: dict[str, Any] = {
     "type": "object",
@@ -182,9 +198,11 @@ DIAGNOSIS_SCHEMA: dict[str, Any] = {
             "type": "object",
             "additionalProperties": False,
             "properties": {
-                "original_failure_path": {"type": "string"},
-                "owning_boundary_invariant": {"type": "string"},
-                "adjacent_negative_or_alternate_path": {"type": "string"},
+                "original_failure_path": {"$ref": "#/$defs/verification_item"},
+                "owning_boundary_invariant": {"$ref": "#/$defs/verification_item"},
+                "adjacent_negative_or_alternate_path": {
+                    "$ref": "#/$defs/verification_item"
+                },
             },
             "required": [
                 "original_failure_path",
@@ -204,6 +222,20 @@ DIAGNOSIS_SCHEMA: dict[str, Any] = {
         "verification_map",
         "risks",
     ],
+    "$defs": {
+        "verification_item": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "requirement": {"type": "string"},
+                "command_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                },
+            },
+            "required": ["requirement", "command_ids"],
+        }
+    },
 }
 
 IMPLEMENTATION_SCHEMA: dict[str, Any] = {
@@ -424,7 +456,10 @@ def validate_evidence(value: dict[str, Any]) -> None:
         )
 
 
-def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
+def validate_diagnosis(
+    value: dict[str, Any],
+    available_command_ids: set[str] | None = None,
+) -> list[tuple[str, bool]]:
     decision = value.get("decision")
     if decision != "GO":
         return []
@@ -448,7 +483,35 @@ def validate_diagnosis(value: dict[str, Any]) -> list[tuple[str, bool]]:
         "owning_boundary_invariant",
         "adjacent_negative_or_alternate_path",
     ):
-        require_nonempty_text(verification_map.get(field), f"verification_map.{field}")
+        item = verification_map.get(field)
+        if not isinstance(item, dict):
+            raise PipelineError(
+                f"semantic gate failed: verification_map.{field} must be an object",
+                8,
+            )
+        require_nonempty_text(
+            item.get("requirement"),
+            f"verification_map.{field}.requirement",
+        )
+        command_ids = item.get("command_ids")
+        require_nonempty_list(
+            command_ids,
+            f"verification_map.{field}.command_ids",
+        )
+        if not all(isinstance(command_id, str) and command_id.strip() for command_id in command_ids):
+            raise PipelineError(
+                f"semantic gate failed: verification_map.{field}.command_ids "
+                "must contain non-empty strings",
+                8,
+            )
+        if available_command_ids is not None:
+            unknown = sorted(set(command_ids) - available_command_ids)
+            if unknown:
+                raise PipelineError(
+                    f"semantic gate failed: verification_map.{field} references "
+                    "unknown command ids: " + ", ".join(unknown),
+                    8,
+                )
     return rules
 
 
@@ -760,8 +823,7 @@ def file_metadata_fingerprint(path: Path) -> dict[str, Any]:
         "ctime_ns": info.st_ctime_ns,
     }
     if path.is_symlink():
-        target = os.readlink(path)
-        base.update(kind="symlink", target=target)
+        base.update(kind="symlink-metadata")
     elif path.is_file():
         base.update(kind="file-metadata")
     elif path.is_dir():
@@ -771,27 +833,115 @@ def file_metadata_fingerprint(path: Path) -> dict[str, Any]:
     return base
 
 
-def capture_repo_state(repo: Path) -> dict[str, Any]:
+def list_git_paths(
+    repo: Path,
+    argv: list[str],
+    *,
+    max_paths: int | None = None,
+    budget_name: str = "path",
+) -> set[str]:
+    """Stream NUL-delimited Git paths and fail closed before an unbounded manifest."""
+
+    process = subprocess.Popen(
+        ["git", *argv],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdout is not None
+    pending = b""
+    paths: set[str] = set()
+    try:
+        while True:
+            chunk = process.stdout.read(64 * 1024)
+            if not chunk:
+                break
+            pending += chunk
+            items = pending.split(b"\x00")
+            pending = items.pop()
+            for item in items:
+                if not item:
+                    continue
+                paths.add(normalize_repo_path(os.fsdecode(item)))
+                if max_paths is not None and len(paths) > max_paths:
+                    process.kill()
+                    process.communicate()
+                    raise PipelineError(
+                        f"{budget_name} path budget exceeded ({max_paths}); "
+                        "raise the explicit budget only after inspecting repository caches",
+                        9,
+                    )
+        if pending:
+            paths.add(normalize_repo_path(os.fsdecode(pending)))
+        stderr = process.stderr.read() if process.stderr is not None else b""
+        return_code = process.wait()
+        if return_code != 0:
+            raise PipelineError(
+                f"git path enumeration failed ({return_code}): "
+                + stderr.decode("utf-8", errors="backslashreplace").strip(),
+            )
+        if max_paths is not None and len(paths) > max_paths:
+            raise PipelineError(
+                f"{budget_name} path budget exceeded ({max_paths}); "
+                "raise the explicit budget only after inspecting repository caches",
+                9,
+            )
+        return paths
+    except BaseException:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        raise
+    finally:
+        process.stdout.close()
+        if process.stderr is not None:
+            process.stderr.close()
+
+
+def is_sensitive_repo_path(path: str) -> bool:
+    """Return whether an untracked path must never be read into runner artifacts."""
+
+    parts = tuple(part.lower() for part in PurePosixPath(path).parts)
+    if any(
+        part in SENSITIVE_PATH_PARTS
+        or part.startswith(".env")
+        or re.search(
+            r"(?:^|[._-])(credential|credentials|key|keys|password|passwd|secret|secrets|token)(?:[._-]|$)",
+            part,
+        )
+        for part in parts
+    ):
+        return True
+    name = parts[-1] if parts else ""
+    if name in SENSITIVE_FILE_NAMES or PurePosixPath(name).suffix in SENSITIVE_FILE_SUFFIXES:
+        return True
+    return False
+
+
+def capture_repo_state(
+    repo: Path,
+    *,
+    max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
+) -> dict[str, Any]:
     ensure_supported_repository_topology(repo)
+    if max_ignored_paths <= 0:
+        raise PipelineError("ignored path budget must be positive", 9)
     status_raw = git_status_raw(repo)
-    visible_raw = run_bytes(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+    tracked_paths = list_git_paths(
         repo,
+        ["ls-files", "-z", "--cached"],
     )
-    ignored_raw = run_bytes(
-        ["git", "ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+    untracked_paths = list_git_paths(
         repo,
+        ["ls-files", "-z", "--others", "--exclude-standard"],
     )
-    visible_paths = {
-        normalize_repo_path(os.fsdecode(item))
-        for item in visible_raw.split(b"\x00")
-        if item
-    }
-    ignored_paths = {
-        normalize_repo_path(os.fsdecode(item))
-        for item in ignored_raw.split(b"\x00")
-        if item
-    } - visible_paths
+    visible_paths = tracked_paths | untracked_paths
+    ignored_paths = list_git_paths(
+        repo,
+        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+        max_paths=max_ignored_paths,
+        budget_name="ignored",
+    ) - visible_paths
     worktree = {path: file_fingerprint(repo / path) for path in visible_paths}
     worktree.update(
         {path: file_metadata_fingerprint(repo / path) for path in ignored_paths}
@@ -800,6 +950,7 @@ def capture_repo_state(repo: Path) -> dict[str, Any]:
         "status_raw": status_raw,
         "paths": visible_paths | ignored_paths,
         "ignored_paths": ignored_paths,
+        "untracked_paths": untracked_paths,
         "worktree": worktree,
         "index": run_bytes(["git", "ls-files", "--stage", "-v", "-z"], repo),
         "git_control": git_control_state(repo),
@@ -839,47 +990,44 @@ def assert_repo_unchanged(
         )
 
 
-def untracked_manifest(
+def visible_untracked_manifests(
     repo: Path,
     only_paths: set[str] | None = None,
-    *,
-    include_ignored: bool = True,
-) -> list[dict[str, Any]]:
-    raw = run_bytes(
-        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    visible_paths = list_git_paths(
         repo,
+        ["ls-files", "--others", "--exclude-standard", "-z"],
     )
-    ignored = run_bytes(
-        ["git", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"],
-        repo,
-    )
-    visible_paths = {
-        normalize_repo_path(os.fsdecode(item))
-        for item in raw.split(b"\x00")
-        if item
-    }
-    ignored_paths = {
-        normalize_repo_path(os.fsdecode(item))
-        for item in ignored.split(b"\x00")
-        if item
-    } - visible_paths
-    manifest: list[dict[str, Any]] = []
-    for path in sorted(visible_paths | (ignored_paths if include_ignored else set())):
+    content_manifest: list[dict[str, Any]] = []
+    redacted_manifest: list[dict[str, Any]] = []
+    for path in sorted(visible_paths):
         if only_paths is not None and path not in only_paths:
             continue
-        fingerprint = (
-            file_metadata_fingerprint(repo / path)
-            if path in ignored_paths
-            else file_fingerprint(repo / path)
-        )
-        entry = {"path": path, **fingerprint}
-        manifest.append(entry)
-    return manifest
+        if is_sensitive_repo_path(path):
+            redacted_manifest.append(
+                {"path": path, **file_metadata_fingerprint(repo / path)}
+            )
+        else:
+            content_manifest.append({"path": path, **file_fingerprint(repo / path)})
+    return content_manifest, redacted_manifest
+
+
+def metadata_manifest(
+    state: dict[str, Any],
+    paths: set[str],
+) -> list[dict[str, Any]]:
+    missing = {"kind": "missing"}
+    return [
+        {"path": path, **state["worktree"].get(path, missing)}
+        for path in sorted(paths)
+    ]
 
 
 def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
     chunks: list[str] = []
     for entry in manifest:
+        if str(entry.get("kind", "")).endswith("-metadata"):
+            raise PipelineError("refusing to patch a metadata-only untracked path", 9)
         path = entry["path"]
         result = subprocess.run(
             [
@@ -890,7 +1038,7 @@ def untracked_patch(repo: Path, manifest: list[dict[str, Any]]) -> str:
                 "--full-index",
                 "--no-ext-diff",
                 "--",
-                "/dev/null",
+                os.devnull,
                 path,
             ],
             cwd=repo,
@@ -912,8 +1060,11 @@ def capture_delta(
     run_dir: Path,
     prefix: str,
     introduced_paths: set[str],
-    status_raw: bytes,
+    current: dict[str, Any],
+    ignored_changed_paths: set[str],
+    redacted_untracked_paths: set[str],
 ) -> dict[str, Any]:
+    status_raw = current["status_raw"]
     status_text = status_raw.decode("utf-8", errors="backslashreplace").replace("\x00", "\n")
     staged = run_text_exact(
         ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
@@ -927,14 +1078,21 @@ def capture_delta(
         ["git", "diff", "HEAD", "--binary", "--full-index", "--no-ext-diff"],
         repo,
     )
-    manifest = untracked_manifest(repo, introduced_paths)
-    untracked = untracked_patch(repo, manifest)
+    visible_manifest, _ = visible_untracked_manifests(
+        repo,
+        introduced_paths,
+    )
+    ignored_manifest = metadata_manifest(current, ignored_changed_paths)
+    redacted_manifest = metadata_manifest(current, redacted_untracked_paths)
+    untracked = untracked_patch(repo, visible_manifest)
     (run_dir / f"{prefix}-status.txt").write_text(status_text, encoding="utf-8")
     (run_dir / f"{prefix}-staged.patch").write_text(staged, encoding="utf-8")
     (run_dir / f"{prefix}-unstaged.patch").write_text(unstaged, encoding="utf-8")
     (run_dir / f"{prefix}-head-to-worktree.patch").write_text(combined, encoding="utf-8")
     (run_dir / f"{prefix}-untracked.patch").write_text(untracked, encoding="utf-8")
-    write_json(run_dir / f"{prefix}-untracked.json", manifest)
+    write_json(run_dir / f"{prefix}-untracked.json", visible_manifest)
+    write_json(run_dir / f"{prefix}-ignored-metadata.json", ignored_manifest)
+    write_json(run_dir / f"{prefix}-redacted-untracked-metadata.json", redacted_manifest)
     summary = {
         "artifacts": {
             "status": f"{prefix}-status.txt",
@@ -943,11 +1101,16 @@ def capture_delta(
             "head_to_worktree_patch": f"{prefix}-head-to-worktree.patch",
             "untracked_patch": f"{prefix}-untracked.patch",
             "untracked_manifest": f"{prefix}-untracked.json",
+            "ignored_metadata": f"{prefix}-ignored-metadata.json",
+            "redacted_untracked_metadata": f"{prefix}-redacted-untracked-metadata.json",
         },
         "status": status_text,
-        "changed_paths": sorted(parse_status_paths(status_raw)),
+        "changed_paths": sorted(introduced_paths),
         "introduced_paths": sorted(introduced_paths),
-        "untracked": manifest,
+        "untracked": visible_manifest,
+        "visible_untracked": visible_manifest,
+        "ignored_metadata": ignored_manifest,
+        "redacted_untracked_metadata": redacted_manifest,
         "staged_patch": staged,
         "unstaged_patch": unstaged,
         "head_to_worktree_patch": combined,
@@ -976,13 +1139,13 @@ def enforce_repository_contract(
     prefix: str,
     baseline: dict[str, Any],
     allowed_rules: list[tuple[str, bool]],
+    max_ignored_paths: int = DEFAULT_MAX_IGNORED_PATHS,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    current = capture_repo_state(repo)
+    current = capture_repo_state(repo, max_ignored_paths=max_ignored_paths)
     introduced = changed_paths_between(baseline, current)
-    delta = capture_delta(repo, run_dir, prefix, introduced, current["status_raw"])
     if current["index"] != baseline["index"]:
         raise PipelineError(
-            f"Git index changed during the pipeline; inspect {run_dir / (prefix + '-staged.patch')}",
+            "Git index changed during the pipeline; delta capture was refused",
             6,
         )
     if current["git_control"] != baseline["git_control"]:
@@ -993,6 +1156,24 @@ def enforce_repository_contract(
             "repository paths changed outside the approved contract: " + ", ".join(outside),
             6,
         )
+    ignored_changed_paths = introduced & (
+        baseline["ignored_paths"] | current["ignored_paths"]
+    )
+    redacted_untracked_paths = {
+        path
+        for path in introduced
+        & (baseline["untracked_paths"] | current["untracked_paths"])
+        if path not in ignored_changed_paths and is_sensitive_repo_path(path)
+    }
+    delta = capture_delta(
+        repo,
+        run_dir,
+        prefix,
+        introduced,
+        current,
+        ignored_changed_paths,
+        redacted_untracked_paths,
+    )
     return delta, current
 
 
@@ -1044,8 +1225,19 @@ def run_managed(
         raise
 
 
+def ensure_supported_runner_platform() -> None:
+    if os.name != "posix" or fcntl is None:
+        raise PipelineError(
+            "the strict high-assurance runner supports Linux, macOS, and WSL; "
+            "native Windows is not supported",
+            9,
+        )
+
+
 @contextmanager
 def repository_lock(repo: Path) -> Iterator[Path]:
+    ensure_supported_runner_platform()
+    assert fcntl is not None
     common_raw = run_checked(["git", "rev-parse", "--git-common-dir"], repo)
     common_dir = Path(common_raw)
     if not common_dir.is_absolute():
@@ -1108,6 +1300,15 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--codex-bin", default="codex", help="Codex executable")
     parser.add_argument("--stage-timeout", type=int, default=3600)
+    parser.add_argument(
+        "--max-ignored-paths",
+        type=int,
+        default=DEFAULT_MAX_IGNORED_PATHS,
+        help=(
+            "Fail closed when ignored-path enumeration exceeds this count "
+            f"(default: {DEFAULT_MAX_IGNORED_PATHS})"
+        ),
+    )
     parser.add_argument("--dry-run", action="store_true")
     return parser.parse_args()
 
@@ -1274,14 +1475,17 @@ def run_stage(
     return read_json(output_path)
 
 
-def verification_commands(args: argparse.Namespace) -> list[list[str]]:
-    commands = [["git", "diff", "HEAD", "--check"]]
+def verification_commands(args: argparse.Namespace) -> list[dict[str, Any]]:
+    commands: list[list[str]] = [["git", "diff", "HEAD", "--check"]]
     for raw in args.verify:
         argv = shlex.split(raw)
         if not argv:
             raise PipelineError("--verify must not be empty")
         commands.append(argv)
-    return commands
+    return [
+        {"id": f"verify-{index}", "argv": argv}
+        for index, argv in enumerate(commands)
+    ]
 
 
 def run_verification(
@@ -1289,15 +1493,24 @@ def run_verification(
     repo: Path,
     run_dir: Path,
     prefix: str,
-    commands: list[list[str]],
+    commands: list[dict[str, Any]],
     dry_run: bool,
     timeout_seconds: int,
 ) -> tuple[bool, list[dict[str, Any]]]:
     records: list[dict[str, Any]] = []
-    for argv in commands:
+    for command in commands:
+        command_id = command["id"]
+        argv = command["argv"]
         print(f"[verify] {shlex.join(argv)}", flush=True)
         if dry_run:
-            records.append({"command": shlex.join(argv), "exit_code": None, "output": "dry-run"})
+            records.append(
+                {
+                    "id": command_id,
+                    "command": shlex.join(argv),
+                    "exit_code": None,
+                    "output": "dry-run",
+                }
+            )
             continue
         try:
             return_code, output, timed_out = run_managed(
@@ -1315,6 +1528,7 @@ def run_verification(
             output = f"could not start verification command: {exc}"
         records.append(
             {
+                "id": command_id,
                 "command": shlex.join(argv),
                 "exit_code": return_code,
                 "output": output,
@@ -1324,12 +1538,34 @@ def run_verification(
     return all(item["exit_code"] in (0, None) for item in records), records
 
 
+def validate_verification_coverage(
+    diagnosis: dict[str, Any],
+    records: list[dict[str, Any]],
+) -> None:
+    results = {record.get("id"): record.get("exit_code") for record in records}
+    verification_map = diagnosis["verification_map"]
+    for field, item in verification_map.items():
+        for command_id in item["command_ids"]:
+            if command_id not in results:
+                raise PipelineError(
+                    f"verification coverage failed: {field} has no record for {command_id}",
+                    8,
+                )
+            if results[command_id] != 0:
+                raise PipelineError(
+                    f"verification coverage failed: {field} maps to unsuccessful "
+                    f"command {command_id}",
+                    8,
+                )
+
+
 def compact_verification(records: list[dict[str, Any]]) -> str:
     compact: list[dict[str, Any]] = []
     for record in records:
         output = record.get("output", "")
         compact.append(
             {
+                "id": record.get("id"),
                 "command": record.get("command"),
                 "exit_code": record.get("exit_code"),
                 "output_tail": output[-12000:],
@@ -1344,7 +1580,11 @@ def run_pipeline_locked(
     task_path: Path,
 ) -> int:
     ensure_supported_repository_topology(repo)
-    baseline = capture_repo_state(repo)
+    capture_state = lambda: capture_repo_state(
+        repo,
+        max_ignored_paths=args.max_ignored_paths,
+    )
+    baseline = capture_state()
     baseline_status = baseline["status_raw"].decode(
         "utf-8",
         errors="backslashreplace",
@@ -1388,7 +1628,7 @@ def run_pipeline_locked(
         ["git", "diff", "--cached", "--binary", "--full-index", "--no-ext-diff"],
         repo,
     )
-    baseline_untracked = untracked_manifest(repo, include_ignored=False)
+    baseline_untracked, baseline_redacted_untracked = visible_untracked_manifests(repo)
     commands = verification_commands(args)
     metadata = {
         "runner_version": RUNNER_VERSION,
@@ -1400,7 +1640,9 @@ def run_pipeline_locked(
         "git_sha": run_checked(["git", "rev-parse", "HEAD"], repo),
         "baseline_status": baseline_status,
         "baseline_untracked": baseline_untracked,
+        "baseline_redacted_untracked_metadata": baseline_redacted_untracked,
         "baseline_ignored_path_count": len(baseline["ignored_paths"]),
+        "max_ignored_paths": args.max_ignored_paths,
         "task_file": str(task_path),
         "roles": {
             stage: {
@@ -1410,7 +1652,10 @@ def run_pipeline_locked(
             }
             for stage, role in roles.items()
         },
-        "verify": [shlex.join(command) for command in commands],
+        "verify": [
+            {"id": command["id"], "command": shlex.join(command["argv"])}
+            for command in commands
+        ],
     }
     if not args.dry_run:
         write_json(run_dir / "00-metadata.json", metadata)
@@ -1425,6 +1670,10 @@ def run_pipeline_locked(
             encoding="utf-8",
         )
         write_json(run_dir / "00-baseline-untracked.json", baseline_untracked)
+        write_json(
+            run_dir / "00-baseline-redacted-untracked-metadata.json",
+            baseline_redacted_untracked,
+        )
     else:
         print(json.dumps(metadata, ensure_ascii=False, indent=2), flush=True)
 
@@ -1476,7 +1725,7 @@ def run_pipeline_locked(
             prompt="dry-run",
         )
         for command in commands:
-            print(f"[verify] {shlex.join(command)}", flush=True)
+            print(f"[verify] {command['id']}: {shlex.join(command['argv'])}", flush=True)
         run_stage(
             args=args,
             repo=repo,
@@ -1490,7 +1739,12 @@ def run_pipeline_locked(
         return 0
 
     validate_evidence(evidence)
-    assert_repo_unchanged(baseline, capture_repo_state(repo), "evidence stage")
+    assert_repo_unchanged(baseline, capture_state(), "evidence stage")
+
+    verification_catalog = [
+        {"id": command["id"], "command": shlex.join(command["argv"])}
+        for command in commands
+    ]
 
     diagnosis_prompt = textwrap.dedent(
         f"""
@@ -1498,7 +1752,10 @@ def run_pipeline_locked(
         external tools. Recheck material evidence against the repository. Return GO
         only when the root cause and a focused, testable change contract are supported.
         Map verification to the original failure path, the owning-boundary invariant,
-        and an adjacent negative or alternate path.
+        and an adjacent negative or alternate path. Each verification-map item must
+        name one or more ids from the machine command catalog below. This proves that
+        the declared requirement is linked to an executed command; it does not by
+        itself prove that the command is semantically sufficient.
         allowed_paths must contain exact repo-relative paths or directory/** prefixes;
         include both endpoints of a move or rename. Do not use ambiguous glob syntax.
 
@@ -1507,6 +1764,9 @@ def run_pipeline_locked(
 
         EVIDENCE:
         {json.dumps(evidence, ensure_ascii=False, indent=2)}
+
+        MACHINE VERIFICATION COMMAND CATALOG:
+        {json.dumps(verification_catalog, ensure_ascii=False, indent=2)}
         """
     ).strip()
     diagnosis = run_stage(
@@ -1519,8 +1779,11 @@ def run_pipeline_locked(
         schema=DIAGNOSIS_SCHEMA,
         prompt=diagnosis_prompt,
     )
-    assert_repo_unchanged(baseline, capture_repo_state(repo), "diagnosis stage")
-    allowed_rules = validate_diagnosis(diagnosis)
+    assert_repo_unchanged(baseline, capture_state(), "diagnosis stage")
+    allowed_rules = validate_diagnosis(
+        diagnosis,
+        {command["id"] for command in commands},
+    )
     if diagnosis.get("decision") != "GO":
         raise PipelineError(f"diagnosis returned NO_GO; see {run_dir / '02-diagnosis.json'}", 2)
 
@@ -1528,7 +1791,7 @@ def run_pipeline_locked(
     for attempt in range(args.max_repair_cycles + 1):
         label = "implementation" if attempt == 0 else f"repair-{attempt}"
         prefix_number = 3 + attempt * 3
-        stage_baseline = capture_repo_state(repo)
+        stage_baseline = capture_state()
         implementation_prompt = textwrap.dedent(
             f"""
             Act as the sole write stage. Implement only the approved change contract.
@@ -1560,7 +1823,7 @@ def run_pipeline_locked(
             schema=IMPLEMENTATION_SCHEMA,
             prompt=implementation_prompt,
         )
-        post_implementation_state = capture_repo_state(repo)
+        post_implementation_state = capture_state()
         if post_implementation_state["index"] != stage_baseline["index"]:
             raise PipelineError(f"{label} changed the Git index", 6)
         if post_implementation_state["git_control"] != stage_baseline["git_control"]:
@@ -1576,6 +1839,7 @@ def run_pipeline_locked(
             prefix=f"{prefix_number:02d}-post-{label}-delta",
             baseline=baseline,
             allowed_rules=allowed_rules,
+            max_ignored_paths=args.max_ignored_paths,
         )
 
         verified, verification = run_verification(
@@ -1586,7 +1850,7 @@ def run_pipeline_locked(
             dry_run=False,
             timeout_seconds=args.stage_timeout,
         )
-        post_verification_state = capture_repo_state(repo)
+        post_verification_state = capture_state()
         assert_repo_unchanged(
             post_implementation_state,
             post_verification_state,
@@ -1598,6 +1862,7 @@ def run_pipeline_locked(
             prefix=f"{prefix_number + 1:02d}-post-verification-delta",
             baseline=baseline,
             allowed_rules=allowed_rules,
+            max_ignored_paths=args.max_ignored_paths,
         )
         if not delta["introduced_paths"]:
             raise PipelineError(
@@ -1614,6 +1879,7 @@ def run_pipeline_locked(
                 f"verification failed after {attempt} repair cycle(s); see {run_dir}",
                 4,
             )
+        validate_verification_coverage(diagnosis, verification)
 
         review_prompt = textwrap.dedent(
             f"""
@@ -1634,7 +1900,12 @@ def run_pipeline_locked(
             VERIFICATION:
             {compact_verification(verification)}
 
-            MACHINE-CAPTURED COMPLETE GIT DELTA:
+            The classified delta below deliberately excludes ignored-file and
+            sensitive-untracked content. Do not open or read those paths; review only
+            their path, kind, and metadata changes. The content-bearing patch contains
+            only ordinary visible repository paths.
+
+            MACHINE-CAPTURED CLASSIFIED GIT DELTA:
             {compact_delta(delta)}
             """
         ).strip()
@@ -1648,7 +1919,7 @@ def run_pipeline_locked(
             schema=REVIEW_SCHEMA,
             prompt=review_prompt,
         )
-        post_review_state = capture_repo_state(repo)
+        post_review_state = capture_state()
         assert_repo_unchanged(post_verification_state, post_review_state, "review stage")
         delta, _ = enforce_repository_contract(
             repo=repo,
@@ -1656,6 +1927,7 @@ def run_pipeline_locked(
             prefix=f"{prefix_number + 2:02d}-post-review-delta",
             baseline=baseline,
             allowed_rules=allowed_rules,
+            max_ignored_paths=args.max_ignored_paths,
         )
         validate_review(review)
         if review.get("verdict") == "PASS":
@@ -1669,6 +1941,8 @@ def run_pipeline_locked(
                 "git_status": delta["status"],
                 "git_diff_stat": run_checked(["git", "diff", "HEAD", "--stat"], repo),
                 "untracked": delta["untracked"],
+                "ignored_metadata": delta["ignored_metadata"],
+                "redacted_untracked_metadata": delta["redacted_untracked_metadata"],
                 "delta_artifacts": delta["artifacts"],
             }
             write_json(run_dir / "result.json", summary)
@@ -1691,9 +1965,12 @@ def run_pipeline_locked(
 
 def main() -> int:
     os.umask(0o077)
+    ensure_supported_runner_platform()
     args = parse_args()
     if args.stage_timeout <= 0:
         raise PipelineError("--stage-timeout must be positive")
+    if args.max_ignored_paths <= 0:
+        raise PipelineError("--max-ignored-paths must be positive", 9)
     repo = args.repo.expanduser().resolve()
     task_path = args.task.expanduser().resolve()
     if not repo.is_dir():

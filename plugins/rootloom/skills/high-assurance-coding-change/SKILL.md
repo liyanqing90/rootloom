@@ -22,6 +22,7 @@ Apply active repository and global risk rules before this orchestration:
 - Require the named roles `evidence_explorer`, `root_cause_reviewer`, `implementation_worker`, and `verification_reviewer`. Do not silently substitute a built-in or differently configured role.
 - In CLI sessions, start Codex with `codex --profile high-assurance`. In the desktop app or IDE, select Sol with High reasoning and the least-privilege parent mode that still permits the requested work.
 - Do not run this native workflow from Ultra, `danger-full-access`, or a bypass-permissions mode. Those parent-turn settings can enable extra delegation or override a child role's safer defaults.
+- The strict sequential runner supports Linux, macOS, and WSL. Do not run it on native Windows; setup/seeding platform support is a separate boundary.
 - Treat desktop and IDE role isolation as behavioral, not hard sandboxing: composer-level live permission choices may be reapplied to children. Use staged `codex exec` runs when hard read-only enforcement is required.
 - Respect higher-risk workflow gates. This skill does not authorize production changes, destructive operations, migrations, releases, credential changes, or breaking contracts.
 - The strict runner rejects gitlinks, submodules, and nested Git repositories because their ignored files and control metadata require repository-specific recursive isolation. Use an isolated flattened worktree or an external repository-specific pipeline instead of weakening this gate.
@@ -47,7 +48,8 @@ The runner also injects each role TOML's `developer_instructions` as model-visib
 developer instructions and enforces the following locally, without trusting model prose:
 
 - one non-blocking lock per Git common directory;
-- content fingerprints for tracked/untracked deliverables, metadata fingerprints for ignored paths, plus separate Git-index and HEAD/refs/config snapshots;
+- content fingerprints for tracked and ordinary visible-untracked deliverables; metadata-only fingerprints for ignored and sensitive visible-untracked paths; plus separate Git-index and HEAD/refs/config snapshots;
+- an ignored-path enumeration budget and allowed-path gate before any content-bearing Delta capture;
 - no Git-visible mutation by evidence, diagnosis, verification, or review stages;
 - no Git-index mutation by the writer;
 - exact `allowed_paths` enforcement (`path` or `directory/**`) including untracked files;
@@ -56,9 +58,10 @@ developer instructions and enforces the following locally, without trusting mode
 - process-group termination on timeout or interruption;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 
-The artifact root must be outside the target repository. The runner saves full staged,
-unstaged, HEAD-to-worktree, and untracked patches plus manifests for every gate. Treat
-these artifacts as sensitive source material and delete old runs according to the
+The artifact root must be outside the target repository. The runner saves staged,
+unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked
+patch, and metadata-only manifests for ignored or sensitive visible-untracked paths.
+Treat these artifacts as sensitive source material and delete old runs according to the
 repository's retention policy.
 
 ## Invariants
@@ -119,6 +122,8 @@ The worker owns the complete focused diff and targeted tests. The parent must wa
 After the worker returns, the parent inspects the actual diff and reruns the strongest proportional repository checks. Capture exact commands, exit status, relevant counts, and failure output. Classify failures as introduced, pre-existing, environmental, or unresolved.
 
 Do not proceed to acceptance when a required deterministic check is failing or was not run without a documented reason.
+
+In the strict runner, every diagnosis verification item must reference one or more stable command IDs and each mapped command must have a successful machine record. This proves execution linkage, not that the chosen command adequately covers the business requirement; the final reviewer must still assess test adequacy.
 
 ## Stage 5: Review independently
 

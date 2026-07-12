@@ -10,8 +10,8 @@ Rootloom is an early-stage, single-maintainer project. Its repository structure,
 | --- | --- | --- |
 | Setup is transactional | cross-process lock, prepared recovery manifest, fault-injected state-commit compensation, hashes, mode-preserving rollback tests | failures outside the managed Codex home or simultaneous mutation by software that ignores the lock |
 | Project seeding is bounded | deterministic local scanner, repository-contained non-symlink evidence, Git-common-dir writer lock, snapshot recheck, and regression tests | semantic completeness or perfectly current architecture knowledge |
-| Command policy is intentional | pinned and latest-CLI offline lifecycle smoke for commit, push, and destructive reset | every administrator, platform, or future CLI policy composition |
-| High-assurance execution is deterministic | fixed stage order, linked provenance IDs, repository-state gates, allowed paths, command results, and bounded repair cycles | factual truth of model evidence, correct root cause, business correctness, or production safety |
+| Command policy is intentional | pinned and latest-CLI offline lifecycle smoke for direct-argv commit, push, and destructive reset | shell-wrapped equivalents, every administrator/platform policy composition, or future CLI semantics |
+| High-assurance execution is deterministic | fixed stage order, linked provenance IDs, metadata-only secret/ignored capture, pre-capture scope gates, mapped command results, and bounded repair cycles | factual truth of model evidence, semantic adequacy of selected commands, correct root cause, business correctness, or production safety |
 | Review is independent by role | separate read-only reviewer configuration | human-independent correctness or elimination of shared model bias |
 
 JSON Schema validates required shape. Semantic gates validate selected cross-stage consistency. Neither proves that a model's statement is true, and process discipline does not prove the conclusion true. Repository source, reproducible behavior, attributable runtime evidence, tests, reviewers, CI, and production controls remain necessary.
@@ -31,14 +31,18 @@ The five presets, four role files, Rules, Hooks, and runner are intentionally in
 
 Rootloom is Codex-specific by design. Skills, Hooks, Rules, profiles, and custom-agent configuration follow Codex interfaces and may need maintenance as those interfaces change. Portable project truth should live in source, tests, schemas, ordinary documentation, and decision records—not only in Codex configuration.
 
+The strict high-assurance runner supports Linux, macOS, and WSL and rejects native Windows. Setup and project-seeding code include Windows locking branches, but the current public CI matrix is Linux-only; Windows and macOS installation behavior is not certified. Native custom-role/model routing is also not attested on the currently verified spawn surface, so the sequential runner is the supported route when model assignment must be evidenced.
+
 The compatibility policy has two tracks:
 
 1. a pinned Codex CLI version is the required, reproducible contract in normal CI;
 2. a scheduled latest-version probe detects upstream drift early and is informational until reviewed and adopted.
 
-Both tracks run an offline lifecycle smoke: local marketplace registration, plugin installation/discovery, full setup and status, setup validation, high-assurance profile parsing, commit/push/reset Rules decisions, complete rollback, and preservation of pre-existing config. This tests integration shape without credentials or model calls; it does not prove future interactive Hook semantics or model behavior.
+Both tracks run an offline lifecycle smoke: local marketplace registration, plugin installation/discovery, full setup and status, setup validation, high-assurance profile parsing, commit/push/reset Rules decisions, complete rollback, and preservation of pre-existing config. This tests Linux integration shape without credentials or model calls; it does not prove model aliases are callable, future interactive Hook semantics, native custom-role routing, model behavior, or Windows/macOS compatibility.
 
-Model IDs and configuration keys are centralized in managed assets and validated structurally, but no upper-layer tool can eliminate upstream change risk.
+Model IDs and configuration keys are centralized in managed assets and validated structurally, but the credential-free probe cannot detect a removed or renamed model alias. Release adoption therefore requires an authenticated/manual model-routing check outside public CI when those assets change. No upper-layer tool can eliminate upstream change risk.
+
+Codex command Rules are argv-prefix policy, not a parser for nested shell programs. A direct `git push` can match a Rootloom rule while `bash -c 'git push'` is evaluated under the broader `bash` policy. Rules and the advisory child-budget Hook are defense-in-depth signals, not preventive security boundaries: the Hook cannot cancel the already-started over-budget child.
 
 ## External evidence and MCP
 
@@ -48,7 +52,7 @@ The strict runner disables external tools and network access. Collect authorized
 
 ## Governance
 
-The current bus factor is one. Security response times are targets rather than service-level guarantees. Releases should remain small, reversible, tested against the pinned baseline, and explicit about unsupported or unverified surfaces. Broader reliability claims should be added only with public methodology and reproducible data.
+The current bus factor is one. Security response times are targets rather than service-level guarantees. The initial releases were produced in a short single-author window without external code review, so passing local/CI tests is evidence of implemented contracts, not long-term operational reliability. Releases should remain small, reversible, tested against the pinned baseline, and explicit about unsupported or unverified surfaces. Broader reliability claims should be added only with public methodology and reproducible data.
 
 ## Outcome evidence protocol
 

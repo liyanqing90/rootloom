@@ -140,7 +140,7 @@ Only one role is write-capable. Parent live permission overrides can still be re
 These controls exist only in the `delegation-control` capability:
 
 1. `agents.max_threads = 4` hard-limits concurrently open threads.
-2. Global guidance, Skills, and the `SubagentStart` Hook maintain an advisory total of four children per parent session.
+2. Global guidance, Skills, and the `SubagentStart` Hook maintain an advisory total of four children per parent session. The fifth child has already started; the Hook only asks it to stop and cannot enforce that request.
 3. The high-assurance runner hard-codes the stage graph, one writer, allowed paths, structured outputs, repair-cycle count, and verification order.
 
 The Hook cannot cancel a newly started subagent. It can only warn the UI and inject developer context. This is why a screenshot can show ten completed agents even when `max_threads = 4`: the cap applies concurrently, not cumulatively.
@@ -151,16 +151,18 @@ Native multi-agent orchestration is useful for interactive work but remains mode
 
 - a repository lock and private artifact directory;
 - clean baseline and Git state snapshots;
-- full content fingerprints for deliverable tracked/untracked files and metadata-only fingerprints for ignored cache/build files;
+- full content fingerprints for tracked and ordinary visible-untracked deliverables;
+- metadata-only capture for every ignored path and sensitive visible-untracked path, with those contents excluded from artifacts and reviewer prompts;
+- an explicit fail-closed ignored-path enumeration budget;
 - no mutation by evidence, diagnosis, or review stages;
 - one writer with an unchanged Git index;
-- exact allowed-path and writer-report agreement;
-- deterministic verification commands without a shell;
+- exact allowed-path and writer-report agreement, checked before content-bearing Delta capture;
+- deterministic verification commands without a shell, stable command IDs, and successful command-record coverage for every diagnosis verification item;
 - structured semantic gates for GO, completion, PASS, and findings;
 - at most one targeted repair cycle;
 - process-group termination on timeout or interruption.
 
-This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, or the change is safe in production.
+This is process determinism, not result determinism. JSON Schema enforces output shape and local semantic gates enforce selected consistency; neither proves that evidence is true, the diagnosed root cause is correct, the selected verification command is adequate, or the change is safe in production. The strict runner supports Linux, macOS, and WSL. Native Windows is explicitly rejected because repository locking and process-group termination use POSIX semantics.
 
 OS/container, credential, network, branch protection, and CI policy still belong outside the runner for production-critical work.
 

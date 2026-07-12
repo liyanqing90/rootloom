@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-07-12
+
+### Security
+
+- Prevented ignored files and sensitive visible-untracked paths such as `.env*`, private keys, credentials, secrets, and tokens from entering content hashes, Git patches, runner artifacts, or reviewer Delta prompts. These paths are represented only by path, type, and filesystem metadata.
+- Moved the allowed-path and Git-state gates ahead of Delta capture, so rejected out-of-contract changes are not read into content-bearing artifacts first.
+
+### Added
+
+- Added a fail-closed ignored-path enumeration budget, configurable with `--max-ignored-paths` and defaulting to 50,000 paths.
+- Linked each diagnosis verification requirement to stable machine command IDs and require every mapped command to have an observed successful result.
+- Added explicit strict-runner platform gating for Linux, macOS, and WSL; native Windows is not supported by this runner.
+
+### Changed
+
+- Clarified that native role/model routing is installed but not attested on the currently verified spawn surface, the cumulative child budget is behavioral rather than preventive, Rules are argv-prefix defense in depth, and compatibility smoke tests integration shape without live model calls.
+- Added regression coverage for ignored-content non-disclosure, scope-before-capture, sensitive untracked redaction, ignored-path budgets, platform gates, and verification-command coverage.
+
 ## [1.2.0] - 2026-07-12
 
 ### Added
@@ -57,7 +75,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.1...HEAD
+[1.2.1]: https://github.com/liyanqing90/rootloom/compare/v1.2.0...v1.2.1
 [1.2.0]: https://github.com/liyanqing90/rootloom/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/liyanqing90/rootloom/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/liyanqing90/rootloom/compare/v1.0.0...v1.0.1
