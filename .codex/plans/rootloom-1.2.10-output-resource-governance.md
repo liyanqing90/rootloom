@@ -125,6 +125,8 @@ Bound per-command stdout memory and artifact growth, terminate commands that exc
 - 2026-07-12 — Persist one structured sidecar per model stage rather than expanding the text log contract.
 - 2026-07-12 — Verification passed after the pre-publication review fixes: 41 repository tests, 57 Runner tests, repository validation, Python compilation, `git diff --check`, and the Codex CLI compatibility smoke on `codex-cli 0.144.0-alpha.4` with no managed leftovers and exact config restoration.
 - 2026-07-12 — User explicitly authorized “修复后发布”. Publication target is `liyanqing90/rootloom` `main`, annotated tag `v1.2.10`, and a non-draft GitHub Release; no force-push or pull request is required by the repository's established release sequence.
+- 2026-07-12 — Published code commit `a0eccba81bd3a3acc19eb1adc00ab791af6ff1dd`. Its tree `847f40482894af8ce39225bebffac35f61a6232a` matches the verified release tree. GitHub CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29194296734`.
+- 2026-07-12 — Created annotated tag object `f3ef07e284fbd79603cc8fc02d4f71f71f6aff15` for `v1.2.10`, targeting `a0eccba81bd3a3acc19eb1adc00ab791af6ff1dd`, and published `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.10` as a non-draft, non-prerelease Release.
 
 ## Outcome
 
