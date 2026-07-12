@@ -103,6 +103,8 @@ Guarantee that a managed stage returns within a bounded cleanup window when a de
 - 2026-07-12 — On macOS, signaling the original PGID can return `EPERM` after the direct process has already exited. Treat that combination as an unsignalable former group and continue to bounded drain; retain fail-closed behavior when the direct process is still live.
 - 2026-07-12 — Verification passed: 41 repository tests, 49 Runner tests, repository validation, `git diff --check`, and the Codex CLI compatibility smoke on `codex-cli 0.144.0-alpha.4` with no managed leftovers and exact config restoration.
 - 2026-07-12 — User explicitly authorized “发布最新版本”. Publication target is `liyanqing90/rootloom` `main`, annotated tag `v1.2.9`, and a non-draft GitHub Release; no force-push or pull request is required by the repository's established release sequence.
+- 2026-07-12 — Published code commit `24ca68408be31cf6793d2bfa044d598af23c5d8c`. Its tree `09ca3dde3729d84689b866915c170ebdcc4854f7` exactly matches the locally verified release tree. GitHub CI passed at `https://github.com/liyanqing90/rootloom/actions/runs/29188936157`.
+- 2026-07-12 — Created annotated tag object `41306d1bf0477d7b790081ab153597b38c250095` for `v1.2.9` and published `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.9` as a non-draft, non-prerelease Release.
 
 ## Durable decision records
 
