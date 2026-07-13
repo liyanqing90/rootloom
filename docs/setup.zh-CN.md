@@ -80,7 +80,7 @@ python3 <skill-dir>/scripts/setup_rootloom.py plan \
 
 它不会改变默认模型、推理等级、审批策略、sandbox、模型供应商、MCP、插件或 Apps。
 
-Setup 与 rollback 会在 `~/.codex/.rootloom/` 下获取非阻塞跨进程锁；竞争操作会在不触碰受管目标的前提下失败。Apply 在第一次修改目标前准备全部备份与事务清单。Apply 目标写入、rollback 目标写入及各自的最终状态提交都位于补偿边界，因此失败会恢复旧文件与旧状态。清单记录原始权限模式，回滚会恢复这些模式，而不是继承临时文件的默认权限。
+Setup 与 rollback 会在 `~/.codex/.rootloom/` 下获取非阻塞跨进程锁；竞争操作会在不触碰受管目标的前提下失败。它与项目指导及 Strict Runner 共用同一加固入口：POSIX 通过稳定的 no-follow 父目录描述符相对打开，Windows 使用识别 reparse point 的句柄；两者都会在写入 owner 数据前拒绝间接、非普通、多链接或被替换的锁路径。Apply 在第一次修改目标前准备全部备份与事务清单。Apply 目标写入、rollback 目标写入及各自的最终状态提交都位于补偿边界，因此失败会恢复旧文件与旧状态。清单记录原始权限模式，回滚会恢复这些模式，而不是继承临时文件的默认权限。
 
 能够把控制权返回给 Python 的失败会立即补偿。Apply 与 rollback 还会在第一次修改前写入受 Manifest 绑定的恢复契约；进程突然中断后，必须先运行 `setup_rootloom.py recover`，再执行 apply/rollback。Recovery 会在写入前完整预检计划、备份、Hash、Mode、当前 before/after 状态和版本化历史 target schema。新 Manifest 记录 producer version 与 target type，同时 reader 保留 1.2.12 隐式 target catalog，避免未来 target 重命名/删除使旧事务永久孤立。这仍不是存储级崩溃一致性：主机故障、断电、存储损坏以及原子替换以下的父目录持久性仍属于外部边界。
 

@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 import subprocess
+import stat
 import tempfile
 import unittest
 from pathlib import Path
@@ -199,6 +200,26 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         self.assertEqual(result["status"], "skipped")
         self.assertEqual(result["reason"], "guidance_lock_busy")
         self.assertFalse((self.root / "AGENTS.md").exists())
+
+    def test_guidance_lock_symlink_never_mutates_external_victim(self) -> None:
+        self.init_repo()
+        victim = self.root.parent / "guidance-lock-victim.txt"
+        victim.write_bytes(b"preserve-guidance-victim")
+        if os.name != "nt":
+            victim.chmod(0o644)
+        before_mode = stat.S_IMODE(victim.stat().st_mode)
+        lock_path = self.root / ".git" / "rootloom-guidance.lock"
+        try:
+            lock_path.symlink_to(victim)
+        except OSError as exc:  # pragma: no cover - depends on Windows symlink policy
+            self.skipTest(f"platform cannot create a test symlink: {exc}")
+
+        with self.assertRaisesRegex(ValueError, "guidance lock safety check failed"):
+            with seeder.guidance_lock(self.root):
+                self.fail("symlinked guidance lock acquired")
+
+        self.assertEqual(victim.read_bytes(), b"preserve-guidance-victim")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), before_mode)
 
     def test_existing_user_guidance_and_override_are_preserved(self) -> None:
         self.init_repo()

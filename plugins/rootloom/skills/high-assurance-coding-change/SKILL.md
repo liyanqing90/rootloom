@@ -44,6 +44,9 @@ python3 <skill-dir>/scripts/run_pipeline.py \
   --max-verification-artifact-bytes 67108864 \
   --max-delta-bytes 33554432 \
   --max-untracked-patch-bytes 8388608 \
+  --max-human-review-artifact-bytes 67108864 \
+  --max-human-review-total-bytes 536870912 \
+  --max-human-review-binding-seconds 120 \
   --verify 'your focused test command' \
   --verify 'your broader verification command'
 ```
@@ -79,7 +82,7 @@ writes, reject invalid progress, verify actual Artifact growth, roll back a fail
 ordinary-untracked batch, and retain
 only a fixed excerpt from each complete patch in model-facing memory.
 
-After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules fail, the path must pass pre-writer checks against the baseline protected set and diagnosis `allowed_paths`, and the run must use a clean baseline with `--max-repair-cycles 0`. Any authorized protected deletion makes the run deletion-only: no ordinary code edits, renames, moves, or visible file creations are accepted in the same run. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Do not translate that state into automated acceptance. Topology is checked after every writer, after deterministic verification, and after final review.
+After the writer returns, reject detected creation, modification, or deletion of metadata-only ignored/sensitive paths by default. This is an acceptance gate, not OS-level write prevention or rollback; inspect and recover the filesystem after failure. A necessary deletion requires one exact operator-supplied `--allow-protected-path-delete path`; directory/glob rules fail, the path must pass pre-writer checks against the baseline protected set and diagnosis `allowed_paths`, and the run must use a clean baseline with `--max-repair-cycles 0`. Any authorized protected deletion makes the run deletion-only: no ordinary code edits, renames, moves, or visible file creations are accepted in the same run. The Runner never reads or backs up the former content and, even after Reviewer PASS, exits 10 with `HUMAN_REVIEW_REQUIRED`. Human Review v4 binds the original Run directory and complete final metadata-only floor, safely re-reads the full canonical Result after writing, and bounds private Artifact hashing by count, per-file bytes, aggregate bytes, and time. Do not translate that state into automated acceptance. Topology is checked after every writer, after deterministic verification, and after final review.
 
 The runner also injects each role TOML's `developer_instructions` as model-visible
 developer instructions and enforces the following locally, without trusting model prose:
@@ -99,7 +102,7 @@ developer instructions and enforces the following locally, without trusting mode
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 - source-bounded repository topology, visible paths, status, Git control/index, task/role input, and model structured-output capture through the shared `--max-state-paths` and `--max-state-bytes` controls;
 - optional isolation-launcher wrapping outside the repository/run root, a required-isolation preflight, and stable no-follow identity checks at configuration plus immediately before every spawn; the launcher, not Rootloom, owns host containment;
-- Human Review v3 accept/reject records for protected-deletion results, bound under the cooperative repository lock to canonical bounded repository state, exact-missing targets and parent boundaries, and Artifact hashes captured through stable directory-relative no-follow descriptors, with a compensating post-write drift check.
+- Human Review v4 accept/reject records for protected-deletion results, bound under the cooperative repository lock to canonical bounded repository state, original Run identity, the complete final metadata-only floor, exact-missing targets and parent boundaries, and bounded Artifact hashes captured through stable directory-relative no-follow descriptors, with complete Result re-reads and compensating post-write drift checks.
 
 The artifact root must be outside the target repository. The runner saves staged,
 unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked

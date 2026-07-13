@@ -28,7 +28,10 @@ from typing import Any, Callable, Iterator
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
+sys.path.insert(0, str(PLUGIN_LIB))
 
+from rootloom_lock import LockBusyError, LockFileError, hardened_lock
 from runner.process import executable_identity as _stable_executable_identity
 from runner.state import repository_state_commitment
 
@@ -76,11 +79,16 @@ DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES = 32 * 1024 * 1024
 DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_DELTA_BYTES = 32 * 1024 * 1024
 DEFAULT_MAX_UNTRACKED_PATCH_BYTES = 8 * 1024 * 1024
+DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES = 64 * 1024 * 1024
+DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES = 512 * 1024 * 1024
+DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS = 120
+MAX_HUMAN_REVIEW_ARTIFACTS = 256
+MAX_HUMAN_REVIEW_RESULT_BYTES = 32 * 1024 * 1024
 MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.18"
+RUNNER_VERSION = "2.19"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -2855,29 +2863,20 @@ def repository_lock(repo: Path) -> Iterator[Path]:
     if not common_dir.is_absolute():
         common_dir = (repo / common_dir).resolve()
     lock_path = common_dir / "codex-high-assurance.lock"
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    handle = os.fdopen(descriptor, "r+", encoding="utf-8")
+    owner = (
+        f"pid={os.getpid()} acquired={datetime.now(timezone.utc).isoformat()}\n"
+    ).encode("utf-8")
     try:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            handle.seek(0)
-            owner = handle.read().strip() or "unknown owner"
-            raise PipelineError(
-                f"another high-assurance pipeline holds {lock_path}: {owner}",
-                7,
-            ) from exc
-        handle.seek(0)
-        handle.truncate()
-        handle.write(f"pid={os.getpid()} acquired={datetime.now(timezone.utc).isoformat()}\n")
-        handle.flush()
-        os.fchmod(handle.fileno(), 0o600)
-        yield lock_path
-    finally:
-        try:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-        finally:
-            handle.close()
+        with hardened_lock(lock_path, owner_bytes=owner):
+            yield lock_path
+    except LockBusyError as exc:
+        current_owner = exc.owner or "unknown owner"
+        raise PipelineError(
+            f"another high-assurance pipeline holds {lock_path}: {current_owner}",
+            7,
+        ) from exc
+    except LockFileError as exc:
+        raise PipelineError(f"repository lock safety check failed: {exc}", 9) from exc
 
 
 def parse_args() -> argparse.Namespace:
@@ -2990,6 +2989,24 @@ def parse_args() -> argparse.Namespace:
             "Maximum bytes accepted from any repository-state, task/role input, "
             "or stage-JSON producer"
         ),
+    )
+    parser.add_argument(
+        "--max-human-review-artifact-bytes",
+        type=int,
+        default=DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES,
+        help="Maximum bytes hashed from any one private Human Review Artifact",
+    )
+    parser.add_argument(
+        "--max-human-review-total-bytes",
+        type=int,
+        default=DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES,
+        help="Maximum aggregate private Artifact bytes hashed for Human Review",
+    )
+    parser.add_argument(
+        "--max-human-review-binding-seconds",
+        type=int,
+        default=DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS,
+        help="Wall-clock deadline for one Human Review binding computation",
     )
     parser.add_argument(
         "--isolation-launcher",
@@ -3164,8 +3181,11 @@ def private_artifact_fingerprint(
     directory_descriptor: int,
     name: str,
     display_path: Path,
+    *,
+    max_bytes: int,
+    deadline: float,
 ) -> dict[str, Any]:
-    """Hash one private Artifact through a stable, no-follow descriptor."""
+    """Hash one bounded private Artifact through a stable, no-follow descriptor."""
 
     if not hasattr(os, "O_NOFOLLOW"):
         raise PipelineError("platform lacks no-follow Artifact read support", 9)
@@ -3182,15 +3202,26 @@ def private_artifact_fingerprint(
         ) from exc
     try:
         before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode):
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
             raise PipelineError(
-                f"human review run contains a non-file entry: {name}",
+                f"human review run contains a non-file entry or multi-linked file: {name}",
+                9,
+            )
+        if before.st_size > max_bytes:
+            raise PipelineError(
+                f"human review Artifact byte budget exceeded: {display_path} "
+                f"({before.st_size} > {max_bytes})",
                 9,
             )
         digest = hashlib.sha256()
         with os.fdopen(descriptor, "rb") as handle:
             descriptor = -1
-            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            while True:
+                if time.monotonic() > deadline:
+                    raise PipelineError("human review binding deadline exceeded", 9)
+                chunk = handle.read(min(1024 * 1024, max_bytes + 1))
+                if not chunk:
+                    break
                 digest.update(chunk)
             after = os.fstat(handle.fileno())
     finally:
@@ -3213,19 +3244,136 @@ def private_artifact_fingerprint(
     return {"size": after.st_size, "sha256": digest.hexdigest()}
 
 
+def canonical_json_sha256(value: Any) -> str:
+    payload = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
 def human_review_result_core_sha256(result: dict[str, Any]) -> str:
     core = {
         key: value
         for key, value in result.items()
         if key != "human_review_binding"
     }
-    payload = json.dumps(
-        core,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    return hashlib.sha256(payload).hexdigest()
+    return canonical_json_sha256(core)
+
+
+def human_review_full_result_sha256(result: dict[str, Any]) -> str:
+    return canonical_json_sha256(result)
+
+
+def human_review_result_document(result: dict[str, Any]) -> bytes:
+    payload = (json.dumps(result, ensure_ascii=False, indent=2) + "\n").encode("utf-8")
+    if len(payload) > MAX_HUMAN_REVIEW_RESULT_BYTES:
+        raise PipelineError(
+            "human review Result byte budget exceeded "
+            f"({len(payload)} > {MAX_HUMAN_REVIEW_RESULT_BYTES})",
+            9,
+        )
+    return payload
+
+
+def _safe_run_directory_descriptor(run_dir: Path) -> tuple[int, dict[str, Any]]:
+    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks safe human review directory support", 9)
+    try:
+        descriptor = os.open(
+            run_dir,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        )
+    except OSError as exc:
+        raise PipelineError(f"could not open human review run safely: {run_dir}", 9) from exc
+    try:
+        opened = os.fstat(descriptor)
+        current = run_dir.lstat()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or stat.S_ISLNK(current.st_mode)
+            or opened.st_dev != current.st_dev
+            or opened.st_ino != current.st_ino
+        ):
+            raise PipelineError(
+                f"human review run changed while it was opened: {run_dir}",
+                9,
+            )
+        identity = {
+            "path": str(run_dir.resolve()),
+            "device": opened.st_dev,
+            "inode": opened.st_ino,
+            "mode": opened.st_mode,
+        }
+        return descriptor, identity
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def read_human_review_result(
+    run_dir: Path,
+    max_bytes: int = MAX_HUMAN_REVIEW_RESULT_BYTES,
+) -> dict[str, Any]:
+    """Read Result through the run descriptor without following links or races."""
+
+    if max_bytes <= 0:
+        raise PipelineError("human review Result byte budget must be positive", 9)
+    directory_descriptor, _ = _safe_run_directory_descriptor(run_dir)
+    descriptor = -1
+    try:
+        try:
+            descriptor = os.open(
+                "result.json",
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=directory_descriptor,
+            )
+        except OSError as exc:
+            raise PipelineError("human review Result is missing or unsafe", 9) from exc
+        before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+            raise PipelineError("human review Result is not a private regular file", 9)
+        if before.st_size > max_bytes:
+            raise PipelineError(
+                f"human review Result byte budget exceeded ({before.st_size} > {max_bytes})",
+                9,
+            )
+        chunks: list[bytes] = []
+        remaining = max_bytes + 1
+        while remaining > 0:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        payload = b"".join(chunks)
+        after = os.fstat(descriptor)
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if len(payload) > max_bytes or any(
+            getattr(before, field) != getattr(after, field) for field in stable_fields
+        ):
+            raise PipelineError("human review Result changed while it was read", 9)
+        try:
+            value = json.loads(payload.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise PipelineError("human review Result is not valid UTF-8 JSON", 9) from exc
+        if not isinstance(value, dict):
+            raise PipelineError("human review Result must be a JSON object", 9)
+        return value
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_descriptor)
 
 
 def normalize_human_review_state_policy(
@@ -3237,6 +3385,9 @@ def normalize_human_review_state_policy(
         "max_state_bytes": DEFAULT_MAX_STATE_BYTES,
         "sensitive_paths": [],
         "redact_untracked_dotfiles": False,
+        "max_human_review_artifact_bytes": DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES,
+        "max_human_review_total_bytes": DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES,
+        "max_human_review_binding_seconds": DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS,
     }
     if value is not None:
         if not isinstance(value, dict):
@@ -3248,7 +3399,14 @@ def normalize_human_review_state_policy(
                 9,
             )
         policy.update(value)
-    for field in ("max_ignored_paths", "max_state_paths", "max_state_bytes"):
+    for field in (
+        "max_ignored_paths",
+        "max_state_paths",
+        "max_state_bytes",
+        "max_human_review_artifact_bytes",
+        "max_human_review_total_bytes",
+        "max_human_review_binding_seconds",
+    ):
         setting = policy[field]
         if isinstance(setting, bool) or not isinstance(setting, int) or setting <= 0:
             raise PipelineError(f"human review {field} must be a positive integer", 9)
@@ -3260,6 +3418,61 @@ def normalize_human_review_state_policy(
         raise PipelineError("human review redact_untracked_dotfiles must be boolean", 9)
     sensitive_rules = normalize_sensitive_paths(policy["sensitive_paths"])
     return policy, sensitive_rules
+
+
+def normalize_human_review_metadata_floor(
+    value: list[str] | set[str] | None,
+    *,
+    max_paths: int,
+    max_path_bytes: int,
+) -> set[str]:
+    if value is None:
+        return set()
+    if not isinstance(value, (list, set)) or not all(
+        isinstance(item, str) for item in value
+    ):
+        raise PipelineError("human review metadata-only floor must be a string list", 9)
+    normalized = {normalize_repo_path(item, contract=True) for item in value}
+    path_bytes = sum(
+        len(path.encode("utf-8", errors="surrogateescape")) for path in normalized
+    )
+    if len(normalized) > max_paths or path_bytes > max_path_bytes:
+        raise PipelineError("human review metadata-only floor budget exceeded", 9)
+    return normalized
+
+
+@contextmanager
+def _human_review_binding_timeout(seconds: int) -> Iterator[float]:
+    deadline = time.monotonic() + seconds
+    if not hasattr(signal, "setitimer") or not hasattr(signal, "ITIMER_REAL"):
+        yield deadline
+        return
+
+    def timed_out(_signum: int, _frame: Any) -> None:
+        raise PipelineError("human review binding deadline exceeded", 9)
+
+    try:
+        previous_handler = signal.getsignal(signal.SIGALRM)
+        previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+        signal.signal(signal.SIGALRM, timed_out)
+    except (AttributeError, ValueError):
+        yield deadline
+        return
+    started = time.monotonic()
+    effective_delay = min(seconds, previous_delay) if previous_delay > 0 else seconds
+    signal.setitimer(signal.ITIMER_REAL, effective_delay)
+    try:
+        yield deadline
+    finally:
+        signal.setitimer(signal.ITIMER_REAL, 0)
+        signal.signal(signal.SIGALRM, previous_handler)
+        if previous_delay > 0:
+            elapsed = time.monotonic() - started
+            signal.setitimer(
+                signal.ITIMER_REAL,
+                max(0.000001, previous_delay - elapsed),
+                previous_interval,
+            )
 
 
 def _directory_boundary_fingerprint(path: Path) -> dict[str, Any]:
@@ -3333,74 +3546,91 @@ def compute_human_review_binding(
     protected_deletions: list[str] | None = None,
     *,
     state_policy: dict[str, Any] | None = None,
+    metadata_only_floor: list[str] | set[str] | None = None,
 ) -> dict[str, Any]:
     """Bind a human decision to exact bounded repository state and private Artifacts."""
 
     if re.fullmatch(r"[0-9a-f]{64}", result_core_sha256) is None:
         raise PipelineError("human review result-core hash is invalid", 9)
-    artifacts: dict[str, dict[str, Any]] = {}
-    excluded = {"result.json", "human-review.ndjson", "human-review-summary.json"}
-    entry_count = 0
-    if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
-        raise PipelineError("platform lacks safe human review directory support", 9)
-    try:
-        directory_descriptor = os.open(
-            run_dir,
-            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-        )
-    except OSError as exc:
-        raise PipelineError(f"could not open human review run safely: {run_dir}", 9) from exc
-    try:
-        try:
-            entries = os.scandir(directory_descriptor)
-        except OSError as exc:
-            raise PipelineError(
-                f"could not enumerate human review run: {run_dir}",
-                9,
-            ) from exc
-        with entries:
-            for entry in entries:
-                path = run_dir / entry.name
-                fingerprint = private_artifact_fingerprint(
-                    directory_descriptor,
-                    entry.name,
-                    path,
-                )
-                if entry.name in excluded:
-                    continue
-                entry_count += 1
-                if entry_count > 256:
-                    raise PipelineError("human review Artifact count exceeds 256", 9)
-                artifacts[entry.name] = fingerprint
-    finally:
-        os.close(directory_descriptor)
     policy, sensitive_rules = normalize_human_review_state_policy(state_policy)
     normalized_deletions = sorted(
         normalize_protected_deletions(list(protected_deletions or []))
     )
-    state = capture_repo_state(
-        repo,
-        max_ignored_paths=policy["max_ignored_paths"],
-        max_state_paths=policy["max_state_paths"],
-        max_state_bytes=policy["max_state_bytes"],
-        sensitive_rules=sensitive_rules,
-        redact_untracked_dotfiles=policy["redact_untracked_dotfiles"],
-        metadata_only_floor=set(normalized_deletions),
-        check_topology=True,
-    )
-    return {
-        "format": "rootloom-human-review-binding-v3",
-        "repo": str(repo.resolve()),
-        "git_head": run_checked(["git", "rev-parse", "HEAD"], repo),
-        "state_policy": policy,
-        "repository_state": repository_state_commitment(state),
-        "protected_deletions": protected_deletion_commitment(
+    floor = normalize_human_review_metadata_floor(
+        metadata_only_floor,
+        max_paths=policy["max_state_paths"],
+        max_path_bytes=policy["max_state_bytes"],
+    ) | set(normalized_deletions)
+    artifacts: dict[str, dict[str, Any]] = {}
+    excluded = {"result.json", "human-review.ndjson", "human-review-summary.json"}
+    total_bytes = 0
+    with _human_review_binding_timeout(
+        policy["max_human_review_binding_seconds"]
+    ) as deadline:
+        directory_descriptor, run_identity = _safe_run_directory_descriptor(run_dir)
+        try:
+            try:
+                entries = os.scandir(directory_descriptor)
+            except OSError as exc:
+                raise PipelineError(
+                    f"could not enumerate human review run: {run_dir}",
+                    9,
+                ) from exc
+            with entries:
+                for entry in entries:
+                    if time.monotonic() > deadline:
+                        raise PipelineError("human review binding deadline exceeded", 9)
+                    if entry.name in excluded:
+                        continue
+                    if len(artifacts) >= MAX_HUMAN_REVIEW_ARTIFACTS:
+                        raise PipelineError(
+                            f"human review Artifact count exceeds {MAX_HUMAN_REVIEW_ARTIFACTS}",
+                            9,
+                        )
+                    remaining = policy["max_human_review_total_bytes"] - total_bytes
+                    if remaining < 0:
+                        raise PipelineError("human review total Artifact byte budget exceeded", 9)
+                    fingerprint = private_artifact_fingerprint(
+                        directory_descriptor,
+                        entry.name,
+                        run_dir / entry.name,
+                        max_bytes=min(
+                            policy["max_human_review_artifact_bytes"],
+                            remaining,
+                        ),
+                        deadline=deadline,
+                    )
+                    total_bytes += fingerprint["size"]
+                    artifacts[entry.name] = fingerprint
+        finally:
+            os.close(directory_descriptor)
+        state = capture_repo_state(
             repo,
-            normalized_deletions,
-        ),
-        "result_core_sha256": result_core_sha256,
-        "artifacts": artifacts,
-    }
+            max_ignored_paths=policy["max_ignored_paths"],
+            max_state_paths=policy["max_state_paths"],
+            max_state_bytes=policy["max_state_bytes"],
+            sensitive_rules=sensitive_rules,
+            redact_untracked_dotfiles=policy["redact_untracked_dotfiles"],
+            metadata_only_floor=floor,
+            check_topology=True,
+        )
+        if time.monotonic() > deadline:
+            raise PipelineError("human review binding deadline exceeded", 9)
+        return {
+            "format": "rootloom-human-review-binding-v4",
+            "repo": str(repo.resolve()),
+            "run_directory": run_identity,
+            "git_head": run_checked(["git", "rev-parse", "HEAD"], repo),
+            "state_policy": policy,
+            "final_metadata_only_floor_paths": sorted(state["metadata_only_paths"]),
+            "repository_state": repository_state_commitment(state),
+            "protected_deletions": protected_deletion_commitment(
+                repo,
+                normalized_deletions,
+            ),
+            "result_core_sha256": result_core_sha256,
+            "artifacts": artifacts,
+        }
 
 
 def best_effort_command(argv: list[str], cwd: Path) -> str:
@@ -4209,6 +4439,9 @@ def run_pipeline_locked(
     for option in (
         "max_state_paths",
         "max_state_bytes",
+        "max_human_review_artifact_bytes",
+        "max_human_review_total_bytes",
+        "max_human_review_binding_seconds",
     ):
         if getattr(args, option) <= 0:
             raise PipelineError(f"--{option.replace('_', '-')} must be positive", 9)
@@ -4320,6 +4553,9 @@ def run_pipeline_locked(
         "max_ignored_paths": args.max_ignored_paths,
         "max_state_paths": args.max_state_paths,
         "max_state_bytes": args.max_state_bytes,
+        "max_human_review_artifact_bytes": args.max_human_review_artifact_bytes,
+        "max_human_review_total_bytes": args.max_human_review_total_bytes,
+        "max_human_review_binding_seconds": args.max_human_review_binding_seconds,
         "isolation": isolation_metadata,
         "max_command_output_bytes": args.max_command_output_bytes,
         "max_verification_output_bytes": args.max_verification_output_bytes,
@@ -4781,11 +5017,26 @@ def run_pipeline_locked(
                         "max_ignored_paths": args.max_ignored_paths,
                         "max_state_paths": args.max_state_paths,
                         "max_state_bytes": args.max_state_bytes,
+                        "max_human_review_artifact_bytes": (
+                            args.max_human_review_artifact_bytes
+                        ),
+                        "max_human_review_total_bytes": (
+                            args.max_human_review_total_bytes
+                        ),
+                        "max_human_review_binding_seconds": (
+                            args.max_human_review_binding_seconds
+                        ),
                         "sensitive_paths": args.sensitive_path,
                         "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
                     },
                 )
-            atomic_write_json(run_dir / "result.json", summary)
+            if result_status == "HUMAN_REVIEW_REQUIRED":
+                atomic_write_private(
+                    run_dir / "result.json",
+                    human_review_result_document(summary),
+                )
+            else:
+                atomic_write_json(run_dir / "result.json", summary)
             print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
             return result_exit_code
 

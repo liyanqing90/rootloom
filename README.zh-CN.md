@@ -219,6 +219,9 @@ python3 <high-assurance-skill-dir>/scripts/run_pipeline.py \
   --max-verification-artifact-bytes 67108864 \
   --max-delta-bytes 33554432 \
   --max-untracked-patch-bytes 8388608 \
+  --max-human-review-artifact-bytes 67108864 \
+  --max-human-review-total-bytes 536870912 \
+  --max-human-review-binding-seconds 120 \
   --verify 'make focused-test' \
   --verify 'make check'
 ```
@@ -235,7 +238,7 @@ Git Delta 也从产生源头受限。staged、unstaged、`HEAD` 到 worktree 以
 
 仓库状态生产者共用 `--max-state-paths` 与 `--max-state-bytes`；同一个字节上限也会在解析前拒绝过大的任务/角色输入和模型 `-o` JSON。这样操作方只需做两个决定，不再面对四个实现细节开关。稳定摘要仅在同一个锁定 Run 内且 device、inode、size、mode、mtime、ctime 全部一致时复用。`--isolation-launcher '/absolute/launcher args'` 会无 shell 包装所有模型和验证命令；配置 `--require-isolation-launcher` 后，缺少启动器会在阶段前失败（`--require-isolation` 保留为兼容别名）。启动器必须位于目标仓库和 Artifact run root 之外；Runner 通过稳定 no-follow 描述符记录配置身份，并在每次 spawn 前重新核验，把实际执行前身份写入命令证据。这能关闭协作式路径漂移，但仍不是内核 containment 或稳定描述符 `exec`；敌对命令必须使用外部不可变容器/cgroup Worker。
 
-Protected 删除产生的退出 10 可通过 `review_decision.py --repo ... --run-dir ... --reviewer ... --decision accept|reject` 处理。Human Review v3 会重新核对规范化最终 Result 核心、覆盖可见内容指纹、metadata-only 指纹、status/路径集合、Git index 与 Git control 的有界承诺、每个 protected 目标的 exact-missing 状态及其词法父边界，以及通过稳定目录相对 no-follow 描述符捕获的已审查私有 Artifact 哈希。命令会在仓库锁内重新读取 Result、追加终态记录，再完整复查一次承诺；若检测到写入窗口漂移，会补偿该记录。它记录本地账户/uid 与声明审核者，并拒绝第二个终局决定；既有 v2 结果不会被静默升级。仓库锁只能串行化协作式 Rootloom Writer，因此这仍是可归因本地审批，不是组织身份密码学证明、WORM 存储，也不能阻止最终检查后的任意外部进程。
+Protected 删除产生的退出 10 可通过 `review_decision.py --repo ... --run-dir ... --reviewer ... --decision accept|reject` 处理。Human Review v4 会绑定规范化 Run 路径与目录身份，要求 Result 的 `run_dir` 与之相符，并在任何内容指纹前把完整最终 metadata-only 下限传入每次复核。它重新核对规范化最终 Result 核心、受限的可见内容与 metadata-only 承诺、status/路径集合、Git index/control 状态、每个 protected 目标的 exact-missing 状态与词法父边界，以及私有 Artifact 哈希。Artifact 哈希默认限制为单文件 64 MiB、合计 512 MiB、256 个文件和 120 秒；其中三个可配置边界见上方命令。Result 会在决定前、追加终态后和重复状态承诺后，通过受限的目录相对 no-follow 描述符读取。完整规范化 Result 或仓库发生漂移都会补偿终态记录。既有 v2/v3 结果会关闭式失败，不会静默升级。仓库锁只能串行化协作式 Rootloom Writer，因此这仍是可归因本地审批，不是组织身份密码学证明、WORM 存储，也不能阻止最终检查后的任意外部进程。
 
 验证命令默认只接收最小可移植环境（存在时的 `PATH`、`HOME`、locale、临时目录、终端、用户与 `CI` 变量），并固定 `PYTHONDONTWRITEBYTECODE=1`。额外既有变量必须通过可重复的 `--verify-env NAME` 显式授权；产物只记录变量名，不记录值。这能减少意外继承凭据，但不是输出脱敏或文件访问隔离；不要传递生产 secret，不可信命令应在隔离环境运行。
 
@@ -267,7 +270,7 @@ metadata-only 路径同时受到验收保护：任何在基线被保护的路径
 
 - 项目播种是本地、受限、确定性、仅标准库、零网络的；它排除符号链接和仓库外证据，通过 Git 公共目录串行化写入，并在生成期间指导发生变化时安全跳过。
 - 无标记指导、override、符号链接、不可信仓库、退出项目、临时/vendor/cache 目录、疑似密钥和损坏托管区块都会被保留或拒绝。
-- 全局 setup 是显式、进程加锁、预写恢复清单、哈希校验、权限模式保留且可回滚的，并会补偿可捕获的 apply/rollback 失败。Apply 与 rollback 都会在第一次修改前记录 prepared/applying/committed/compensated/recovered 阶段。新 Manifest 会记录 producer version、recovery schema version 与 target type；Recovery 保留 1.2.12 隐式 target schema 的字面 reader，不再只查询当前插件 catalog。`setup_rootloom.py recover` 只接受被 Manifest 哈希绑定、路径唯一且属于历史托管 target 的完整计划，并在任何写入前验证全部备份、Hash、Mode 与当前前/后状态。原子 rename 以下的存储损坏与持久性仍属于外部边界。
+- 全局 setup 是显式、进程加锁、预写恢复清单、哈希校验、权限模式保留且可回滚的，并会补偿可捕获的 apply/rollback 失败。Setup、项目指导与 Strict Runner 共用一个加固锁入口：在截断或写入 owner 数据前拒绝最终 symlink/reparse point、hardlink、作为 symlink 的直接锁父目录、非普通文件和身份替换。Apply 与 rollback 都会在第一次修改前记录 prepared/applying/committed/compensated/recovered 阶段。新 Manifest 会记录 producer version、recovery schema version 与 target type；Recovery 保留 1.2.12 隐式 target schema 的字面 reader，不再只查询当前插件 catalog。`setup_rootloom.py recover` 只接受被 Manifest 哈希绑定、路径唯一且属于历史托管 target 的完整计划，并在任何写入前验证全部备份、Hash、Mode 与当前前/后状态。原子 rename 以下的存储损坏与持久性仍属于外部边界。
 - 只读角色默认关闭 Apps；标准角色中只有一个可写。
 - Rules、sandbox、Hooks、Skills 和模型指令是纵深防御，不能替代 OS 策略、凭据、分支保护、审查或 CI。
 

@@ -22,7 +22,10 @@ from typing import Any, Iterator
 SCRIPT_DIR = Path(__file__).resolve().parent
 if str(SCRIPT_DIR) not in sys.path:
     sys.path.insert(0, str(SCRIPT_DIR))
+PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
+sys.path.insert(0, str(PLUGIN_LIB))
 
+from rootloom_lock import LockBusyError, LockFileError, hardened_lock
 from setup.recovery import (
     RECOVERY_SCHEMA_VERSION,
     recovery_target_schema,
@@ -138,53 +141,48 @@ def setup_lock(codex_home: Path) -> Iterator[Path]:
     state_root = codex_home / STATE_DIRNAME
     if state_root.is_symlink():
         raise ValueError("refusing symlinked setup state directory")
-    state_root.mkdir(parents=True, exist_ok=True)
-    os.chmod(state_root, 0o700)
+    state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if POSIX_MODE_CONTRACT:
+        if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
+            raise ValueError("platform lacks no-follow setup state directory support")
+        try:
+            state_descriptor = os.open(
+                state_root,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+            )
+        except OSError as exc:
+            raise ValueError("setup state directory is not safely openable") from exc
+        try:
+            opened = os.fstat(state_descriptor)
+            current = state_root.lstat()
+            if (
+                not stat.S_ISDIR(opened.st_mode)
+                or stat.S_ISLNK(current.st_mode)
+                or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            ):
+                raise ValueError("setup state directory identity changed during open")
+            os.fchmod(state_descriptor, 0o700)
+            hardened = os.fstat(state_descriptor)
+            current = state_root.lstat()
+            if (
+                stat.S_IMODE(hardened.st_mode) != 0o700
+                or stat.S_ISLNK(current.st_mode)
+                or (hardened.st_dev, hardened.st_ino)
+                != (current.st_dev, current.st_ino)
+            ):
+                raise ValueError("setup state directory changed during hardening")
+        finally:
+            os.close(state_descriptor)
     lock_path = state_root / "setup.lock"
-    if lock_path.is_symlink():
-        raise ValueError("refusing symlinked setup lock")
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    locked = False
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(descriptor, 0o600)
-        elif os.name != "nt":  # pragma: no cover - unknown non-POSIX runtime
-            raise RuntimeError("setup lock permissions cannot be hardened on this platform")
-        if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
-            import msvcrt
-
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                raise RuntimeError(
-                    f"another Rootloom setup transaction holds {lock_path}"
-                ) from exc
-        else:
-            import fcntl
-
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError(
-                    f"another Rootloom setup transaction holds {lock_path}"
-                ) from exc
-        locked = True
-        yield lock_path
-    finally:
-        if locked:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        with hardened_lock(lock_path):
+            yield lock_path
+    except LockBusyError as exc:
+        raise RuntimeError(
+            f"another Rootloom setup transaction holds {lock_path}"
+        ) from exc
+    except LockFileError as exc:
+        raise ValueError(f"setup lock safety check failed: {exc}") from exc
 
 
 def plugin_root() -> Path:

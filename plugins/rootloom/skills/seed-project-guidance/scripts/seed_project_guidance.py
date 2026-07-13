@@ -15,6 +15,11 @@ import tempfile
 from pathlib import Path
 from typing import Any, Iterator
 
+PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
+sys.path.insert(0, str(PLUGIN_LIB))
+
+from rootloom_lock import LockBusyError, LockFileError, hardened_lock
+
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover - Codex currently ships Python 3.11+
@@ -211,46 +216,13 @@ def guidance_lock(project_root: Path) -> Iterator[Path]:
     """Serialize Rootloom guidance writers for one Git common directory."""
 
     lock_path = _git_common_dir(project_root) / "rootloom-guidance.lock"
-    if lock_path.is_symlink():
-        raise ValueError("refusing symlinked guidance lock")
-    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    locked = False
     try:
-        if hasattr(os, "fchmod"):
-            os.fchmod(descriptor, 0o600)
-        elif os.name != "nt":  # pragma: no cover - unknown non-POSIX runtime
-            raise RuntimeError("guidance lock permissions cannot be hardened on this platform")
-        if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
-            import msvcrt
-
-            if os.fstat(descriptor).st_size == 0:
-                os.write(descriptor, b"\0")
-            os.lseek(descriptor, 0, os.SEEK_SET)
-            try:
-                msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
-            except OSError as exc:
-                raise RuntimeError("guidance lock is busy") from exc
-        else:
-            import fcntl
-
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError as exc:
-                raise RuntimeError("guidance lock is busy") from exc
-        locked = True
-        yield lock_path
-    finally:
-        if locked:
-            if os.name == "nt":  # pragma: no cover - exercised on Windows CI when available
-                import msvcrt
-
-                os.lseek(descriptor, 0, os.SEEK_SET)
-                msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
-            else:
-                import fcntl
-
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-        os.close(descriptor)
+        with hardened_lock(lock_path):
+            yield lock_path
+    except LockBusyError as exc:
+        raise RuntimeError("guidance lock is busy") from exc
+    except LockFileError as exc:
+        raise ValueError(f"guidance lock safety check failed: {exc}") from exc
 
 
 def _git_root(cwd: Path) -> Path | None:

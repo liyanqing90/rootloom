@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.14] - 2026-07-13
+
+### Security
+
+- Route Setup, project-guidance, and Strict Runner repository locks through one shared hardened opener. POSIX uses parent-relative `O_NOFOLLOW` descriptors and Windows uses reparse-point-aware handles; both reject non-regular, multi-linked, replaced, or indirect lock paths and acquire the lock before truncating or writing owner data.
+- Advance Human Review to v4. Revalidation carries the complete final metadata-only floor into every repository capture, so a changed ignore or sensitivity rule cannot make formerly protected content readable before drift rejection.
+- Bind the canonical run-directory path and stable directory identity, require Result's `run_dir` to match the supplied directory, and safely re-read the complete canonical Result through no-follow directory-relative descriptors after writing and after recomputing the decision binding. Any mismatch compensates the terminal record.
+- Bound Human Review Artifact hashing by per-file bytes, aggregate bytes, fixed Artifact count, and a wall-clock binding deadline. Result itself has a bounded safe reader and a pre-write document-size gate.
+
+### Changed
+
+- Rootloom is now version 1.2.14 and the strict high-assurance runner is version 2.19.
+- Human Review binding and decision records advance to version 4. Existing v2/v3 results fail closed and require a new run or an explicitly external review process.
+- Preserve the documented isolation-launcher boundary: stable pre-spawn identity checks still do not eliminate the final path-to-`exec` race or attest launcher semantics; stronger containment remains an external supervisor/container responsibility.
+
+### Tests
+
+- Add shared-lock symlink, hardlink, symlinked-parent, contention, Setup, Guidance, and Runner victim-preservation regressions, including portable Windows execution.
+- Add copied-run rejection, complete Result reread compensation, metadata-floor declassification, Human Review Artifact per-file/aggregate/deadline limits, bounded Result hardlink refusal, and v3 compatibility refusal coverage.
+
 ## [1.2.13] - 2026-07-13
 
 ### Security

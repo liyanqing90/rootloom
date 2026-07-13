@@ -127,6 +127,26 @@ class RootloomSetupTests(unittest.TestCase):
         )
         self.assertEqual(result["status"], "applied")
 
+    def test_setup_lock_symlink_never_mutates_external_victim(self) -> None:
+        state_root = self.codex_home / setup.STATE_DIRNAME
+        state_root.mkdir()
+        victim = Path(self.temp_dir.name) / "setup-lock-victim.txt"
+        victim.write_bytes(b"preserve-setup-victim")
+        if os.name != "nt":
+            victim.chmod(0o644)
+        before_mode = stat.S_IMODE(victim.stat().st_mode)
+        try:
+            (state_root / "setup.lock").symlink_to(victim)
+        except OSError as exc:  # pragma: no cover - depends on Windows symlink policy
+            self.skipTest(f"platform cannot create a test symlink: {exc}")
+
+        with self.assertRaisesRegex(ValueError, "setup lock safety check failed"):
+            with setup.setup_lock(self.codex_home):
+                self.fail("symlinked setup lock acquired")
+
+        self.assertEqual(victim.read_bytes(), b"preserve-setup-victim")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), before_mode)
+
     def test_interrupted_setup_recovery_restores_pre_transaction_state(self) -> None:
         result = setup.apply_plan(self.codex_home, replace_conflicts=False)
         transaction = Path(result["transaction"])

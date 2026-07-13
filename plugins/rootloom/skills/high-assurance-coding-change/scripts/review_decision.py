@@ -32,25 +32,55 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
     if supplied_run_dir.is_symlink() or not supplied_run_dir.is_dir():
         raise runner.PipelineError("review run directory is missing or symlinked", 9)
     run_dir = supplied_run_dir.resolve()
-    with runner.repository_lock(repo):
-        result_path = run_dir / "result.json"
-        result = runner.read_json(result_path, 4 * 1024 * 1024)
-        if result.get("result") != "HUMAN_REVIEW_REQUIRED":
+
+    def validate_result(value: dict[str, object]) -> tuple[dict[str, object], list[str]]:
+        if value.get("result") != "HUMAN_REVIEW_REQUIRED":
             raise runner.PipelineError("run is not awaiting human review", 9)
-        expected = result.get("human_review_binding")
-        if not isinstance(expected, dict):
+        declared_run_dir = value.get("run_dir")
+        if not isinstance(declared_run_dir, str) or not Path(declared_run_dir).is_absolute():
+            raise runner.PipelineError("Result run_dir is missing or invalid", 9)
+        if Path(declared_run_dir).expanduser().resolve() != run_dir:
+            raise runner.PipelineError(
+                "Result run_dir does not match the supplied review directory",
+                9,
+            )
+        expected_value = value.get("human_review_binding")
+        if not isinstance(expected_value, dict):
             raise runner.PipelineError("human review binding is missing or invalid", 9)
-        protected_deletions = result.get("protected_deletions")
-        if not isinstance(protected_deletions, list) or not all(
-            isinstance(path, str) for path in protected_deletions
+        if expected_value.get("format") != "rootloom-human-review-binding-v4":
+            raise runner.PipelineError(
+                "unsupported human review binding version; rerun with Human Review v4",
+                9,
+            )
+        state_policy = expected_value.get("state_policy")
+        metadata_floor = expected_value.get("final_metadata_only_floor_paths")
+        if not isinstance(state_policy, dict):
+            raise runner.PipelineError("human review state policy is missing or invalid", 9)
+        if not isinstance(metadata_floor, list) or not all(
+            isinstance(path, str) for path in metadata_floor
+        ):
+            raise runner.PipelineError(
+                "human review metadata-only floor is missing or invalid",
+                9,
+            )
+        protected = value.get("protected_deletions")
+        if not isinstance(protected, list) or not all(
+            isinstance(path, str) for path in protected
         ):
             raise runner.PipelineError("protected_deletions is missing or invalid", 9)
+        return expected_value, protected
+
+    with runner.repository_lock(repo):
+        result = runner.read_human_review_result(run_dir)
+        expected, protected_deletions = validate_result(result)
+        initial_result_sha256 = runner.human_review_full_result_sha256(result)
         current = runner.compute_human_review_binding(
             repo,
             run_dir,
             runner.human_review_result_core_sha256(result),
             protected_deletions,
             state_policy=expected.get("state_policy"),
+            metadata_only_floor=expected.get("final_metadata_only_floor_paths"),
         )
         if expected != current:
             raise runner.PipelineError("human review binding drifted; decision refused", 9)
@@ -67,7 +97,7 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
             separators=(",", ":"),
         ).encode()
         record = {
-            "format": "rootloom-human-review-decision-v3",
+            "format": "rootloom-human-review-decision-v4",
             "decision": decision,
             "reviewer": reviewer.strip(),
             "local_account": getpass.getuser(),
@@ -78,13 +108,34 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
         payload = runner.encode_ndjson_value(record)
         runner.append_complete_artifact(decisions, payload, expected_starting_size=0)
         try:
+            post_write_result = runner.read_human_review_result(run_dir)
+            post_write_expected, post_write_deletions = validate_result(post_write_result)
+            if (
+                runner.human_review_full_result_sha256(post_write_result)
+                != initial_result_sha256
+                or post_write_expected != expected
+                or post_write_deletions != protected_deletions
+            ):
+                raise runner.PipelineError(
+                    "human review Result changed while the decision was written",
+                    9,
+                )
             post_write = runner.compute_human_review_binding(
                 repo,
                 run_dir,
-                runner.human_review_result_core_sha256(result),
-                protected_deletions,
-                state_policy=expected.get("state_policy"),
+                runner.human_review_result_core_sha256(post_write_result),
+                post_write_deletions,
+                state_policy=post_write_expected.get("state_policy"),
+                metadata_only_floor=post_write_expected.get(
+                    "final_metadata_only_floor_paths"
+                ),
             )
+            final_result = runner.read_human_review_result(run_dir)
+            if runner.human_review_full_result_sha256(final_result) != initial_result_sha256:
+                raise runner.PipelineError(
+                    "human review Result changed during post-write validation",
+                    9,
+                )
         except BaseException as exc:
             runner.truncate_private_artifact(decisions, len(payload))
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):

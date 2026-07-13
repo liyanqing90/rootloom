@@ -386,6 +386,7 @@ def validate_system_assets(errors: list[str]) -> None:
             '"project-guidance-hook"',
             '"subagent-audit-hook"',
             "setup_lock",
+            "hardened_lock",
             '"before_mode"',
             '"after_mode"',
             "setup failed and compensation was incomplete",
@@ -425,6 +426,7 @@ def validate_system_assets(errors: list[str]) -> None:
     scanner_text = SCANNER.read_text(encoding="utf-8") if SCANNER.is_file() else ""
     for contract in (
         "guidance_lock",
+        "hardened_lock",
         "guidance_changed_during_seed",
         "_safe_repo_file",
     ):
@@ -442,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.18"',
+            'RUNNER_VERSION = "2.19"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -450,6 +452,10 @@ def validate_system_assets(errors: list[str]) -> None:
             "DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES",
             "DEFAULT_MAX_DELTA_BYTES",
             "DEFAULT_MAX_UNTRACKED_PATCH_BYTES",
+            "DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES",
+            "DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES",
+            "DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS",
+            "MAX_HUMAN_REVIEW_RESULT_BYTES",
             "MAX_DELTA_PATCH_EXCERPT_BYTES",
             "MAX_VERIFICATION_COMMANDS",
             "MAX_VERIFICATION_PROMPT_CHARS",
@@ -469,6 +475,9 @@ def validate_system_assets(errors: list[str]) -> None:
             '"--max-untracked-patch-bytes"',
             '"--max-state-paths"',
             '"--max-state-bytes"',
+            '"--max-human-review-artifact-bytes"',
+            '"--max-human-review-total-bytes"',
+            '"--max-human-review-binding-seconds"',
             '"--isolation-launcher"',
             '"--require-isolation-launcher"',
             '"--require-isolation"',
@@ -516,10 +525,15 @@ def validate_system_assets(errors: list[str]) -> None:
             "max_ignored_paths",
             "validate_verification_coverage",
             "compute_human_review_binding",
-            '"rootloom-human-review-binding-v3"',
+            '"rootloom-human-review-binding-v4"',
             "protected_deletion_commitment",
             "prepare_isolated_command",
             "human_review_result_core_sha256",
+            "human_review_full_result_sha256",
+            "human_review_result_document",
+            "read_human_review_result",
+            "final_metadata_only_floor_paths",
+            "run_directory",
             "ensure_empty_private_file",
             "atomic_write_json",
             '"provenance_ids"',
@@ -535,6 +549,13 @@ def validate_system_assets(errors: list[str]) -> None:
             if contract not in runner_text:
                 errors.append(f"high-assurance runner is missing contract: {contract}")
         for module, contracts in {
+            PLUGIN / "lib" / "rootloom_lock.py": (
+                "def hardened_lock",
+                "O_NOFOLLOW",
+                "FILE_FLAG_OPEN_REPARSE_POINT",
+                "st_nlink != 1",
+                "LockFileEx",
+            ),
             runner.parent / "runner" / "state.py": (
                 "repository_state_commitment",
                 "rootloom-repository-state-commitment-v1",
@@ -557,9 +578,14 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         review_text = review_decision.read_text(encoding="utf-8")
         for contract in (
-            "rootloom-human-review-decision-v3",
+            "rootloom-human-review-decision-v4",
             "repository_lock",
             "truncate_private_artifact",
+            "read_human_review_result",
+            "human_review_full_result_sha256",
+            "Result run_dir does not match",
+            "unsupported human review binding version",
+            "human review metadata-only floor is missing or invalid",
             "human review binding drifted",
             "human review already has a terminal decision",
         ):

@@ -8,6 +8,8 @@ import json
 import os
 from pathlib import Path
 import shlex
+import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -1075,6 +1077,7 @@ class RunnerGateTests(unittest.TestCase):
         (first / "evidence.json").write_text("{}\n", encoding="utf-8")
         first_core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(first),
             "protected_deletions": ["protected.txt"],
         }
         binding = runner.compute_human_review_binding(
@@ -1181,6 +1184,7 @@ class RunnerGateTests(unittest.TestCase):
         (second / "evidence.json").write_text("{}\n", encoding="utf-8")
         second_core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(second),
             "protected_deletions": [],
         }
         binding = runner.compute_human_review_binding(
@@ -1234,6 +1238,7 @@ class RunnerGateTests(unittest.TestCase):
             (full / f"{index}.json").touch()
         full_core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(full),
             "protected_deletions": [],
         }
         core_hash = runner.human_review_result_core_sha256(full_core)
@@ -1255,6 +1260,7 @@ class RunnerGateTests(unittest.TestCase):
         review_dir.mkdir()
         core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
             "protected_deletions": [".env"],
         }
         binding = runner.compute_human_review_binding(
@@ -1295,6 +1301,7 @@ class RunnerGateTests(unittest.TestCase):
         review_dir.mkdir()
         core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
             "protected_deletions": [],
         }
         legacy_binding = {
@@ -1329,7 +1336,77 @@ class RunnerGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("binding drifted", refused.stderr)
+        self.assertIn("unsupported human review binding version", refused.stderr)
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+
+    def test_human_review_v3_result_fails_closed_instead_of_upgrading(self) -> None:
+        review_dir = self.root / "human-review-v3"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "protected_deletions": [],
+        }
+        legacy_binding = {
+            "format": "rootloom-human-review-binding-v3",
+            "repo": str(self.repo.resolve()),
+            "git_head": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.repo,
+                text=True,
+            ).strip(),
+        }
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": legacy_binding},
+        )
+        refused = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("unsupported human review binding version", refused.stderr)
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+
+    def test_human_review_malformed_v4_floor_fails_before_state_capture(self) -> None:
+        review_dir = self.root / "human-review-v4-missing-floor"
+        review_dir.mkdir()
+        result = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "protected_deletions": [],
+            "human_review_binding": {
+                "format": "rootloom-human-review-binding-v4",
+                "state_policy": {},
+            },
+        }
+        runner.write_json(review_dir / "result.json", result)
+        with mock.patch.object(
+            runner,
+            "compute_human_review_binding",
+            side_effect=AssertionError("state capture must not start"),
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "metadata-only floor"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
         self.assertFalse((review_dir / "human-review.ndjson").exists())
 
     def test_human_review_post_write_drift_compensates_terminal_record(self) -> None:
@@ -1337,6 +1414,7 @@ class RunnerGateTests(unittest.TestCase):
         review_dir.mkdir()
         core = {
             "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
             "protected_deletions": [],
         }
         binding = runner.compute_human_review_binding(
@@ -1362,6 +1440,162 @@ class RunnerGateTests(unittest.TestCase):
                 )
         self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
         self.assertFalse((review_dir / "human-review-summary.json").exists())
+
+    def test_human_review_v4_rejects_copied_run_directory(self) -> None:
+        source = self.root / "human-review-source"
+        source.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(source),
+            "protected_deletions": [],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            source,
+            runner.human_review_result_core_sha256(core),
+        )
+        runner.write_json(source / "result.json", {**core, "human_review_binding": binding})
+        copied = self.root / "human-review-copy"
+        shutil.copytree(source, copied)
+        with self.assertRaisesRegex(runner.PipelineError, "does not match"):
+            review_decision.decide(
+                self.repo,
+                copied,
+                "reviewer@example.test",
+                "accept",
+            )
+        self.assertFalse((copied / "human-review.ndjson").exists())
+
+    def test_human_review_result_reread_mismatch_compensates_decision(self) -> None:
+        review_dir = self.root / "human-review-result-reread"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "protected_deletions": [],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+        )
+        result = {**core, "human_review_binding": binding}
+        runner.write_json(review_dir / "result.json", result)
+        tampered = {**result, "changed_after_initial_read": True}
+        with mock.patch.object(
+            runner,
+            "read_human_review_result",
+            side_effect=[result, tampered],
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "was compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
+
+    def test_human_review_revalidation_preserves_full_metadata_only_floor(self) -> None:
+        (self.repo / ".gitignore").write_text("cache.bin\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore cache")
+        (self.repo / "cache.bin").write_bytes(b"must-not-be-read")
+        review_dir = self.root / "human-review-metadata-floor"
+        review_dir.mkdir()
+        core_hash = "0" * 64
+        binding = runner.compute_human_review_binding(self.repo, review_dir, core_hash)
+        self.assertIn(
+            "cache.bin",
+            binding["final_metadata_only_floor_paths"],
+        )
+        (self.repo / ".gitignore").write_text("other.bin\n", encoding="utf-8")
+        original_fingerprint = runner.file_fingerprint
+
+        def refuse_cache_content(path: Path, *args: object, **kwargs: object) -> dict[str, object]:
+            if Path(path).name == "cache.bin":
+                raise AssertionError("metadata-only floor file was content-hashed")
+            return original_fingerprint(path, *args, **kwargs)
+
+        with mock.patch.object(runner, "file_fingerprint", side_effect=refuse_cache_content):
+            recomputed = runner.compute_human_review_binding(
+                self.repo,
+                review_dir,
+                core_hash,
+                state_policy=binding["state_policy"],
+                metadata_only_floor=binding["final_metadata_only_floor_paths"],
+            )
+        self.assertIn("cache.bin", recomputed["final_metadata_only_floor_paths"])
+        self.assertNotEqual(binding, recomputed)
+
+    def test_human_review_artifact_and_result_resource_boundaries(self) -> None:
+        per_artifact = self.root / "human-review-per-artifact"
+        per_artifact.mkdir()
+        (per_artifact / "large.json").write_bytes(b"12345")
+        with self.assertRaisesRegex(runner.PipelineError, "Artifact byte budget"):
+            runner.compute_human_review_binding(
+                self.repo,
+                per_artifact,
+                "0" * 64,
+                state_policy={"max_human_review_artifact_bytes": 4},
+            )
+
+        total = self.root / "human-review-total-artifacts"
+        total.mkdir()
+        (total / "one.json").write_bytes(b"123")
+        (total / "two.json").write_bytes(b"456")
+        with self.assertRaisesRegex(runner.PipelineError, "Artifact byte budget"):
+            runner.compute_human_review_binding(
+                self.repo,
+                total,
+                "0" * 64,
+                state_policy={"max_human_review_total_bytes": 5},
+            )
+
+        deadline_dir = self.root / "human-review-deadline"
+        deadline_dir.mkdir()
+        (deadline_dir / "artifact.json").write_bytes(b"{}")
+        descriptor, _ = runner._safe_run_directory_descriptor(deadline_dir)
+        try:
+            with self.assertRaisesRegex(runner.PipelineError, "deadline exceeded"):
+                runner.private_artifact_fingerprint(
+                    descriptor,
+                    "artifact.json",
+                    deadline_dir / "artifact.json",
+                    max_bytes=100,
+                    deadline=-1,
+                )
+        finally:
+            os.close(descriptor)
+
+        timed = self.root / "human-review-global-deadline"
+        timed.mkdir()
+        started = time.monotonic()
+        with mock.patch.object(
+            runner,
+            "capture_repo_state",
+            side_effect=lambda *args, **kwargs: time.sleep(2),
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "deadline exceeded"):
+                runner.compute_human_review_binding(
+                    self.repo,
+                    timed,
+                    "0" * 64,
+                    state_policy={"max_human_review_binding_seconds": 1},
+                )
+        self.assertLess(time.monotonic() - started, 1.8)
+
+        unsafe = self.root / "human-review-unsafe-result"
+        unsafe.mkdir()
+        victim = self.root / "result-victim.json"
+        victim.write_text("{}", encoding="utf-8")
+        os.link(victim, unsafe / "result.json")
+        with self.assertRaisesRegex(runner.PipelineError, "private regular file"):
+            runner.read_human_review_result(unsafe)
+        with mock.patch.object(runner, "MAX_HUMAN_REVIEW_RESULT_BYTES", 8):
+            with self.assertRaisesRegex(runner.PipelineError, "Result byte budget"):
+                runner.human_review_result_document({"too_large": "payload"})
 
     def test_verification_coverage_requires_successful_machine_records(self) -> None:
         diagnosis = {
@@ -1403,6 +1637,22 @@ class RunnerGateTests(unittest.TestCase):
                 with runner.repository_lock(self.repo):
                     self.fail("second lock should not be acquired")
             self.assertEqual(caught.exception.exit_code, 7)
+
+    def test_repository_lock_symlink_never_mutates_external_victim(self) -> None:
+        victim = self.root / "repository-lock-victim.txt"
+        victim.write_bytes(b"preserve-repository-victim")
+        victim.chmod(0o644)
+        before_mode = stat.S_IMODE(victim.stat().st_mode)
+        lock_path = self.repo / ".git" / "codex-high-assurance.lock"
+        lock_path.unlink(missing_ok=True)
+        lock_path.symlink_to(victim)
+
+        with self.assertRaisesRegex(runner.PipelineError, "lock safety check failed"):
+            with runner.repository_lock(self.repo):
+                self.fail("symlinked repository lock acquired")
+
+        self.assertEqual(victim.read_bytes(), b"preserve-repository-victim")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), before_mode)
 
     def test_submodules_and_nested_repositories_are_rejected(self) -> None:
         runner.capture_repo_state(self.repo)
