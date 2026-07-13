@@ -20,6 +20,7 @@ The accepted product direction is to keep the personal loop—risk classificatio
 | The complete Assurance baseline is retained independently | fact | local Git repository | 2026-07-13 | branch `codex/enterprise-assurance` at commit `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a` | current; no sensitive data |
 | Assurance machinery dominated the former implementation and public contract | fact | local repository baseline | 2026-07-13 | former `plugins/rootloom/skills/high-assurance-coding-change/`, setup, Hooks, tests, CI, and 1.2.19 docs on the retained branch | current baseline; no sensitive data |
 | The requested direction is default Core with separated enterprise capability | fact | user-provided product plan | 2026-07-13 | task attachment summarized in `.codex/plans/personal-core-split.md` | current; no sensitive data |
+| Both product branches and the Personal Core release are public | fact | GitHub `liyanqing90/rootloom` | 2026-07-13 | `main` at `7667ae5`; `codex/enterprise-assurance` at `7da82dc`; annotated tag and Release `v2.0.0`; CI run `29261706308` | current; no sensitive data |
 
 ## Decision
 

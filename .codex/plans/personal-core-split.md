@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: architecture and public product contract
@@ -10,7 +10,7 @@
 
 ## Goal and observable success
 
-Keep the complete Rootloom 1.2.19 assurance product available on a dedicated local branch while making `main` a coherent personal-first product. The personal product must preserve risk routing, evidence, root-cause diagnosis, scoped implementation, verification, review, project guidance, and durable decision memory while removing enterprise approval, protected-deletion, human-review transaction, hardened artifact, recovery-journal, and delegated-runner machinery from its default code and documentation.
+Keep the complete Rootloom 1.2.19 assurance product available on a dedicated branch while making `main` a coherent personal-first product. The personal product must preserve risk routing, evidence, root-cause diagnosis, scoped implementation, verification, review, project guidance, and durable decision memory while removing enterprise approval, protected-deletion, human-review transaction, hardened artifact, recovery-journal, and delegated-runner machinery from its default code and documentation.
 
 Success is observable when:
 
@@ -33,7 +33,7 @@ Success is observable when:
 ## Baseline evidence
 
 - `main` and `origin/main` both pointed to `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a` with a clean worktree before the split.
-- The same commit is now retained by local branch `codex/enterprise-assurance`.
+- The same commit is now retained by local and remote branch `codex/enterprise-assurance`.
 - The former default plugin contains a 5,627-line strict runner, a 4,569-line runner test, Human Review modules, protected-deletion approval, hardened lock code, setup recovery journals, custom agents, and a high-assurance profile.
 - Public docs and validation currently require the high-assurance Skill and strict-runner CI.
 
@@ -107,19 +107,18 @@ Success is observable when:
 - Type/lint/build/package: `make check` passed; `git diff --check` passed; the generated `AGENTS.md` validator returned `valid: true`.
 - UI/browser evidence: the shared README brand artwork was inspected; `docs/diagram/architecture.svg` rendered successfully through the native macOS SVG path and its 2800×1680 PNG fallback was visually inspected with labels, spacing, arrows, and product boundaries intact. The bundled Sharp converter did not render local fonts correctly in this environment, so its malformed PNG was replaced by the native render rather than published.
 - Security/dependency checks: standard-library imports only; validation scans for secret patterns and stale assurance surfaces.
-- UI/browser evidence: render the replacement SVGs to PNG, inspect them, and verify every README-local image target resolves.
-- Post-action verification: `git diff --check`, branch/tree comparison, final repository status, GitHub Actions result, remote branch/tag resolution, GitHub Release state, and fresh analogous-path/removable-complexity review.
+- Post-action verification: GitHub Actions run `29261706308` passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs for release commit `7667ae5c877b350a7e3b042d8b4aedc6161780de`. Remote `main` resolves to that commit, `codex/enterprise-assurance` resolves to untouched baseline `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a`, annotated tag `v2.0.0` dereferences to the release commit, the GitHub Release is public, and the Enterprise branch plus both README image URLs return HTTP 200.
 
 ## Risks
 
 - Risk: removing assurance files leaves stale public references or validation assumptions.
   - Mitigation: repository-wide reference scan plus contract validation.
-  - Residual risk: external links may still point to historical interfaces until a future release is published.
+  - Residual risk: third-party links may still target removed historical interfaces; synchronized migration docs route users to the retained branch.
 - Risk: simplified setup cannot compensate an abrupt process/host failure across multiple files.
   - Mitigation: preview, conflict refusal, ordinary process lock, per-file atomic replace, pre-mutation backups, explicit rollback.
   - Residual risk: a crash between file replacements can leave a partial apply; `plan`/`status` exposes drift and the backup manifest supports manual or command rollback.
-- Risk: branch-only enterprise storage is undiscoverable to remote users before push.
-  - Mitigation: document the exact branch purpose and publish the preserved baseline branch as part of 2.0.0 rollout.
+- Risk: branch-based enterprise storage is less discoverable than the default plugin.
+  - Mitigation: document and link the exact branch from both READMEs, and publish the preserved baseline branch as part of 2.0.0 rollout.
   - Residual risk: branch installation remains more advanced than installing the default Personal Core product.
 - Risk: verification commands mutate the tracked patch or captured path set after the dangerous-deletion snapshot.
   - Mitigation: fail verification bundles on captured-state drift and regression-test tracked and captured-untracked sensitive deletion plus ordinary mutation.
@@ -135,6 +134,7 @@ Success is observable when:
 - 2026-07-13 — Publication authorized: release Personal Core as `v2.0.0`, push `main`, publish the preserved enterprise branch, wait for required CI, then create and verify the GitHub Release.
 - 2026-07-13 — Fresh challenge narrowed the verification claim to the evidence actually captured: tracked patch plus changed/untracked path set. It also added captured-untracked sensitive-deletion refusal and invalid-HEAD fail-closed coverage.
 - 2026-07-13 — Initial publication CI run `29261348889` passed Linux 3.11–3.14, macOS, and Codex CLI contracts but exposed POSIX `shlex` consumption of Windows executable-path backslashes. Release tagging remained blocked while platform-aware parsing and a direct regression test were added.
+- 2026-07-13 — Publication complete: CI run `29261706308` passed all seven jobs; annotated tag `v2.0.0` targets `7667ae5c877b350a7e3b042d8b4aedc6161780de`; GitHub Release `https://github.com/liyanqing90/rootloom/releases/tag/v2.0.0` is public; remote Enterprise Assurance remains the untouched 1.2.19 baseline.
 
 ## Durable decision records
 

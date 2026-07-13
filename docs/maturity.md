@@ -2,6 +2,8 @@
 
 Rootloom Personal Core 2.0 is an early-stage, single-maintainer product. Its goal is to make Codex engineering behavior more deliberate and inspectable; the repository does not yet contain controlled evidence that it reduces defects or review time.
 
+Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Windows, and pinned Codex CLI contract matrix. That proves the checked mechanics on those environments, not model-level engineering quality.
+
 ## What is executable
 
 - deterministic, bounded, network-free project-guidance scanning;
