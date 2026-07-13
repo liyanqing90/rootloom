@@ -32,7 +32,7 @@ Use `codex execpolicy check` against every active Rules file. The most restricti
 
 ## Verification helper rejects a command
 
-`finalize_change.py` parses commands with `shlex` and does not run a shell. Pipelines, redirects, `&&`, environment assignment, or command substitution are not interpreted. Put complex verification in a reviewed repository-owned script or Make target and invoke that executable directly.
+`finalize_change.py` parses commands with platform-aware `shlex` rules and does not run a shell. Windows parsing preserves backslash paths and removes matching outer quotes from arguments; quote an executable path when it contains spaces. Pipelines, redirects, `&&`, environment assignment, or command substitution are not interpreted. Put complex verification in a reviewed repository-owned script or Make target and invoke that executable directly.
 
 Exit 124 is timeout. Exit 125 means the bounded output tail was exceeded. Increase budgets only when the larger evidence is necessary and safe to retain.
 

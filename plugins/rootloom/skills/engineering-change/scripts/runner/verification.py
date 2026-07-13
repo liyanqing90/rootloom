@@ -2,11 +2,28 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import shlex
 
 from .contracts import VerificationResult
 from .process import run_command
+
+
+def split_command(raw: str, *, windows: bool | None = None) -> list[str]:
+    if windows is None:
+        windows = os.name == "nt"
+    argv = shlex.split(raw, posix=not windows)
+    if windows:
+        argv = [
+            token[1:-1]
+            if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}
+            else token
+            for token in argv
+        ]
+    if not argv:
+        raise ValueError("verification command cannot be empty")
+    return argv
 
 
 def verify(
@@ -19,9 +36,7 @@ def verify(
     results: list[VerificationResult] = []
     chunks: list[bytes] = []
     for raw in commands:
-        argv = shlex.split(raw)
-        if not argv:
-            raise ValueError("verification command cannot be empty")
+        argv = split_command(raw)
         result, output = run_command(
             argv,
             cwd=repo,

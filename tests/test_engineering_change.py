@@ -18,9 +18,27 @@ SCRIPT = (
     / "scripts"
     / "finalize_change.py"
 )
+sys.path.insert(0, str(SCRIPT.parent))
+from runner.verification import split_command
 
 
 class EngineeringChangeTests(unittest.TestCase):
+    def test_windows_command_split_preserves_backslash_paths_and_outer_quotes(self) -> None:
+        raw = r"C:\hostedtoolcache\Python\python.exe -c 'assert 2 == 2'"
+        self.assertEqual(
+            split_command(raw, windows=True),
+            [r"C:\hostedtoolcache\Python\python.exe", "-c", "assert 2 == 2"],
+        )
+        nested = r'''C:\hostedtoolcache\Python\python.exe -c '__import__("pathlib").Path(".env").unlink()' '''.strip()
+        self.assertEqual(
+            split_command(nested, windows=True),
+            [
+                r"C:\hostedtoolcache\Python\python.exe",
+                "-c",
+                '__import__("pathlib").Path(".env").unlink()',
+            ],
+        )
+
     def make_repo(self, root: Path) -> Path:
         repo = root / "repo"
         repo.mkdir()

@@ -102,7 +102,7 @@ Success is observable when:
 - Original failure path: baseline inventory confirmed the installable plugin, setup, Hooks, CI, docs, and 10,000+ focused Runner/Human Review lines bundled Assurance with Core; the baseline remains on the enterprise branch.
 - Owning-boundary invariant: `make validate` passed and asserts the Personal Core Skill/asset/Hook catalog while rejecting the former high-assurance Skill, profile, custom-agent TOMLs, and strict-runner CI job.
 - Adjacent negative/alternate path: focused tests prove sensitive deletion/rename refusal, no-verification non-PASS, user-conflict refusal, symlink refusal, post-setup drift refusal, update rollback to the prior install, and `rollback --all` to pre-install state.
-- Focused tests: `make test` passed 41 tests covering workflow helper, project memory, simple lock, setup, Hooks, and guidance, including verification drift, tracked/captured-untracked sensitive deletion, empty capability selection, unborn repositories, and invalid `HEAD`.
+- Focused tests: `make test` passed 42 tests covering workflow helper, project memory, simple lock, setup, Hooks, and guidance, including verification drift, tracked/captured-untracked sensitive deletion, empty capability selection, unborn repositories, invalid `HEAD`, and Windows verification-command parsing.
 - Contract/migration tests: `make compatibility-smoke` passed with local Codex CLI 0.144.2; plugin install, personal apply/status/rollback, zero managed leftovers, and Rules decisions (`commit=allow`, `push=prompt`, `reset=forbidden`) were observed.
 - Type/lint/build/package: `make check` passed; `git diff --check` passed; the generated `AGENTS.md` validator returned `valid: true`.
 - UI/browser evidence: the shared README brand artwork was inspected; `docs/diagram/architecture.svg` rendered successfully through the native macOS SVG path and its 2800×1680 PNG fallback was visually inspected with labels, spacing, arrows, and product boundaries intact. The bundled Sharp converter did not render local fonts correctly in this environment, so its malformed PNG was replaced by the native render rather than published.
@@ -134,6 +134,7 @@ Success is observable when:
 - 2026-07-13 — Final branch check confirmed `codex/enterprise-assurance` remains at `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a` with the former Skill, Hook, and profile present in that tree.
 - 2026-07-13 — Publication authorized: release Personal Core as `v2.0.0`, push `main`, publish the preserved enterprise branch, wait for required CI, then create and verify the GitHub Release.
 - 2026-07-13 — Fresh challenge narrowed the verification claim to the evidence actually captured: tracked patch plus changed/untracked path set. It also added captured-untracked sensitive-deletion refusal and invalid-HEAD fail-closed coverage.
+- 2026-07-13 — Initial publication CI run `29261348889` passed Linux 3.11–3.14, macOS, and Codex CLI contracts but exposed POSIX `shlex` consumption of Windows executable-path backslashes. Release tagging remained blocked while platform-aware parsing and a direct regression test were added.
 
 ## Durable decision records
 

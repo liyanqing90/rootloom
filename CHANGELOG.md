@@ -34,6 +34,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Fail lightweight verification bundles when a verification command changes the tracked patch or captured path set, and re-check tracked or captured-untracked dangerous deletions after verification.
 - Preserve the intentional empty capability selection installed by `skills-only` instead of falling back to the `personal` preset.
 - Generate review bundles in Git repositories that have not created their first commit yet.
+- Preserve Windows executable-path backslashes when parsing verification commands.
 - Replace stale Assurance-oriented README imagery with the Personal Core product split and reuse the synchronized artwork in English and Chinese documentation.
 
 ## [1.2.19] - 2026-07-13
