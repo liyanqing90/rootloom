@@ -29,7 +29,7 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 2. 追到真正拥有问题的不变量，而不是接受表面补丁；
 3. 修改前先约束范围；
 4. 根据行为变化选择验证；
-5. 复用项目知识与失败经验。
+5. 在相关任务中复用项目知识与失败经验。
 
 默认采用单代理。Human Review 状态机、protected deletion 承诺、不可篡改 Artifact 链、共享环境加固锁、多代理审计 Runner 与 setup 恢复日志不再属于 `main`。
 
@@ -37,7 +37,7 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 
 | 产品 | 分支 | 定位 |
 | --- | --- | --- |
-| Rootloom Personal Core 2.x | `main` | 面向个人 Codex 用户的日常风险感知工程闭环 |
+| Rootloom Personal Core 2.1.x | `main` | 面向个人 Codex 用户的日常风险感知工程闭环 |
 | Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | 保留 Human Review、protected deletion、严格 Runner 与恢复机制的审计工作流 |
 
 这不是功能降级，而是明确的产品拆分。企业 Assurance 作为独立产品线保留，个人用户不再承担它的复杂度。
@@ -53,13 +53,13 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 ```text
 任务
   ↓
-风险分析 ── Tier 0 Direct / Tier 1 Scoped / Tier 2 Governed
+风险扫描 ── 可解释的最低 Tier 0 / Tier 1 / Tier 2
   ↓
 证据 → 根因 → Change Contract → 实现
   ↓
 验证智能 → Final Review Summary
-  ↓
-可选的项目 / 失败记忆
+  ↖                         ↗
+相关 Engineering Memory
 ```
 
 最终摘要保持轻量：
@@ -68,7 +68,9 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 {
   "changed_files": ["src/example.py"],
   "risk": "medium",
+  "risk_assessment": {"minimum_tier": 1, "signals": [{"id": "behavioral-code"}]},
   "tests": [{"command": ["python3", "-m", "unittest"], "passed": true}],
+  "verification_plan": {"status": "suggested-not-executed"},
   "verification_preserved_capture": true,
   "remaining_risks": []
 }
@@ -78,11 +80,11 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 
 | 能力 | 结果 |
 | --- | --- |
-| Task Intelligence | Tier 判断、具体风险信号与工作流选择 |
+| Task Intelligence | 综合任务、路径、diff 与记忆信号，给出可解释最低 Tier 与工作流选择 |
 | Engineering Workflow | 证据、根因、变更合同、实现、验证与审查 |
-| Verification Intelligence | 主路径、所属边界不变量与相邻路径覆盖 |
+| Verification Intelligence | 风险专属行为清单与仓库命令建议；和已经执行的证据明确分开 |
 | Project Guidance | 确定性根 `AGENTS.md` 播种与语义精炼 |
-| Project Memory | 可选 `.project-memory/` 架构、风险、决策与失败经验 |
+| Engineering Memory | 相关性检索、过期感知的 `.project-memory/` 架构、风险、决策与失败经验 |
 | Decision Memory | 接受后的持久工程决策记录 |
 | Command Safety | 区分可逆本地操作、破坏性操作与外部操作的 Rules |
 | 轻量产物 | 普通 `diff.patch`、`test.log` 与 `summary.json` |
@@ -131,6 +133,17 @@ $engineering-change
 修复重连竞态，并验证重连和正常断开路径。
 ```
 
+Skill 会先运行本地建议式扫描。也可以在修改前直接检查相同 JSON：
+
+```bash
+python3 <engineering-change-skill>/scripts/analyze_change.py \
+  --repo /absolute/path/to/repo \
+  --task '修复重连竞态' \
+  --path src/relay.py
+```
+
+结果会解释风险信号、最低 Tier、匹配的活跃记忆、过期历史以及应该验证的行为。它只是建议；语义证据仍可继续提高 Tier。
+
 记录可复用项目知识：
 
 ```text
@@ -164,13 +177,13 @@ $refine-project-guidance
 python3 <engineering-change-skill>/scripts/finalize_change.py \
   --repo /absolute/path/to/repo \
   --output /absolute/path/to/run \
-  --risk medium \
+  --task '修复重连竞态' \
   --verify 'make test'
 ```
 
-该工具不使用 shell。它记录 tracked Git patch、有界测试输出、修改路径、验证结果与剩余风险；故意不读取 untracked 文件内容，并支持尚未产生首个提交的仓库。验证必须保持 tracked patch 与已捕获的 changed/untracked 路径集合不变；一旦漂移，bundle 会失败，不会继续使用过期的修改路径或删除证据。精确删除 `.env`、secret、migration 或 database 路径时——包括验证期间消失的已捕获 untracked 路径——必须在人确认后传入对应的 `--confirm-dangerous-delete`。
+输出目录必须位于被捕获仓库之外，避免 bundle 自己成为未捕获的 worktree 修改。该工具不使用 shell。它记录 tracked Git patch、有界聚合测试输出、修改路径、风险评估、建议验证计划、已执行结果与剩余风险。风险默认自动判断；可选 `--risk` 只能提高、不能压低扫描下限。建议命令不会自动执行，也不会冒充通过的测试。工具故意不读取 untracked 文件内容，并支持尚未产生首个提交的仓库。tracked patch 默认超过可配置的 16 MiB 上限即拒绝，最多 20 条验证命令共享输出预算。验证必须保持 tracked patch 与已捕获的 changed/untracked 路径集合不变；一旦漂移，bundle 会失败，不会继续使用过期的修改路径或删除证据。精确删除 `.env`、secret、migration 或 database 路径时——包括验证期间消失的已捕获 untracked 路径——必须在人确认后传入对应的 `--confirm-dangerous-delete`。
 
-## 项目记忆
+## Engineering Memory
 
 `.project-memory/` 是可选、可审查、可版本化的：
 
@@ -183,6 +196,17 @@ python3 <engineering-change-skill>/scripts/finalize_change.py \
 ```
 
 记忆只是线索，不是权威。发生冲突时，当前源码、Schema、测试、Manifest、CI 与运行时证据优先。Rootloom 不会静默修改记忆。
+
+只检索相关的活跃条目：
+
+```bash
+python3 <project-memory-skill>/scripts/project_memory.py \
+  --repo /absolute/path/to/repo context \
+  --path src/relay.py \
+  --query '重连顺序'
+```
+
+新的显式记录可携带证据与过期时间，自动获得确定性 ID；完全重复不会继续膨胀文件，`set-status` 可以在不删除历史的情况下解决或替代旧经验。现有 `rootloom-project-memory-v1` 文件与旧条目继续可读，`context` 永远不会迁移或重写它们。
 
 ## Setup 安全边界
 

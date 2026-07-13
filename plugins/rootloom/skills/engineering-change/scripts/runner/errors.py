@@ -7,7 +7,3 @@ class ChangeError(RuntimeError):
 
 class DangerousDeletionError(ChangeError):
     """A sensitive deletion needs exact operator confirmation."""
-
-
-class VerificationError(ChangeError):
-    """A requested verification command failed or could not run."""

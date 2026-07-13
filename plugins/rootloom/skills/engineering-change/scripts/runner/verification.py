@@ -35,16 +35,35 @@ def verify(
 ) -> tuple[list[VerificationResult], bytes]:
     results: list[VerificationResult] = []
     chunks: list[bytes] = []
+    remaining_output = max_output_bytes
     for raw in commands:
+        header = (f"$ {raw}\n").encode("utf-8")
+        separator_size = 1 if chunks else 0
+        available = remaining_output - separator_size
+        if available <= len(header) + 1:
+            results.append(
+                VerificationResult(
+                    command=split_command(raw),
+                    exit_code=125,
+                    duration_seconds=0.0,
+                    passed=False,
+                )
+            )
+            notice = b"Rootloom: aggregate verification output budget exhausted\n"
+            if available > 0:
+                chunks.append(notice[:available])
+            break
         argv = split_command(raw)
         result, output = run_command(
             argv,
             cwd=repo,
             timeout=timeout,
-            max_output_bytes=max_output_bytes,
+            max_output_bytes=available - len(header) - 1,
         )
         results.append(result)
-        chunks.append((f"$ {raw}\n").encode("utf-8") + output.rstrip() + b"\n")
+        chunk = header + output.rstrip() + b"\n"
+        chunks.append(chunk)
+        remaining_output -= separator_size + len(chunk)
         if not result.passed:
             break
     return results, b"\n".join(chunks)

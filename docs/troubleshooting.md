@@ -34,7 +34,17 @@ Use `codex execpolicy check` against every active Rules file. The most restricti
 
 `finalize_change.py` parses commands with platform-aware `shlex` rules and does not run a shell. Windows parsing preserves backslash paths and removes matching outer quotes from arguments; quote an executable path when it contains spaces. Pipelines, redirects, `&&`, environment assignment, or command substitution are not interpreted. Put complex verification in a reviewed repository-owned script or Make target and invoke that executable directly.
 
-Exit 124 is timeout. Exit 125 means the bounded output tail was exceeded. Increase budgets only when the larger evidence is necessary and safe to retain.
+Exit 124 is timeout. Exit 125 means the bounded output budget was exceeded. Exit 126 means the executable could not start. Increase budgets only when the larger evidence is necessary and safe to retain.
+
+The output directory must be outside the captured repository. A tracked patch larger than the default 16 MiB ceiling is refused; raise `--max-patch-bytes` only after checking why the review bundle is that large. The verification log budget is aggregate across at most 20 commands.
+
+## The risk scanner looks too strict or too lenient
+
+Inspect `signals`, `changed_paths`, matching memory, and `confidence` in `analyze_change.py` output. Pass anticipated `--path` values before editing so documentation/tests can be distinguished from product code. The reported Tier is a minimum advisory floor: current semantic evidence may raise it, but neither `--declared-risk` nor finalizer `--risk` can lower it. If a false positive is repeatable, add a focused analyzer regression rather than hiding the signal.
+
+## The verification plan says suggested-not-executed
+
+That is intentional. `required_behaviors` describes what should be proven and `suggested_commands` contains detected repository commands, but only commands explicitly supplied with `--verify` appear under `tests` and affect `passed`. Review suggestions before execution.
 
 ## Sensitive deletion returns exit 10
 
@@ -42,7 +52,7 @@ The helper detected an exact `.env`, secret, migration, or database path deletio
 
 ## Project memory is stale or malformed
 
-Repository evidence wins. Correct the `.project-memory/` file in a reviewed change. The helper refuses unknown formats or non-list `entries`; it never silently migrates ambiguous content.
+Repository evidence wins. `context` excludes expired, resolved, and superseded matches by default and lists them under `stale`; use `--include-stale` only for historical investigation. Use explicit `set-status` lifecycle changes instead of deleting lessons. Correct malformed `.project-memory/` files in a reviewed change. The helper refuses unknown formats, oversized collections, unsafe paths, symlinks, or invalid entries and never silently migrates ambiguous content.
 
 ## I need the old Human Review or strict Runner
 

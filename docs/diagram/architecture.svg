@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1400 840" role="img" aria-labelledby="title desc">
   <title id="title">Rootloom Personal Core and Enterprise Assurance product split</title>
-  <desc id="desc">Rootloom 1.2.19 branches into a personal-first main product and a preserved enterprise assurance baseline.</desc>
+  <desc id="desc">Rootloom 1.2.19 branches into Personal Core 2.1 with active risk, verification, and engineering-memory feedback, plus a preserved enterprise assurance baseline.</desc>
   <defs>
     <linearGradient id="canvas" x1="0" y1="0" x2="1400" y2="840" gradientUnits="userSpaceOnUse">
       <stop stop-color="#0b1120"/>
@@ -36,8 +36,8 @@
   <rect width="1400" height="840" rx="36" fill="url(#personal-glow)"/>
 
   <text x="50" y="56" fill="#67e8f9" class="eyebrow">ROOTLOOM · PRODUCT ARCHITECTURE</text>
-  <text x="50" y="102" fill="#f8fafc" font-size="34" font-weight="800" letter-spacing="-.8">Personal by default. Assurance stays separate.</text>
-  <text x="50" y="132" fill="#94a3b8" font-size="16">One shared origin, two explicit product contracts, no hidden enterprise weight on main.</text>
+  <text x="50" y="102" fill="#f8fafc" font-size="34" font-weight="800" letter-spacing="-.8">Personal intelligence in the loop. Assurance stays separate.</text>
+  <text x="50" y="132" fill="#94a3b8" font-size="16">Static signals and relevant history guide decisions; current evidence remains the authority.</text>
 
   <!-- Product regions -->
   <rect x="340" y="160" width="1010" height="380" rx="24" fill="#083344" fill-opacity=".16" stroke="#22d3ee" stroke-width="1.4"/>
@@ -55,6 +55,10 @@
     <path d="M890 300H905"/><path d="M1025 300H1040"/><path d="M1160 300H1175"/>
   </g>
   <path d="M1235 355C1235 382 1110 384 1110 410" fill="none" stroke="#34d399" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow-cyan)"/>
+  <g fill="none" stroke="#a78bfa" stroke-width="1.8" stroke-dasharray="5 5" stroke-opacity=".82" marker-end="url(#arrow-violet)">
+    <path d="M690 410V365H425V347"/>
+    <path d="M755 410V365H1100V347"/>
+  </g>
 
   <!-- Opaque masks -->
   <rect x="50" y="325" width="200" height="90" rx="14" fill="#0f172a"/>
@@ -79,22 +83,22 @@
   <text x="150" y="398" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="700">PRESERVED, NOT DELETED</text>
 
   <!-- Personal Core labels -->
-  <text x="375" y="194" fill="#67e8f9" class="eyebrow">MAIN · PERSONAL CORE 2.x</text>
-  <text x="375" y="220" fill="#cbd5e1" font-size="13">Single-agent daily engineering loop</text>
+  <text x="375" y="194" fill="#67e8f9" class="eyebrow">MAIN · PERSONAL CORE 2.1</text>
+  <text x="375" y="220" fill="#cbd5e1" font-size="13">Single-agent daily engineering loop · explainable, local, bounded</text>
 
   <g>
-    <g><rect x="365" y="255" width="120" height="90" rx="12" fill="#083344" fill-opacity=".62" stroke="#22d3ee"/><text x="425" y="291" text-anchor="middle" class="label">Risk</text><text x="425" y="313" text-anchor="middle" class="sub">tier routing</text></g>
+    <g><rect x="365" y="255" width="120" height="90" rx="12" fill="#083344" fill-opacity=".62" stroke="#22d3ee"/><text x="425" y="291" text-anchor="middle" class="label">Risk Scanner</text><text x="425" y="313" text-anchor="middle" class="sub">signals + floor</text></g>
     <g><rect x="500" y="255" width="120" height="90" rx="12" fill="#083344" fill-opacity=".62" stroke="#22d3ee"/><text x="560" y="291" text-anchor="middle" class="label">Evidence</text><text x="560" y="313" text-anchor="middle" class="sub">facts first</text></g>
     <g><rect x="635" y="255" width="120" height="90" rx="12" fill="#064e3b" fill-opacity=".56" stroke="#34d399"/><text x="695" y="291" text-anchor="middle" class="label">Diagnosis</text><text x="695" y="313" text-anchor="middle" class="sub">owning cause</text></g>
     <g><rect x="770" y="255" width="120" height="90" rx="12" fill="#78350f" fill-opacity=".32" stroke="#fbbf24"/><text x="830" y="291" text-anchor="middle" class="label">Contract</text><text x="830" y="313" text-anchor="middle" class="sub">scope + invariant</text></g>
     <g><rect x="905" y="255" width="120" height="90" rx="12" fill="#083344" fill-opacity=".62" stroke="#22d3ee"/><text x="965" y="291" text-anchor="middle" class="label">Change</text><text x="965" y="313" text-anchor="middle" class="sub">one writer</text></g>
-    <g><rect x="1040" y="255" width="120" height="90" rx="12" fill="#064e3b" fill-opacity=".56" stroke="#34d399"/><text x="1100" y="291" text-anchor="middle" class="label">Verification</text><text x="1100" y="313" text-anchor="middle" class="sub">behavior proof</text></g>
+    <g><rect x="1040" y="255" width="120" height="90" rx="12" fill="#064e3b" fill-opacity=".56" stroke="#34d399"/><text x="1100" y="291" text-anchor="middle" class="label">Verify Plan</text><text x="1100" y="313" text-anchor="middle" class="sub">what + proof</text></g>
     <g><rect x="1175" y="255" width="120" height="90" rx="12" fill="#1e3a8a" fill-opacity=".42" stroke="#60a5fa"/><text x="1235" y="291" text-anchor="middle" class="label">Summary</text><text x="1235" y="313" text-anchor="middle" class="sub">small + reviewable</text></g>
   </g>
 
   <g>
     <g><rect x="380" y="410" width="205" height="82" rx="12" fill="#083344" fill-opacity=".46" stroke="#22d3ee"/><text x="482" y="443" text-anchor="middle" class="label">Project Guidance</text><text x="482" y="465" text-anchor="middle" class="sub">deterministic context</text></g>
-    <g><rect x="620" y="410" width="205" height="82" rx="12" fill="#4c1d95" fill-opacity=".36" stroke="#a78bfa"/><text x="722" y="443" text-anchor="middle" class="label">Project Memory</text><text x="722" y="465" text-anchor="middle" class="sub">explicit, local, reviewable</text></g>
+    <g><rect x="620" y="410" width="205" height="82" rx="12" fill="#4c1d95" fill-opacity=".36" stroke="#a78bfa"/><text x="722" y="443" text-anchor="middle" class="label">Engineering Memory</text><text x="722" y="465" text-anchor="middle" class="sub">relevant · stale-aware</text></g>
     <g><rect x="860" y="410" width="205" height="82" rx="12" fill="#78350f" fill-opacity=".3" stroke="#fbbf24"/><text x="962" y="443" text-anchor="middle" class="label">Command Safety</text><text x="962" y="465" text-anchor="middle" class="sub">local vs external actions</text></g>
     <g><rect x="1100" y="410" width="205" height="82" rx="12" fill="#064e3b" fill-opacity=".5" stroke="#34d399"/><text x="1202" y="443" text-anchor="middle" class="label">Local Artifacts</text><text x="1202" y="465" text-anchor="middle" class="sub">diff · tests · summary</text></g>
   </g>
@@ -109,7 +113,7 @@
     <g><rect x="1155" y="650" width="170" height="70" rx="11" fill="#4c1d95" fill-opacity=".38" stroke="#a78bfa"/><text x="1240" y="681" text-anchor="middle" class="label">Recovery</text><text x="1240" y="702" text-anchor="middle" class="sub">journals + compensation</text></g>
   </g>
 
-  <circle cx="52" cy="795" r="5" fill="#22d3ee"/><text x="66" y="800" fill="#cbd5e1" font-size="11">Current default product</text>
-  <circle cx="230" cy="795" r="5" fill="#a78bfa"/><text x="244" y="800" fill="#cbd5e1" font-size="11">Preserved enterprise product line</text>
+  <circle cx="52" cy="795" r="5" fill="#22d3ee"/><text x="66" y="800" fill="#cbd5e1" font-size="11">Executable personal loop</text>
+  <circle cx="230" cy="795" r="5" fill="#a78bfa"/><text x="244" y="800" fill="#cbd5e1" font-size="11">Memory feedback / preserved enterprise line</text>
   <text x="1348" y="800" text-anchor="end" fill="#64748b" font-size="11">No Assurance runtime dependency crosses into main</text>
 </svg>

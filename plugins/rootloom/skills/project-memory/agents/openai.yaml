@@ -1,4 +1,4 @@
 interface:
-  display_name: "Project Memory"
-  short_description: "Keep project risks and failure lessons reusable"
-  default_prompt: "Use $project-memory to inspect or record durable project knowledge."
+  display_name: "Engineering Memory"
+  short_description: "Retrieve relevant risks, decisions, and failure lessons"
+  default_prompt: "Use $project-memory to retrieve or explicitly record durable engineering knowledge."

@@ -6,6 +6,30 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-07-14
+
+### Added
+
+- Add an explainable, standard-library-only change analyzer that combines task text, anticipated/current paths, Git operations, bounded tracked diff signals, active project memory, and detected repository commands into a minimum Tier, effective risk, confidence, reasons, and verification plan.
+- Add risk-specific verification behaviors for authentication, persisted data/migrations, money, concurrency/state machines, infrastructure, public consumers, destructive effects, and matching historical lessons. Suggested commands are explicitly `suggested-not-executed` and never count as test evidence.
+- Add relevant engineering-memory retrieval by repeatable path/query with bounded results, selection metadata, stale warnings, optional historical inclusion, deterministic entry IDs, evidence references, expiry, lifecycle status, and exact duplicate suppression.
+
+### Changed
+
+- Make finalizer risk automatic. Existing `--risk low|medium|high` input remains accepted and may raise, but can no longer lower, the detected floor. Add `risk_assessment` and `verification_plan` to the existing lightweight summary while retaining its prior fields and artifact names.
+- Reframe Project Memory as Engineering Memory across the Skill, plugin metadata, English/Chinese README, architecture, maturity, troubleshooting, and product diagram. Memory now feeds the risk and verification decisions only when relevant.
+- Advance the plugin manifest to 2.1.0 without adding a database, vector index, network service, daemon, automatic memory write, approval flow, audit chain, or multi-agent runner.
+
+### Compatibility
+
+- Preserve `rootloom-project-memory-v1` envelopes and accept legacy entries without ID, status, paths, evidence, or expiry. Context reads never migrate or rewrite them.
+- Preserve existing `rootloom-engineering-summary-v1` fields, `diff.patch`, `test.log`, `summary.json`, and old explicit-risk finalizer calls; new assessment and planning fields are additive.
+
+### Safety
+
+- Bound memory collections, architecture context, result counts, tracked patch analysis, and memory matches. Refuse unsafe repository-relative memory paths and symlinked memory write boundaries; the analyzer ignores malformed, oversized, or symlinked memory with explicit warnings.
+- Keep untracked contents unread, require bundle output outside the captured repository, execute only explicit no-shell `--verify` commands, bound patch/command/aggregate-log size, and retain exact dangerous-deletion plus verification-drift refusal.
+
 ## [2.0.0] - 2026-07-13
 
 ### Changed

@@ -11,7 +11,18 @@ Default sequence: Evidence → Diagnosis → Change Contract → Implementation 
 
 ## 1. Route the task
 
-Classify the request before editing:
+Run the deterministic advisory scanner before editing. Include anticipated paths when known; task-only analysis is valid before ownership is located:
+
+```bash
+python3 <skill-dir>/scripts/analyze_change.py \
+  --repo /absolute/path/to/repository \
+  --task 'Describe the requested behavior' \
+  --path src/anticipated-owner.py
+```
+
+Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
+
+Then classify the request:
 
 - **Tier 0 Direct** — mechanical, local, reversible, and directly verifiable;
 - **Tier 1 Scoped** — behavioral change or defect with a bounded ownership path;
@@ -21,7 +32,7 @@ Use `operating-coding-change` for Tier 0/1 discipline and `operating-high-risk-c
 
 ## 2. Load project intelligence
 
-Read the closest `AGENTS.md` plus `.project-memory/architecture.md`, `.project-memory/known-risks.json`, `.project-memory/failures.json`, and `.project-memory/decisions.json` when they exist. Treat memory as leads and repository evidence as truth. Never create or update memory silently; use `project-memory` only when the knowledge is durable and verified.
+Read the closest `AGENTS.md`. When `.project-memory/` exists, use `project_memory.py context` with the task query and in-scope paths so only relevant active risks, failures, and decisions enter the task. Treat stale matches as history and all memory as leads; repository evidence is truth. Never create or update memory silently.
 
 ## 3. Establish evidence and diagnosis
 
@@ -62,18 +73,20 @@ Choose checks from the changed behavior, not only from convenient commands. Map 
 
 Run repository-owned commands and observe their exit status. Classify failures as introduced, pre-existing, environmental, or unverified.
 
+Use the analyzer's `verification_plan.required_behaviors` as a checklist, not evidence. Its `suggested_commands` are repository-derived suggestions and are never executed automatically. Record only commands actually run under `tests`.
+
 For a machine-readable local summary, run:
 
 ```bash
 python3 <skill-dir>/scripts/finalize_change.py \
   --repo /absolute/path/to/repository \
   --output /absolute/path/to/run \
-  --risk medium \
+  --task 'Describe the requested behavior' \
   --verify 'python3 -m unittest tests.test_example' \
   --remaining-risk 'Describe only a material remaining risk'
 ```
 
-The helper does not run a shell. It writes ordinary `diff.patch`, `test.log`, and `summary.json` files, and it supports repositories before their first commit. Verification commands must preserve the tracked patch and captured changed/untracked path set; any drift makes the bundle fail, and dangerous deletions are checked again. It refuses sensitive deletions unless every exact path is repeated with `--confirm-dangerous-delete` after the user has confirmed it.
+The output directory must be outside the repository being captured so the helper cannot create uncaptured worktree changes. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files. `--risk low|medium|high` remains optional for explicit judgment; it can raise but never lower the detected risk floor. The tracked patch defaults to a 16 MiB refusal ceiling; up to 20 verification commands share one bounded log budget. Verification commands must preserve the tracked patch and captured changed/untracked path set; drift makes the bundle fail, and dangerous deletions are checked again. It refuses sensitive deletions unless every exact path is repeated with `--confirm-dangerous-delete` after the user has confirmed it.
 
 ## 7. Challenge and summarize
 
@@ -85,7 +98,9 @@ Finish with:
 {
   "changed_files": [],
   "risk": "low | medium | high",
+  "risk_assessment": {"minimum_tier": 0, "signals": []},
   "tests": [],
+  "verification_plan": {"status": "suggested-not-executed"},
   "verification_preserved_capture": true,
   "remaining_risks": []
 }

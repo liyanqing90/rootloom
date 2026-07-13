@@ -32,12 +32,23 @@ def run_command(
         except subprocess.TimeoutExpired:
             captured.write(b"\nRootloom: command timed out\n")
             exit_code = 124
+        except OSError as exc:
+            captured.write(
+                f"\nRootloom: command could not run: {exc}\n".encode(
+                    "utf-8", errors="replace"
+                )
+            )
+            exit_code = 126
         size = captured.tell()
         truncated = size > max_output_bytes
-        captured.seek(max(0, size - max_output_bytes))
-        output = captured.read()
+        notice = b"Rootloom: output truncated to the configured tail\n"
+        read_budget = (
+            max(0, max_output_bytes - len(notice)) if truncated else max_output_bytes
+        )
+        captured.seek(max(0, size - read_budget))
+        output = captured.read(read_budget)
     if truncated:
-        output = b"Rootloom: output truncated to the configured tail\n" + output
+        output = notice[:max_output_bytes] + output
         exit_code = 125
     result = VerificationResult(
         command=argv,

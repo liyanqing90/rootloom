@@ -29,7 +29,7 @@ Rootloom Personal Core keeps the part an individual developer uses every day:
 2. trace defects to the owning invariant instead of accepting a surface patch;
 3. constrain the change before editing;
 4. choose verification from changed behavior;
-5. keep reusable project and failure knowledge.
+5. retrieve reusable project and failure knowledge when it is relevant.
 
 It is single-agent by default. Human approval state machines, protected-deletion commitments, immutable Artifact chains, hardened shared-environment locks, multi-agent audit runners, and setup recovery journals are not part of `main`.
 
@@ -37,7 +37,7 @@ It is single-agent by default. Human approval state machines, protected-deletion
 
 | Product | Branch | Purpose |
 | --- | --- | --- |
-| Rootloom Personal Core 2.x | `main` | Everyday risk-aware engineering for individual Codex users |
+| Rootloom Personal Core 2.1.x | `main` | Everyday risk-aware engineering for individual Codex users |
 | Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | Preserved audited workflow with Human Review, protected deletion, strict Runner, and recovery machinery |
 
 The split is intentional, not a feature downgrade. Enterprise Assurance remains available as a separate product line; personal users no longer pay its complexity cost.
@@ -53,13 +53,13 @@ The split is intentional, not a feature downgrade. Enterprise Assurance remains 
 ```text
 Task
   ↓
-Risk Analyzer ── Tier 0 Direct / Tier 1 Scoped / Tier 2 Governed
+Risk Scanner ── explainable minimum Tier 0 / Tier 1 / Tier 2
   ↓
 Evidence → Diagnosis → Change Contract → Implementation
   ↓
 Verification Intelligence → Final Review Summary
-  ↓
-Optional Project / Failure Memory
+  ↖                         ↗
+Relevant Engineering Memory
 ```
 
 The observable final summary stays small:
@@ -68,7 +68,9 @@ The observable final summary stays small:
 {
   "changed_files": ["src/example.py"],
   "risk": "medium",
+  "risk_assessment": {"minimum_tier": 1, "signals": [{"id": "behavioral-code"}]},
   "tests": [{"command": ["python3", "-m", "unittest"], "passed": true}],
+  "verification_plan": {"status": "suggested-not-executed"},
   "verification_preserved_capture": true,
   "remaining_risks": []
 }
@@ -78,11 +80,11 @@ The observable final summary stays small:
 
 | Capability | Result |
 | --- | --- |
-| Task intelligence | Tier detection, concrete risk signals, and workflow selection |
+| Task intelligence | Static task/path/diff/memory signals, an explainable minimum Tier, and workflow selection |
 | Engineering workflow | Evidence, diagnosis, change contract, implementation, verification, and review |
-| Verification intelligence | Primary behavior, owning invariant, and adjacent-path coverage |
+| Verification intelligence | Risk-specific behavior checklist plus detected repository commands, kept separate from executed proof |
 | Project guidance | Deterministic root `AGENTS.md` seeding plus semantic refinement |
-| Project memory | Optional `.project-memory/` architecture, risks, decisions, and failure lessons |
+| Engineering memory | Relevant, stale-aware `.project-memory/` architecture, risks, decisions, and failure lessons |
 | Decision memory | Repository-owned engineering decision records for accepted durable choices |
 | Command safety | Rules that separate reversible local work from destructive or external actions |
 | Lightweight artifacts | Ordinary `diff.patch`, `test.log`, and `summary.json` bundles |
@@ -131,6 +133,17 @@ $engineering-change
 Fix the reconnect race and verify both reconnect and clean disconnect paths.
 ```
 
+The Skill first runs a local advisory scan. You can inspect the same JSON directly before editing:
+
+```bash
+python3 <engineering-change-skill>/scripts/analyze_change.py \
+  --repo /absolute/path/to/repo \
+  --task 'Fix the reconnect race' \
+  --path src/relay.py
+```
+
+The result explains the signals, minimum Tier, matching active memory, stale history, and required verification behaviors. It is deliberately advisory: semantic evidence may raise the Tier further.
+
 For lightweight reusable project knowledge:
 
 ```text
@@ -164,13 +177,13 @@ Subagents are never a default requirement. If a user explicitly asks for delegat
 python3 <engineering-change-skill>/scripts/finalize_change.py \
   --repo /absolute/path/to/repo \
   --output /absolute/path/to/run \
-  --risk medium \
+  --task 'Fix the reconnect race' \
   --verify 'make test'
 ```
 
-The helper does not execute a shell. It records a tracked Git patch, bounded test output, changed paths, verification results, and remaining risks. Untracked file contents are intentionally omitted, and repositories before their first commit are supported. Verification must preserve the tracked patch and captured changed/untracked path set; drift makes the bundle fail instead of allowing stale changed-file or deletion evidence. Exact `.env`, secret, migration, or database deletions—including captured untracked paths removed during verification—require an explicit `--confirm-dangerous-delete` path after human confirmation.
+The output directory must be outside the captured repository so the bundle cannot become an uncaptured worktree change. The helper does not execute a shell. It records a tracked Git patch, bounded aggregate test output, changed paths, risk assessment, suggested verification plan, executed results, and remaining risks. Risk is automatic; optional `--risk` can raise but never lower the detected floor. Suggested commands are not executed automatically and never appear as passing tests. Untracked file contents are intentionally omitted, and repositories before their first commit are supported. The tracked patch has a configurable 16 MiB default refusal ceiling and at most 20 verification commands share the output budget. Verification must preserve the tracked patch and captured changed/untracked path set; drift makes the bundle fail instead of allowing stale changed-file or deletion evidence. Exact `.env`, secret, migration, or database deletions—including captured untracked paths removed during verification—require an explicit `--confirm-dangerous-delete` path after human confirmation.
 
-## Project memory
+## Engineering memory
 
 `.project-memory/` is optional and reviewable:
 
@@ -183,6 +196,17 @@ The helper does not execute a shell. It records a tracked Git patch, bounded tes
 ```
 
 Memory is a lead, not authority. Current source, schemas, tests, manifests, CI, and runtime evidence win when they disagree. Rootloom never updates memory silently.
+
+Retrieve only the relevant active entries:
+
+```bash
+python3 <project-memory-skill>/scripts/project_memory.py \
+  --repo /absolute/path/to/repo context \
+  --path src/relay.py \
+  --query 'reconnect ordering'
+```
+
+New explicit records can carry evidence and expiry. They receive deterministic IDs, exact duplicates are suppressed, and `set-status` resolves or supersedes lessons without deleting history. Existing `rootloom-project-memory-v1` files and legacy entries remain readable; context never migrates or rewrites them.
 
 ## Setup safety boundary
 

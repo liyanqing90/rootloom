@@ -30,6 +30,7 @@
 - Raise risk for persisted state, authentication/authorization, money, concurrency, state machines, migrations, shared APIs, destructive operations, or many consumers.
 - Explain the concrete risk signals and choose the lightest workflow that still proves the result.
 - Use Tier 0 for mechanical edits, Tier 1 for bounded behavior or defects, and Tier 2 for governed contracts or materially uncertain blast radius.
+- For non-trivial repository changes, use `engineering-change`'s static analyzer when available. Treat its Tier as a minimum advisory floor, inspect its reasons, and raise it when semantic evidence requires; never use it to lower explicit risk.
 
 ## Engineering Defaults
 
@@ -57,7 +58,7 @@
 - Use `engineering-change` for the default single-agent quality loop; delegation remains explicit and platform-governed.
 - Keep task-specific requirements in the current prompt and reusable procedures in Skills.
 - Use `engineering-change` as the default personal implementation loop: Evidence → Diagnosis → Change Contract → Implementation → Verification → Final Review Summary.
-- Load `.project-memory/` when present, but treat memory as leads until current repository evidence confirms it.
+- Query relevant `.project-memory/` entries by task and path when present. Exclude stale entries from current decisions by default and treat every memory result as a lead until repository evidence confirms it.
 
 ## Automatic Project Guidance
 
@@ -79,6 +80,7 @@
 
 - Derive verification from the changed behavior: prove the primary path, the owning-boundary invariant, and an adjacent negative or alternate path.
 - Do not equate one passing command with complete verification; explain what each command proves and what remains unverified.
+- Keep suggested checks separate from executed evidence. A generated verification plan is not a passing test.
 
 ## Communication
 

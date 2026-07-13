@@ -1,41 +1,102 @@
 ---
 name: project-memory
-description: Initialize, inspect, and update Rootloom's lightweight repository-owned project memory for architecture, known risks, durable decisions, and evidence-backed failure lessons. Use when a user asks Rootloom to remember project knowledge or when a verified change produces reusable failure or risk knowledge.
+description: Initialize, retrieve, and explicitly update Rootloom's repository-owned engineering memory for architecture, known risks, durable decisions, and evidence-backed failure lessons. Use when a task should reuse relevant project history or when verified knowledge will change a future engineering decision.
 ---
 
-# Project memory
+# Engineering memory
 
-Project memory is optional, explicit, local, and reviewable. It lives in `.project-memory/` so teams can version it like documentation.
+Keep a small, local, reviewable memory in `.project-memory/`. It is an engineering aid, never an authority or an automatic activity log.
 
 ## Rules
 
-- Read memory as a lead; verify it against current source, tests, schemas, and runtime evidence.
-- Record only durable facts or explicitly labeled hypotheses. Do not copy task transcripts or raw sensitive payloads.
-- Never update memory merely because a task completed. Update it only when the lesson will change a future engineering decision.
-- Prefer the existing `record-engineering-decision` Skill for accepted architecture or contract decisions; keep `decisions.json` as a concise index.
+- Query memory at task intake by the paths and intent actually in scope; do not inject the whole project history when only a few entries are relevant.
+- Treat every result as a lead. Verify it against current source, tests, schemas, manifests, CI, and runtime evidence.
+- Record only durable facts or explicitly labeled hypotheses that will change a future engineering decision. Do not copy task transcripts, model reasoning, raw logs, credentials, or sensitive payloads.
+- Attach compact evidence references when practical. Prefer current repository paths, test names, issue/trace references, or accepted decision records over pasted evidence.
+- Never initialize, record, resolve, supersede, or refresh memory silently. Every write is an explicit command followed by diff review.
+- Keep accepted architecture and contract decisions in `record-engineering-decision`; `decisions.json` is only a relevant index. Maintain stable ownership and dependency rules in `architecture.md` with current evidence links.
 
-## Commands
-
-Initialize:
+## Initialize
 
 ```bash
 python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo init
 ```
 
-Show a compact context bundle:
+This creates the compatible `rootloom-project-memory-v1` files only when absent:
 
-```bash
-python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo context
+```text
+.project-memory/
+├── README.md
+├── architecture.md
+├── known-risks.json
+├── decisions.json
+└── failures.json
 ```
 
-Record an evidence-backed failure lesson:
+## Retrieve relevant context
+
+Use repeatable paths plus the task intent. Context is read-only, bounded, and excludes expired, resolved, or superseded entries by default:
+
+```bash
+python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo context \
+  --path src/relay.py \
+  --query 'fix reconnect ordering' \
+  --limit 8
+```
+
+The result keeps `architecture`, `failures`, `risks`, and `decisions` as direct fields for compatibility. `selection` explains the query/truncation, while `stale` names matching historical entries that must not silently influence the current decision. Use `--include-stale` only when investigating history.
+
+## Record verified lessons
+
+Failure lesson:
 
 ```bash
 python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo record-failure \
   --summary 'Relay reconnect failed' \
   --root-cause 'Connection state transition race' \
   --fix 'Serialize transitions in the connection state machine' \
+  --path src/relay.py \
+  --evidence tests/test_relay.py::test_reconnect
+```
+
+Known risk:
+
+```bash
+python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo record-risk \
+  --summary 'Relay reconnect ordering is fragile' \
+  --mitigation 'Exercise repeated and cancelled transitions' \
+  --path src/relay.py \
+  --evidence docs/decisions/relay-lifecycle.md \
+  --expires 2027-01-01
+```
+
+Decision index:
+
+```bash
+python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo record-decision \
+  --summary 'All worker calls cross the relay boundary' \
+  --record docs/decisions/relay-boundary.md \
   --path src/relay.py
 ```
 
-Record a known risk or decision index entry with the corresponding subcommand. Inspect the diff before accepting the update.
+New entries receive a deterministic ID, active status, evidence/path metadata, and optional expiry. Repeating the exact record reports `deduplicated: true` and does not grow the collection.
+
+## Resolve or supersede
+
+Lifecycle changes are explicit and preserve history:
+
+```bash
+python3 <skill-dir>/scripts/project_memory.py --repo /path/to/repo set-status \
+  --kind risks \
+  --id risk-0123456789abcdef \
+  --status resolved
+```
+
+Use `--status superseded --superseded-by <new-id>` when another entry replaces the old one. Inspect the resulting JSON diff before accepting it.
+
+## Compatibility and limits
+
+- Existing v1 envelopes and legacy entries without ID, status, paths, evidence, or expiry remain readable and are never rewritten by `context`.
+- Collections are bounded to 1 MiB and 1,000 entries; architecture context is bounded to 64 KiB; query output defaults to 20 entries per kind and accepts 1–100.
+- Memory paths must be normalized repository-relative paths. Symlinked memory directories/files are refused or ignored to keep repository memory inside its owning boundary.
+- No database, vector index, embeddings, daemon, Hook write, or network service is involved.
