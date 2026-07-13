@@ -10,6 +10,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 
 import run_pipeline as runner
@@ -54,6 +55,7 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
             )
         state_policy = expected_value.get("state_policy")
         metadata_floor = expected_value.get("final_metadata_only_floor_paths")
+        repository_state = expected_value.get("repository_state")
         if not isinstance(state_policy, dict):
             raise runner.PipelineError("human review state policy is missing or invalid", 9)
         if not isinstance(metadata_floor, list) or not all(
@@ -61,6 +63,11 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
         ):
             raise runner.PipelineError(
                 "human review metadata-only floor is missing or invalid",
+                9,
+            )
+        if not isinstance(repository_state, dict):
+            raise runner.PipelineError(
+                "human review repository commitment is missing or invalid",
                 9,
             )
         protected = value.get("protected_deletions")
@@ -81,16 +88,21 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
             protected_deletions,
             state_policy=expected.get("state_policy"),
             metadata_only_floor=expected.get("final_metadata_only_floor_paths"),
+            expected_repository_state_commitment=expected.get("repository_state"),
         )
         if expected != current:
             raise runner.PipelineError("human review binding drifted; decision refused", 9)
         decisions = run_dir / "human-review.ndjson"
         summary_path = run_dir / "human-review-summary.json"
-        if decisions.exists() and not decisions.is_symlink() and decisions.stat().st_size:
-            raise runner.PipelineError("human review already has a terminal decision", 9)
+        try:
+            existing_decision = decisions.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            if stat.S_ISREG(existing_decision.st_mode) and existing_decision.st_size:
+                raise runner.PipelineError("human review already has a terminal decision", 9)
         if summary_path.exists() or summary_path.is_symlink():
             raise runner.PipelineError("human review summary already exists", 9)
-        runner.ensure_empty_private_file(decisions)
         binding_payload = json.dumps(
             expected,
             sort_keys=True,
@@ -106,59 +118,88 @@ def decide(repo: Path, run_dir: Path, reviewer: str, decision: str) -> dict[str,
             "binding_sha256": hashlib.sha256(binding_payload).hexdigest(),
         }
         payload = runner.encode_ndjson_value(record)
-        runner.append_complete_artifact(decisions, payload, expected_starting_size=0)
-        try:
-            post_write_result = runner.read_human_review_result(run_dir)
-            post_write_expected, post_write_deletions = validate_result(post_write_result)
-            if (
-                runner.human_review_full_result_sha256(post_write_result)
-                != initial_result_sha256
-                or post_write_expected != expected
-                or post_write_deletions != protected_deletions
-            ):
-                raise runner.PipelineError(
-                    "human review Result changed while the decision was written",
-                    9,
-                )
-            post_write = runner.compute_human_review_binding(
-                repo,
-                run_dir,
-                runner.human_review_result_core_sha256(post_write_result),
-                post_write_deletions,
-                state_policy=post_write_expected.get("state_policy"),
-                metadata_only_floor=post_write_expected.get(
-                    "final_metadata_only_floor_paths"
-                ),
+        with runner.pinned_empty_private_artifact(decisions) as terminal:
+            runner.append_pinned_private_artifact(
+                terminal,
+                payload,
+                expected_starting_size=0,
             )
-            final_result = runner.read_human_review_result(run_dir)
-            if runner.human_review_full_result_sha256(final_result) != initial_result_sha256:
-                raise runner.PipelineError(
-                    "human review Result changed during post-write validation",
-                    9,
+            try:
+                post_write_result = runner.read_human_review_result(run_dir)
+                post_write_expected, post_write_deletions = validate_result(
+                    post_write_result
                 )
-        except BaseException as exc:
-            runner.truncate_private_artifact(decisions, len(payload))
-            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
-                raise
-            raise runner.PipelineError(
-                "post-write human review validation failed; decision was compensated: "
-                f"{exc}",
-                9,
-            ) from exc
-        if post_write != current:
-            runner.truncate_private_artifact(decisions, len(payload))
-            raise runner.PipelineError(
-                "repository state drifted while the human review decision was written; "
-                "decision was compensated",
-                9,
-            )
-        summary = {
-            **record,
-            "accepted": decision == "accept",
-            "decision_record_sha256": hashlib.sha256(payload).hexdigest(),
-        }
-        runner.atomic_write_json(summary_path, summary)
-        return summary
+                if (
+                    runner.human_review_full_result_sha256(post_write_result)
+                    != initial_result_sha256
+                    or post_write_expected != expected
+                    or post_write_deletions != protected_deletions
+                ):
+                    raise runner.PipelineError(
+                        "human review Result changed while the decision was written",
+                        9,
+                    )
+                post_write = runner.compute_human_review_binding(
+                    repo,
+                    run_dir,
+                    runner.human_review_result_core_sha256(post_write_result),
+                    post_write_deletions,
+                    state_policy=post_write_expected.get("state_policy"),
+                    metadata_only_floor=post_write_expected.get(
+                        "final_metadata_only_floor_paths"
+                    ),
+                    expected_repository_state_commitment=post_write_expected.get(
+                        "repository_state"
+                    ),
+                )
+                final_result = runner.read_human_review_result(run_dir)
+                if (
+                    runner.human_review_full_result_sha256(final_result)
+                    != initial_result_sha256
+                ):
+                    raise runner.PipelineError(
+                        "human review Result changed during post-write validation",
+                        9,
+                    )
+                if post_write != current:
+                    raise runner.PipelineError(
+                        "repository state drifted while the human review decision "
+                        "was written",
+                        9,
+                    )
+                runner.validate_pinned_private_artifact(
+                    terminal,
+                    expected_size=len(payload),
+                )
+            except BaseException as exc:
+                try:
+                    runner.truncate_pinned_private_artifact(
+                        terminal,
+                        expected_size=len(payload),
+                    )
+                except BaseException as compensation_exc:
+                    if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                        raise
+                    raise runner.PipelineError(
+                        "post-write human review validation failed; the pinned "
+                        "decision was compensated but its path drifted: "
+                        f"{exc}; compensation detail: {compensation_exc}",
+                        9,
+                    ) from exc
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                raise runner.PipelineError(
+                    "post-write human review validation failed; decision was "
+                    f"compensated: {exc}",
+                    9,
+                ) from exc
+            summary = {
+                **record,
+                "accepted": decision == "accept",
+                "decision_record_sha256": hashlib.sha256(payload).hexdigest(),
+            }
+            runner.atomic_write_json(summary_path, summary)
+            return summary
 
 
 def main(argv: list[str] | None = None) -> int:

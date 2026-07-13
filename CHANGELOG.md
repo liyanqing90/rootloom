@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.15] - 2026-07-13
+
+### Security
+
+- Treat `human-review.ndjson` creation, append, validation, and compensation as one pinned descriptor transaction. The terminal file is opened relative to the stable Run Directory, must remain a regular single-link inode at its original name, and is never reopened for rollback, so prepared hardlinks and create-to-append or compensation-time path replacement cannot write, chmod, or truncate an external victim.
+- Carry the final repository-contract state into initial Human Review v4 Binding. Its complete metadata-only floor is applied before content fingerprinting and its canonical repository commitment must match the recapture, so a non-cooperative writer cannot make the Binding absorb a post-validation state or read a newly declassified protected file.
+- Enforce Human Review Artifact bytes at the descriptor read source. Each observed chunk immediately consumes the file's per-Artifact and remaining aggregate allowance, and the first excess byte fails without reading to EOF.
+
+### Changed
+
+- Rootloom is now version 1.2.15 and the strict high-assurance runner is version 2.20.
+- Human Review remains format v4; existing valid v4 Results need no migration because the stored metadata floor and repository commitment already contain the required evidence. Versions 2 and 3 remain fail closed.
+
+### Tests
+
+- Add terminal-decision hardlink victim, create-to-append replacement, and compensation-time replacement regressions with content and mode preservation.
+- Add final-contract-to-initial-Binding declassification/commitment drift coverage and an observed-byte growth regression that stops on the first byte beyond budget.
+
 ## [1.2.14] - 2026-07-13
 
 ### Security

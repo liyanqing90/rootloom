@@ -444,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.19"',
+            'RUNNER_VERSION = "2.20"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -534,7 +534,12 @@ def validate_system_assets(errors: list[str]) -> None:
             "read_human_review_result",
             "final_metadata_only_floor_paths",
             "run_directory",
-            "ensure_empty_private_file",
+            "pinned_empty_private_artifact",
+            "append_pinned_private_artifact",
+            "truncate_pinned_private_artifact",
+            "expected_repository_state_commitment",
+            "_bounded_descriptor_sha256",
+            "human review already has a terminal decision",
             "atomic_write_json",
             '"provenance_ids"',
             '"evidence_ids"',
@@ -580,14 +585,17 @@ def validate_system_assets(errors: list[str]) -> None:
         for contract in (
             "rootloom-human-review-decision-v4",
             "repository_lock",
-            "truncate_private_artifact",
+            "pinned_empty_private_artifact",
+            "append_pinned_private_artifact",
+            "truncate_pinned_private_artifact",
+            "expected_repository_state_commitment",
             "read_human_review_result",
             "human_review_full_result_sha256",
             "Result run_dir does not match",
             "unsupported human review binding version",
             "human review metadata-only floor is missing or invalid",
+            "human review repository commitment is missing or invalid",
             "human review binding drifted",
-            "human review already has a terminal decision",
         ):
             if contract not in review_text:
                 errors.append(f"human review command is missing contract: {contract}")

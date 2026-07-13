@@ -27,7 +27,7 @@ Resource governance is owned by the producer that can stop allocation or persist
 
 - `run_managed()` streams merged output into a bounded tail, terminates the original process group on timeout or byte exhaustion, and starts the one-second local drain immediately when the direct parent exits with stdout still open. A drain cutoff or leftover original process group produces Runner-effective exit 125 for every model and deterministic stage while preserving the direct process status as `command_exit_code`.
 - One deterministic-verification batch has independent retained-output, actual serialized-NDJSON, command-count, and model-prompt budgets. JSON escape bytes are counted before a rejected record is materialized, and the minimum fail-closed record is checked before the command executes.
-- One Human Review binding has independent private-Artifact count, per-file bytes, aggregate bytes, and wall-clock budgets. Artifact hashing and Result parsing use bounded no-follow descriptor reads; Result is also size-checked before initial persistence so the reviewer cannot emit an unreadable terminal handoff.
+- One Human Review binding has independent private-Artifact count, per-file bytes, aggregate bytes, and wall-clock budgets. Artifact hashing decrements its per-file and remaining aggregate allowance from bytes actually read and fails on the first excess byte; initial size and final identity checks remain drift detection rather than the resource boundary. Result parsing uses a bounded no-follow descriptor read and Result is size-checked before initial persistence so the reviewer cannot emit an unreadable terminal handoff.
 - Verification records use the explicit private format `rootloom-verification-ndjson-v2` plus `rootloom-verification-summary-v2`; one complete record is appended per command. `command_exit_code` is the raw direct-process status, `runner_exit_code` is the lifecycle-governed result, and final `exit_code` may additionally fail when Artifact truncation occurs. Partial NDJSON appends are compensated.
 - Staged, unstaged, `HEAD`-to-worktree, and ordinary-untracked patches stream to complete private artifacts under aggregate and untracked byte budgets. All Git commands in one capture share one deadline and parent-exit drain, external diff and textconv execution is disabled, valid short writes are completed, actual file growth is verified, and a failed multi-file untracked capture rolls back the complete batch.
 - Model-facing Delta state uses `complete-patch-with-bounded-prompt-excerpt-v1`: complete source patches stay on disk, while each patch view contributes at most 24,000 raw bytes plus a marker to in-memory prompt state.
@@ -46,7 +46,7 @@ Resource governance is owned by the producer that can stop allocation or persist
 
 ## Consequences
 
-- Positive: the reviewed repository-topology, state, task/role input, command, Delta, and verification paths have explicit source-level bounds, bounded cleanup, separate raw/effective/final audit status, complete-write checks on pinned no-follow descriptors, and fail-closed incomplete-evidence or lifecycle-uncertainty behavior.
+- Positive: the reviewed repository-topology, state, task/role input, command, Delta, verification, and Human Review Artifact paths have explicit source-level bounds, bounded cleanup, separate raw/effective/final audit status, complete-write checks on pinned no-follow descriptors, and fail-closed incomplete-evidence or lifecycle-uncertainty behavior.
 - Negative: unusually large but legitimate changes or logs can fail under defaults and require an explicit operator-reviewed budget increase; private artifact readers must understand the versioned NDJSON/summary format.
 - Operational: keep the artifact root private and quota-backed for hostile workloads. Increasing a budget increases memory, disk, and review cost. Artifact format changes require a new version and compatibility analysis.
 
@@ -55,7 +55,7 @@ Resource governance is owned by the producer that can stop allocation or persist
 - `make check` must pass repository validation, the repository test suite, and the focused Strict Runner regressions.
 - `make compatibility-smoke` must restore pre-existing configuration exactly and leave no managed artifacts after rollback.
 - Regressions must cover bounded repository-topology traversal, parent-exit drain and delayed mutation rejection, every model-stage lifecycle gate, Runner-owned capture timeout/drain, shared Delta deadline, textconv suppression, short/zero-progress writes, complete untracked-batch rollback, partial NDJSON-append compensation, complete-or-fail patch budgets, bounded patch excerpts, exact JSON byte prediction, pre-command record preflight, and full-command-budget control-character output.
-- Human Review regressions must additionally cover per-file and aggregate Artifact rejection, binding deadline enforcement, bounded Result refusal, and full Result reread compensation.
+- Human Review regressions must additionally cover static and concurrently growing per-file/aggregate Artifact rejection at the read source, binding deadline enforcement, bounded Result refusal, and full Result reread compensation.
 
 ## Revisit when
 

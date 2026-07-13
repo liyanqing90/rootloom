@@ -88,7 +88,7 @@ MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.19"
+RUNNER_VERSION = "2.20"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -3128,46 +3128,201 @@ def atomic_write_json(path: Path, value: Any) -> None:
     )
 
 
-def ensure_empty_private_file(path: Path) -> None:
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise PipelineError("platform lacks no-follow file creation support", 9)
-    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
-    try:
-        descriptor = os.open(path, flags, 0o600)
-    except FileExistsError:
-        try:
-            descriptor = os.open(path, os.O_RDWR | os.O_NOFOLLOW)
-        except OSError as exc:
-            raise PipelineError(f"private Artifact is not safely openable: {path}", 9) from exc
-    try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size != 0:
-            raise PipelineError(f"private Artifact is not an empty regular file: {path}", 9)
-        os.fchmod(descriptor, 0o600)
-    finally:
-        os.close(descriptor)
+class PinnedPrivateArtifact:
+    """One private Artifact whose directory entry and descriptor stay bound."""
+
+    def __init__(
+        self,
+        path: Path,
+        name: str,
+        directory_descriptor: int,
+        descriptor: int,
+    ) -> None:
+        self.path = path
+        self.name = name
+        self.directory_descriptor = directory_descriptor
+        self.descriptor = descriptor
 
 
-def truncate_private_artifact(path: Path, expected_size: int) -> None:
-    """Compensate one just-written private Artifact without following symlinks."""
+def validate_pinned_private_artifact(
+    pinned: PinnedPrivateArtifact,
+    *,
+    expected_size: int | None,
+    expected_mode: int | None = 0o600,
+) -> os.stat_result:
+    """Require a pinned private file to remain the only link at its original name."""
 
-    if not hasattr(os, "O_NOFOLLOW"):
-        raise PipelineError("platform lacks no-follow Artifact compensation support", 9)
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+        opened = os.fstat(pinned.descriptor)
+        current = os.stat(
+            pinned.name,
+            dir_fd=pinned.directory_descriptor,
+            follow_symlinks=False,
+        )
     except OSError as exc:
-        raise PipelineError(f"private Artifact is not safely compensatable: {path}", 9) from exc
+        raise PipelineError(
+            f"private Artifact identity drifted: {pinned.path}",
+            9,
+        ) from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or opened.st_nlink != 1
+        or current.st_nlink != 1
+    ):
+        raise PipelineError(
+            f"private Artifact is non-regular or multi-linked: {pinned.path}",
+            9,
+        )
+    if opened.st_dev != current.st_dev or opened.st_ino != current.st_ino:
+        raise PipelineError(
+            f"private Artifact identity drifted: {pinned.path}",
+            9,
+        )
+    if expected_size is not None and (
+        opened.st_size != expected_size or current.st_size != expected_size
+    ):
+        raise PipelineError(
+            f"private Artifact size drifted: expected {expected_size}, observed "
+            f"descriptor={opened.st_size}, path={current.st_size}: {pinned.path}",
+            9,
+        )
+    if expected_mode is not None and (
+        stat.S_IMODE(opened.st_mode) != expected_mode
+        or stat.S_IMODE(current.st_mode) != expected_mode
+    ):
+        raise PipelineError(
+            f"private Artifact mode drifted: expected {expected_mode:o}: {pinned.path}",
+            9,
+        )
+    return opened
+
+
+@contextmanager
+def pinned_empty_private_artifact(path: Path) -> Iterator[PinnedPrivateArtifact]:
+    """Create/open one empty single-link file and keep its safe descriptor pinned."""
+
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
+        raise PipelineError("platform lacks pinned private Artifact support", 9)
+    directory_descriptor, _ = _safe_run_directory_descriptor(path.parent)
+    descriptor = -1
+    flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
     try:
-        info = os.fstat(descriptor)
-        if not stat.S_ISREG(info.st_mode) or info.st_size != expected_size:
+        try:
+            descriptor = os.open(
+                path.name,
+                flags | os.O_CREAT | os.O_EXCL,
+                0o600,
+                dir_fd=directory_descriptor,
+            )
+        except FileExistsError:
+            try:
+                descriptor = os.open(
+                    path.name,
+                    flags,
+                    dir_fd=directory_descriptor,
+                )
+            except OSError as exc:
+                raise PipelineError(
+                    f"private Artifact is not safely openable: {path}",
+                    9,
+                ) from exc
+        pinned = PinnedPrivateArtifact(
+            path,
+            path.name,
+            directory_descriptor,
+            descriptor,
+        )
+        opened = validate_pinned_private_artifact(
+            pinned,
+            expected_size=None,
+            expected_mode=None,
+        )
+        if opened.st_size != 0:
+            raise PipelineError("human review already has a terminal decision", 9)
+        os.fchmod(descriptor, 0o600)
+        validate_pinned_private_artifact(pinned, expected_size=0)
+        yield pinned
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_descriptor)
+
+
+def append_pinned_private_artifact(
+    pinned: PinnedPrivateArtifact,
+    payload: bytes,
+    *,
+    expected_starting_size: int,
+) -> int:
+    """Append completely through one pinned descriptor and compensate it on failure."""
+
+    try:
+        validate_pinned_private_artifact(
+            pinned,
+            expected_size=expected_starting_size,
+        )
+        with os.fdopen(os.dup(pinned.descriptor), "ab", buffering=0) as artifact:
+            written = write_all(artifact, payload)
+        expected_size = expected_starting_size + written
+        observed_size = os.fstat(pinned.descriptor).st_size
+        if written != len(payload) or observed_size != expected_size:
             raise PipelineError(
-                f"private Artifact drifted before compensation: {path}",
+                f"private Artifact append accounting drifted for {pinned.path}: "
+                f"expected {len(payload)} new bytes and total {expected_size}, "
+                f"observed total {observed_size}",
                 9,
             )
-        os.ftruncate(descriptor, 0)
-        os.fsync(descriptor)
-    finally:
-        os.close(descriptor)
+        os.fsync(pinned.descriptor)
+        validate_pinned_private_artifact(pinned, expected_size=expected_size)
+        return written
+    except BaseException as exc:
+        try:
+            info = os.fstat(pinned.descriptor)
+            if not stat.S_ISREG(info.st_mode):
+                raise PipelineError(
+                    f"pinned private Artifact is no longer regular: {pinned.path}",
+                    9,
+                )
+            os.ftruncate(pinned.descriptor, expected_starting_size)
+            os.fsync(pinned.descriptor)
+        except BaseException as restore_exc:
+            raise PipelineError(
+                f"could not restore pinned private Artifact append: {pinned.path}: "
+                f"{restore_exc}",
+                9,
+            ) from exc
+        raise
+
+
+def truncate_pinned_private_artifact(
+    pinned: PinnedPrivateArtifact,
+    *,
+    expected_size: int,
+) -> None:
+    """Compensate only the pinned original inode, even after path replacement."""
+
+    identity_error: PipelineError | None = None
+    try:
+        validate_pinned_private_artifact(pinned, expected_size=expected_size)
+    except PipelineError as exc:
+        identity_error = exc
+    info = os.fstat(pinned.descriptor)
+    if not stat.S_ISREG(info.st_mode):
+        raise PipelineError(
+            f"pinned private Artifact is not regular before compensation: {pinned.path}",
+            9,
+        )
+    os.ftruncate(pinned.descriptor, 0)
+    os.fsync(pinned.descriptor)
+    if identity_error is not None or info.st_size != expected_size:
+        raise PipelineError(
+            "private Artifact identity or size drifted before compensation; the pinned "
+            f"original was compensated: {pinned.path}",
+            9,
+        ) from identity_error
 
 
 def file_sha256(path: Path) -> str:
@@ -3176,6 +3331,30 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _bounded_descriptor_sha256(
+    descriptor: int,
+    *,
+    max_bytes: int,
+    deadline: float,
+) -> tuple[int, str]:
+    """Hash at most max_bytes and reject on the first observed excess byte."""
+
+    observed_bytes = 0
+    digest = hashlib.sha256()
+    while True:
+        if time.monotonic() > deadline:
+            raise PipelineError("human review binding deadline exceeded", 9)
+        remaining = max_bytes - observed_bytes
+        chunk = os.read(descriptor, min(1024 * 1024, remaining + 1))
+        if not chunk:
+            break
+        observed_bytes += len(chunk)
+        if observed_bytes > max_bytes:
+            raise PipelineError("human review Artifact byte budget exceeded", 9)
+        digest.update(chunk)
+    return observed_bytes, digest.hexdigest()
 
 
 def private_artifact_fingerprint(
@@ -3214,17 +3393,12 @@ def private_artifact_fingerprint(
                 f"({before.st_size} > {max_bytes})",
                 9,
             )
-        digest = hashlib.sha256()
-        with os.fdopen(descriptor, "rb") as handle:
-            descriptor = -1
-            while True:
-                if time.monotonic() > deadline:
-                    raise PipelineError("human review binding deadline exceeded", 9)
-                chunk = handle.read(min(1024 * 1024, max_bytes + 1))
-                if not chunk:
-                    break
-                digest.update(chunk)
-            after = os.fstat(handle.fileno())
+        observed_bytes, digest = _bounded_descriptor_sha256(
+            descriptor,
+            max_bytes=max_bytes,
+            deadline=deadline,
+        )
+        after = os.fstat(descriptor)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -3242,7 +3416,12 @@ def private_artifact_fingerprint(
             f"human review Artifact changed while it was being bound: {display_path}",
             9,
         )
-    return {"size": after.st_size, "sha256": digest.hexdigest()}
+    if observed_bytes != after.st_size:
+        raise PipelineError(
+            f"human review Artifact read accounting drifted: {display_path}",
+            9,
+        )
+    return {"size": observed_bytes, "sha256": digest}
 
 
 def canonical_json_sha256(value: Any) -> str:
@@ -3548,6 +3727,7 @@ def compute_human_review_binding(
     *,
     state_policy: dict[str, Any] | None = None,
     metadata_only_floor: list[str] | set[str] | None = None,
+    expected_repository_state_commitment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Bind a human decision to exact bounded repository state and private Artifacts."""
 
@@ -3615,6 +3795,19 @@ def compute_human_review_binding(
             metadata_only_floor=floor,
             check_topology=True,
         )
+        deletion_state = protected_deletion_commitment(
+            repo,
+            normalized_deletions,
+        )
+        observed_repository_state = repository_state_commitment(state)
+        if (
+            expected_repository_state_commitment is not None
+            and observed_repository_state != expected_repository_state_commitment
+        ):
+            raise PipelineError(
+                "final validated repository state drifted before human review Binding",
+                9,
+            )
         if time.monotonic() > deadline:
             raise PipelineError("human review binding deadline exceeded", 9)
         return {
@@ -3624,11 +3817,8 @@ def compute_human_review_binding(
             "git_head": run_checked(["git", "rev-parse", "HEAD"], repo),
             "state_policy": policy,
             "final_metadata_only_floor_paths": sorted(state["metadata_only_paths"]),
-            "repository_state": repository_state_commitment(state),
-            "protected_deletions": protected_deletion_commitment(
-                repo,
-                normalized_deletions,
-            ),
+            "repository_state": observed_repository_state,
+            "protected_deletions": deletion_state,
             "result_core_sha256": result_core_sha256,
             "artifacts": artifacts,
         }
@@ -4966,7 +5156,7 @@ def run_pipeline_locked(
         )
         post_review_state = capture_state(check_topology=True)
         assert_repo_unchanged(post_verification_state, post_review_state, "review stage")
-        delta, _ = enforce_repository_contract(
+        delta, final_validated_state = enforce_repository_contract(
             repo=repo,
             run_dir=run_dir,
             prefix=f"{prefix_number + 2:02d}-post-review-delta",
@@ -5030,6 +5220,12 @@ def run_pipeline_locked(
                         "sensitive_paths": args.sensitive_path,
                         "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
                     },
+                    metadata_only_floor=protected_metadata_paths(
+                        final_validated_state
+                    ),
+                    expected_repository_state_commitment=(
+                        repository_state_commitment(final_validated_state)
+                    ),
                 )
             if result_status == "HUMAN_REVIEW_REQUIRED":
                 atomic_write_private(
