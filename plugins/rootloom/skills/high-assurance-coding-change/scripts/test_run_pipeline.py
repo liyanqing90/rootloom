@@ -72,6 +72,83 @@ class RunnerGateTests(unittest.TestCase):
         )
         return review_dir
 
+    def assert_equal_length_decision_mutation_rejected(
+        self,
+        name: str,
+        *,
+        mutate_terminal: bool,
+        mutate_summary: bool,
+    ) -> None:
+        review_dir = self.make_human_review_result(name)
+        original_append = runner.append_pinned_private_artifact
+        terminal_payload = b""
+
+        def overwrite_same_inode(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+        ) -> None:
+            replacement = bytes([payload[0] ^ 1]) + payload[1:]
+            descriptor = os.open(
+                pinned.name,
+                os.O_WRONLY | os.O_NOFOLLOW,
+                dir_fd=pinned.directory_descriptor,
+            )
+            try:
+                self.assertEqual(os.pwrite(descriptor, replacement, 0), len(payload))
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+
+        def mutate_after_writes(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+            *,
+            expected_starting_size: int,
+        ) -> int:
+            nonlocal terminal_payload
+            written = original_append(
+                pinned,
+                payload,
+                expected_starting_size=expected_starting_size,
+            )
+            if pinned.name == "human-review.ndjson":
+                terminal_payload = payload
+            elif pinned.name == "human-review-summary.json":
+                if mutate_terminal:
+                    terminal = runner.PinnedPrivateArtifact(
+                        review_dir / "human-review.ndjson",
+                        "human-review.ndjson",
+                        pinned.directory_descriptor,
+                        pinned.descriptor,
+                    )
+                    overwrite_same_inode(terminal, terminal_payload)
+                if mutate_summary:
+                    overwrite_same_inode(pinned, payload)
+            return written
+
+        with mock.patch.object(
+            runner,
+            "append_pinned_private_artifact",
+            side_effect=mutate_after_writes,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
+        summary = review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        self.assertTrue(summary["accepted"])
+
     def test_allowed_paths_are_exact_or_recursive(self) -> None:
         rules = runner.normalize_allowed_paths(["src/app.py", "tests/**"])
         self.assertTrue(runner.path_is_allowed("src/app.py", rules))
@@ -1943,6 +2020,195 @@ class RunnerGateTests(unittest.TestCase):
             with self.assertRaisesRegex(runner.PipelineError, "Artifact name set"):
                 runner.compute_human_review_binding(self.repo, review_dir, "0" * 64)
 
+    def test_human_review_terminal_equal_length_overwrite_is_rejected(self) -> None:
+        self.assert_equal_length_decision_mutation_rejected(
+            "human-review-terminal-equal-length-overwrite",
+            mutate_terminal=True,
+            mutate_summary=False,
+        )
+
+    def test_human_review_summary_equal_length_overwrite_is_rejected(self) -> None:
+        self.assert_equal_length_decision_mutation_rejected(
+            "human-review-summary-equal-length-overwrite",
+            mutate_terminal=False,
+            mutate_summary=True,
+        )
+
+    def test_human_review_pair_equal_length_overwrite_is_rejected(self) -> None:
+        self.assert_equal_length_decision_mutation_rejected(
+            "human-review-pair-equal-length-overwrite",
+            mutate_terminal=True,
+            mutate_summary=True,
+        )
+
+    def test_human_review_verify_reports_valid_without_writes(self) -> None:
+        review_dir = self.make_human_review_result("human-review-verify-valid")
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        lock_path = self.repo / ".git" / "codex-high-assurance.lock"
+        paths = (
+            review_dir / "result.json",
+            review_dir / "human-review.ndjson",
+            review_dir / "human-review-summary.json",
+            lock_path,
+        )
+        before = {
+            path: (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+            for path in paths
+        }
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(verified.returncode, 0, verified.stderr)
+        self.assertEqual(verified.stdout.strip(), "VALID")
+        self.assertEqual(verified.stderr, "")
+        after = {
+            path: (path.read_bytes(), path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+            for path in paths
+        }
+        self.assertEqual(after, before)
+
+    def test_human_review_verify_reports_invalid_for_tampered_pair(self) -> None:
+        review_dir = self.make_human_review_result("human-review-verify-invalid")
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        summary_path = review_dir / "human-review-summary.json"
+        payload = summary_path.read_bytes()
+        summary_path.write_bytes(bytes([payload[0] ^ 1]) + payload[1:])
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(verified.returncode, 9)
+        self.assertEqual(verified.stdout.strip(), "INVALID")
+        self.assertEqual(verified.stderr, "")
+
+    def test_human_review_verify_rejects_consistent_pair_with_wrong_binding(self) -> None:
+        review_dir = self.make_human_review_result("human-review-verify-wrong-binding")
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        terminal_path = review_dir / "human-review.ndjson"
+        record = json.loads(terminal_path.read_text(encoding="utf-8"))
+        record["binding_sha256"] = "f" * 64
+        terminal_payload = runner.encode_ndjson_value(record)
+        terminal_path.write_bytes(terminal_payload)
+        summary = review_decision.decision_summary(record, terminal_payload)
+        (review_dir / "human-review-summary.json").write_bytes(
+            review_decision.decision_summary_payload(summary)
+        )
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(verified.returncode, 9)
+        self.assertEqual(verified.stdout.strip(), "INVALID")
+        self.assertEqual(verified.stderr, "")
+
+    def test_human_review_verify_rejects_multi_link_terminal(self) -> None:
+        review_dir = self.make_human_review_result("human-review-verify-hardlink")
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        os.link(
+            review_dir / "human-review.ndjson",
+            self.root / "external-terminal-hardlink",
+        )
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(verified.returncode, 9)
+        self.assertEqual(verified.stdout.strip(), "INVALID")
+        self.assertEqual(verified.stderr, "")
+
+    def test_human_review_verify_reports_stale_for_repository_drift(self) -> None:
+        review_dir = self.make_human_review_result("human-review-verify-stale")
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        (self.repo / "a.txt").write_text("stale after decision\n", encoding="utf-8")
+        verified = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertEqual(verified.returncode, review_decision.VERIFY_STALE_EXIT)
+        self.assertEqual(verified.stdout.strip(), "STALE")
+        self.assertEqual(verified.stderr, "")
+
     def test_human_review_summary_failure_compensates_both_outputs(self) -> None:
         review_dir = self.make_human_review_result("human-review-summary-failure")
         original_append = runner.append_pinned_private_artifact
@@ -2090,12 +2356,14 @@ class RunnerGateTests(unittest.TestCase):
             *,
             expected_size: int | None,
             expected_mode: int | None = 0o600,
+            expected_sha256: str | None = None,
         ) -> os.stat_result:
             nonlocal committed, nonempty_summary_validations
             observed = original_validate(
                 pinned,
                 expected_size=expected_size,
                 expected_mode=expected_mode,
+                expected_sha256=expected_sha256,
             )
             if pinned.name == "human-review-summary.json" and expected_size:
                 nonempty_summary_validations += 1

@@ -6,6 +6,28 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.17] - 2026-07-13
+
+### Security
+
+- Re-hash the exact Terminal and Summary payloads through their pinned descriptors at the final Human Review v4 commit gate. Canonical name, inode, single-link status, mode, exact byte count, size, and SHA-256 must all still match; any failure compensates both original files to empty and returns nonzero.
+- Add a bounded, no-follow, regular-single-link Decision Pair reader and a read-only `review_decision.py verify` command. Verification checks the Result binding, canonical Terminal/Summary agreement, Terminal content hash, repository/protected-deletion commitment, and Run Directory identity without acquiring or writing the repository lock.
+
+### Added
+
+- Report `VALID` with exit 0 for a current valid pair, `INVALID` with exit 9 for malformed or internally inconsistent evidence, and `STALE` with exit 12 when valid recorded evidence no longer matches the repository state.
+
+### Changed
+
+- Rootloom is now version 1.2.17 and the strict high-assurance runner is version 2.22.
+- Human Review remains format v4 because the persisted fields and their meaning are unchanged. Its local security scope is now frozen as attributable final review for trusted personal or small-team environments; hostile local approval requires an external immutable execution, signing, or audit boundary.
+- Describe the shared filesystem lock as a hardened cooperative lock. It rejects indirect or multi-linked lock paths but is not an irreplaceable lease: a same-UID process can rename/unlink the locked inode and create a replacement path.
+
+### Tests
+
+- Add equal-length, same-inode Terminal, Summary, and simultaneous pair overwrites, proving final rejection, two-file compensation, and successful retry.
+- Add read-only verifier coverage for valid unchanged evidence, coherent-but-wrong binding, multi-linked Terminal, malformed pair content, and stale repository state.
+
 ## [1.2.16] - 2026-07-13
 
 ### Security

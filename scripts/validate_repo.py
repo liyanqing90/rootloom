@@ -444,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.21"',
+            'RUNNER_VERSION = "2.22"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -456,6 +456,7 @@ def validate_system_assets(errors: list[str]) -> None:
             "DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES",
             "DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS",
             "MAX_HUMAN_REVIEW_RESULT_BYTES",
+            "MAX_HUMAN_REVIEW_DECISION_BYTES",
             "MAX_DELTA_PATCH_EXCERPT_BYTES",
             "MAX_VERIFICATION_COMMANDS",
             "MAX_VERIFICATION_PROMPT_CHARS",
@@ -535,9 +536,11 @@ def validate_system_assets(errors: list[str]) -> None:
             "final_metadata_only_floor_paths",
             "run_directory",
             "pinned_empty_private_artifact",
+            "read_pinned_private_artifact",
             "append_pinned_private_artifact",
             "truncate_pinned_private_artifact",
             "validate_named_regular_descriptor",
+            "pinned_private_artifact_sha256",
             "validate_run_directory_descriptor",
             "human_review_artifact_names",
             "close_descriptor_quietly",
@@ -603,6 +606,13 @@ def validate_system_assets(errors: list[str]) -> None:
             "human review binding drifted",
             "human review decision commit failed",
             "human review summary already exists",
+            "verify_decision_pair",
+            "read_decision_pair",
+            "decision_record_sha256",
+            "VERIFY_STALE_EXIT",
+            'print("VALID")',
+            'print("INVALID")',
+            'print("STALE")',
         ):
             if contract not in review_text:
                 errors.append(f"human review command is missing contract: {contract}")

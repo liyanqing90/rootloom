@@ -95,6 +95,10 @@ codex execpolicy check --pretty \
 
 这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。请使用内置决定命令；Human Review v4 会在 supplied Run 是副本、Result 变化、任一 protected 目标重新出现（包括 ignored 文件）、父边界变化、完整 metadata-only 下限无法保持、规范化仓库承诺漂移或已审证据变化时拒绝 accept。版本 2/3 审核结果必须重跑，或通过显式外部流程处理。自动化不得把退出码 10 转成成功。
 
+## Decision Pair 验证报告 `INVALID` 或 `STALE`
+
+运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Pair 格式错误、内部不一致、非规范，或不再是普通单链接私有文件。`STALE`/12 表示 Pair 结构有效，但当前仓库承诺已经漂移；应重新运行高保障流程，不要编辑证据。验证命令完全只读，不刷新、修复或签名证据。
+
 ## 严格 Runner 拒绝 verification entrypoint 变化
 
 Runner 会在 Writer 前为检测到的验证入口建立指纹，在每条确定性验证命令前检查对应入口，并在命令结束后立即确认仓库未变化。它也会记录常见缺失候选，因此 Writer 在基线后新建 `GNUmakefile`、`pytest.ini` 或类似 harness 会被视为验证入口变化。它会记录仓库内每个符号链接路径组件，并绑定最终目标内容。

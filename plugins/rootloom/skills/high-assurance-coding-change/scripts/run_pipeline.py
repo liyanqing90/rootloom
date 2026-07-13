@@ -84,11 +84,12 @@ DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS = 120
 MAX_HUMAN_REVIEW_ARTIFACTS = 256
 MAX_HUMAN_REVIEW_RESULT_BYTES = 32 * 1024 * 1024
+MAX_HUMAN_REVIEW_DECISION_BYTES = 1024 * 1024
 MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.21"
+RUNNER_VERSION = "2.22"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -3229,10 +3230,11 @@ def validate_pinned_private_artifact(
     *,
     expected_size: int | None,
     expected_mode: int | None = 0o600,
+    expected_sha256: str | None = None,
 ) -> os.stat_result:
-    """Require a pinned private file to remain the only link at its original name."""
+    """Require one pinned name, inode, metadata set, size, and optional digest."""
 
-    return validate_named_regular_descriptor(
+    before = validate_named_regular_descriptor(
         pinned.directory_descriptor,
         pinned.name,
         pinned.descriptor,
@@ -3241,6 +3243,89 @@ def validate_pinned_private_artifact(
         expected_size=expected_size,
         expected_mode=expected_mode,
     )
+    if expected_sha256 is None:
+        return before
+    if expected_size is None:
+        raise PipelineError("private Artifact digest requires an expected size", 9)
+    if re.fullmatch(r"[0-9a-f]{64}", expected_sha256) is None:
+        raise PipelineError("private Artifact expected digest is invalid", 9)
+    observed_size, observed_sha256 = pinned_private_artifact_sha256(
+        pinned,
+        expected_size=expected_size,
+    )
+    after = validate_named_regular_descriptor(
+        pinned.directory_descriptor,
+        pinned.name,
+        pinned.descriptor,
+        pinned.path,
+        label="private Artifact",
+        expected_size=expected_size,
+        expected_mode=expected_mode,
+    )
+    stable_fields = (
+        "st_dev",
+        "st_ino",
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(getattr(before, field) != getattr(after, field) for field in stable_fields):
+        raise PipelineError(
+            f"private Artifact changed while its content was validated: {pinned.path}",
+            9,
+        )
+    if observed_size != expected_size or observed_sha256 != expected_sha256:
+        raise PipelineError(
+            "private Artifact content drifted: expected "
+            f"size={expected_size} sha256={expected_sha256}, observed "
+            f"size={observed_size} sha256={observed_sha256}: {pinned.path}",
+            9,
+        )
+    return after
+
+
+def pinned_private_artifact_sha256(
+    pinned: PinnedPrivateArtifact,
+    *,
+    expected_size: int,
+) -> tuple[int, str]:
+    """Hash exactly expected_size bytes through a pinned descriptor without seeking it."""
+
+    if expected_size < 0:
+        raise PipelineError("private Artifact expected size must not be negative", 9)
+    if not hasattr(os, "pread"):
+        raise PipelineError("platform lacks pinned private Artifact content reads", 9)
+    observed_size = 0
+    digest = hashlib.sha256()
+    while observed_size < expected_size:
+        try:
+            chunk = os.pread(
+                pinned.descriptor,
+                min(1024 * 1024, expected_size - observed_size),
+                observed_size,
+            )
+        except OSError as exc:
+            raise PipelineError(
+                f"could not read pinned private Artifact: {pinned.path}",
+                9,
+            ) from exc
+        if not chunk:
+            break
+        observed_size += len(chunk)
+        digest.update(chunk)
+    try:
+        excess = os.pread(pinned.descriptor, 1, observed_size)
+    except OSError as exc:
+        raise PipelineError(
+            f"could not finish pinned private Artifact read: {pinned.path}",
+            9,
+        ) from exc
+    if excess:
+        observed_size += len(excess)
+        digest.update(excess)
+    return observed_size, digest.hexdigest()
 
 
 @contextmanager
@@ -3300,6 +3385,115 @@ def pinned_empty_private_artifact(
         os.fchmod(descriptor, 0o600)
         validate_pinned_private_artifact(pinned, expected_size=0)
         yield pinned
+    finally:
+        if descriptor >= 0:
+            close_descriptor_quietly(descriptor)
+        close_descriptor_quietly(owned_directory_descriptor)
+
+
+def read_pinned_private_artifact(
+    path: Path,
+    *,
+    max_bytes: int,
+    directory_descriptor: int | None = None,
+) -> bytes:
+    """Read one bounded private file through a stable name and descriptor."""
+
+    if max_bytes <= 0:
+        raise PipelineError("private Artifact read budget must be positive", 9)
+    if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "pread"):
+        raise PipelineError("platform lacks pinned private Artifact content reads", 9)
+    if directory_descriptor is None:
+        owned_directory_descriptor, _ = _safe_run_directory_descriptor(path.parent)
+    else:
+        validate_run_directory_descriptor(path.parent, directory_descriptor)
+        owned_directory_descriptor = os.dup(directory_descriptor)
+        validate_run_directory_descriptor(path.parent, owned_directory_descriptor)
+    descriptor = -1
+    flags = os.O_RDONLY | os.O_NOFOLLOW
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    try:
+        try:
+            descriptor = os.open(
+                path.name,
+                flags,
+                dir_fd=owned_directory_descriptor,
+            )
+        except OSError as exc:
+            raise PipelineError(
+                f"private Artifact is not safely readable: {path}",
+                9,
+            ) from exc
+        pinned = PinnedPrivateArtifact(
+            path,
+            path.name,
+            owned_directory_descriptor,
+            descriptor,
+        )
+        before = validate_pinned_private_artifact(
+            pinned,
+            expected_size=None,
+        )
+        if before.st_size > max_bytes:
+            raise PipelineError(
+                f"private Artifact read budget exceeded: {path} "
+                f"({before.st_size} > {max_bytes})",
+                9,
+            )
+        chunks: list[bytes] = []
+        observed_size = 0
+        while observed_size < before.st_size:
+            try:
+                chunk = os.pread(
+                    descriptor,
+                    min(1024 * 1024, before.st_size - observed_size),
+                    observed_size,
+                )
+            except OSError as exc:
+                raise PipelineError(
+                    f"could not read pinned private Artifact: {path}",
+                    9,
+                ) from exc
+            if not chunk:
+                break
+            chunks.append(chunk)
+            observed_size += len(chunk)
+        try:
+            excess = os.pread(descriptor, 1, observed_size)
+        except OSError as exc:
+            raise PipelineError(
+                f"could not finish pinned private Artifact read: {path}",
+                9,
+            ) from exc
+        if excess:
+            chunks.append(excess)
+            observed_size += len(excess)
+        after = validate_pinned_private_artifact(
+            pinned,
+            expected_size=before.st_size,
+        )
+        stable_fields = (
+            "st_dev",
+            "st_ino",
+            "st_mode",
+            "st_nlink",
+            "st_size",
+            "st_mtime_ns",
+            "st_ctime_ns",
+        )
+        if (
+            observed_size != before.st_size
+            or any(
+                getattr(before, field) != getattr(after, field)
+                for field in stable_fields
+            )
+        ):
+            raise PipelineError(
+                f"private Artifact changed while it was read: {path}",
+                9,
+            )
+        return b"".join(chunks)
     finally:
         if descriptor >= 0:
             close_descriptor_quietly(descriptor)
