@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: release/publication
@@ -105,6 +105,8 @@ Publish the verified current workspace as Rootloom `v1.2.13` from repository `li
 
 - 2026-07-13 — User explicitly authorized direct publication without further confirmation.
 - 2026-07-13 — Gate Tag and Release on exact-sha GitHub Actions success because `main` has no branch protection.
+- 2026-07-13 — Published release commit `05627be11d17ff9aea2cd6997c73549eb5874f52` after CI run `29218683045` completed successfully across all eight jobs.
+- 2026-07-13 — Pushed annotated tag `v1.2.13` (tag object `7e1f3b428ff83c086aef91c045791ac339a053a6`) peeling to the release commit and published a non-draft, non-prerelease GitHub Release at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.13`.
 
 ## Durable decision records
 
