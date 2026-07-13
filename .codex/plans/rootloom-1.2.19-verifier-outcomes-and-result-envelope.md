@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security, persisted schema, public CLI, architecture, and release
@@ -120,6 +120,7 @@ Release Rootloom 1.2.19 / Strict Runner 2.24 so Human Review verification distin
 - 2026-07-13 — Fail-after evidence: `make check` passed 58 repository tests and 137 Strict Runner tests; compatibility smoke passed against `codex-cli 0.144.2` with configuration restoration and no managed leftovers.
 - 2026-07-13 — Counterexample challenge found that producer `allowed_paths` retained model ordering while Envelope validation requires canonical ordering. The producer now persists a sorted unique list; this closes the producer/consumer mismatch before release.
 - 2026-07-13 — Read-only challenge PASS: verifier Git subprocess policy was observed in the real recomputation path, and byte/size/mode/mtime/ctime snapshots of the complete repository plus Run Directory—including index, Git-control and lock paths—were identical before and after verification.
+- 2026-07-13 — RELEASED: all eight jobs in CI run `29248176398` passed against exact commit `68f08cf64527d1a726ca469f2612a219da7893b2`; annotated tag `v1.2.19` targets that commit and the formal GitHub Release was published at 2026-07-13T12:02:42Z.
 
 ## Durable decision records
 
