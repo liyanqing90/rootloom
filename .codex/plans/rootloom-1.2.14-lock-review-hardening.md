@@ -118,6 +118,7 @@ Success requires fail-before/pass-after regressions for all three symlink lock p
 - 2026-07-13 — Advance Human Review to v4 because v3 did not capture sufficient evidence to reconstruct its original confidentiality/Run identity contract.
 - 2026-07-13 — Add explicit review byte/time controls rather than relying on producer-specific historical assumptions.
 - 2026-07-13 — Fresh challenge found that merely recomputing a v2/v3 or malformed-v4 binding could still read under an absent floor before version drift was reported; reject unsupported formats and a missing policy/floor before any repository capture.
+- 2026-07-13 — Exact-sha CI run `29220639902` passed seven jobs, including native Windows locks, but macOS observed the existing valid fail-closed cleanup-uncertainty branch during the untracked-budget test. Preserve that stronger failure and make its diagnostic explicitly retain the invariant that Delta is incomplete and automated Review was refused; rerun the complete matrix on the repair commit.
 - 2026-07-13 — Use the user's standing direct-publication authorization after exact-sha CI succeeds.
 
 ## Durable decision records

@@ -1989,7 +1989,8 @@ def stream_command_artifact(
             raise restore_error from exc
         if cleanup_error is not None:
             raise PipelineError(
-                f"artifact command cleanup failed: {shlex.join(argv)}",
+                f"artifact command cleanup failed: {shlex.join(argv)}; Delta is "
+                "incomplete and automated review was refused",
                 9,
             ) from cleanup_error
         raise
