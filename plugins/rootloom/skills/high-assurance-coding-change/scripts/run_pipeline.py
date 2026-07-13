@@ -2128,7 +2128,8 @@ def stream_untracked_patch(
                 )
             except PipelineError as exc:
                 raise PipelineError(
-                    f"could not fully capture untracked delta for {path}: {exc}",
+                    f"could not fully capture untracked delta for {path}; Delta is "
+                    f"incomplete and automated review was refused: {exc}",
                     exc.exit_code,
                 ) from exc
             total += written

@@ -117,6 +117,7 @@ Success requires victim-preservation regressions for an initial hardlink, create
 - 2026-07-13 — GO: all three findings share one I/O/checkpoint ownership root cause and have bounded fail-before regressions.
 - 2026-07-13 — Keep Human Review v4 because the persisted record already contains the complete floor and repository commitment; strengthen production and consumption semantics instead of inventing a schema change.
 - 2026-07-13 — Fresh challenge checked verification NDJSON's pinned append/rollback analog and the malformed-v4 consumer. Keep that separate existing Artifact path out of the terminal transaction, but reject a missing v4 repository commitment before any recapture and always clear the pinned original terminal inode before reporting compensation drift.
+- 2026-07-13 — Exact-sha CI run `29226745172` passed seven jobs but macOS entered the existing valid process-group cleanup-uncertainty branch during the untracked-patch budget test. The inner capture refused automated Review and rolled back the Artifact, but `stream_untracked_patch()` dropped that invariant phrase while adding path context. Preserve the fail-closed behavior, propagate the diagnostic at the outer ownership boundary, add a deterministic batch-rollback assertion, and rerun the complete matrix.
 - 2026-07-13 — Use the user's standing direct-publication authorization only after local and exact-sha CI gates succeed.
 
 ## Durable decision records
@@ -132,3 +133,4 @@ Success requires victim-preservation regressions for an initial hardlink, create
 - `make check` — passed: 58 repository tests and 100 focused Strict Runner tests.
 - `make compatibility-smoke` — passed with pre-existing configuration restored and no managed leftovers.
 - Python compilation and `git diff --check` — passed.
+- Exact-sha CI run `29226745172` — seven jobs passed; macOS failed only because the outer untracked-Delta diagnostic omitted the preserved fail-closed invariant. No tag or Release was created.

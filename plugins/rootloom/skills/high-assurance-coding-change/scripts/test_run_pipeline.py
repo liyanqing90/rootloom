@@ -843,6 +843,7 @@ class RunnerGateTests(unittest.TestCase):
                     time.monotonic() + 5,
                 )
         self.assertIn("two.txt", str(caught.exception))
+        self.assertIn("automated review was refused", str(caught.exception))
         self.assertEqual(calls, 2)
         self.assertEqual(destination.read_bytes(), b"")
 
