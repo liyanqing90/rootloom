@@ -53,6 +53,25 @@ class RunnerGateTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.temporary.cleanup()
 
+    def make_human_review_result(self, name: str) -> Path:
+        review_dir = self.root / name
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "protected_deletions": [],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+        )
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": binding},
+        )
+        return review_dir
+
     def test_allowed_paths_are_exact_or_recursive(self) -> None:
         rules = runner.normalize_allowed_paths(["src/app.py", "tests/**"])
         self.assertTrue(runner.path_is_allowed("src/app.py", rules))
@@ -1469,7 +1488,7 @@ class RunnerGateTests(unittest.TestCase):
                     "accept",
                 )
         self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
-        self.assertFalse((review_dir / "human-review-summary.json").exists())
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
 
     def test_human_review_terminal_hardlink_preserves_external_victim(self) -> None:
         review_dir = self.root / "human-review-terminal-hardlink"
@@ -1562,7 +1581,7 @@ class RunnerGateTests(unittest.TestCase):
 
         self.assertEqual(victim.read_bytes(), b"")
         self.assertEqual(stat.S_IMODE(victim.stat().st_mode), before_mode)
-        self.assertFalse((review_dir / "human-review-summary.json").exists())
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
 
     def test_human_review_terminal_compensation_uses_pinned_descriptor(self) -> None:
         review_dir = self.root / "human-review-terminal-pinned-compensation"
@@ -1614,7 +1633,7 @@ class RunnerGateTests(unittest.TestCase):
         self.assertTrue(victim_payload)
         self.assertEqual(victim.read_bytes(), victim_payload)
         self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o640)
-        self.assertFalse((review_dir / "human-review-summary.json").exists())
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
 
     def test_human_review_v4_rejects_copied_run_directory(self) -> None:
         source = self.root / "human-review-source"
@@ -1670,7 +1689,7 @@ class RunnerGateTests(unittest.TestCase):
                     "accept",
                 )
         self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
-        self.assertFalse((review_dir / "human-review-summary.json").exists())
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
 
     def test_human_review_revalidation_preserves_full_metadata_only_floor(self) -> None:
         (self.repo / ".gitignore").write_text("cache.bin\n", encoding="utf-8")
@@ -1802,6 +1821,375 @@ class RunnerGateTests(unittest.TestCase):
         with mock.patch.object(runner, "MAX_HUMAN_REVIEW_RESULT_BYTES", 8):
             with self.assertRaisesRegex(runner.PipelineError, "Result byte budget"):
                 runner.human_review_result_document({"too_large": "payload"})
+
+    def test_human_review_result_replacement_during_read_is_rejected(self) -> None:
+        review_dir = self.root / "human-review-result-name-replacement"
+        review_dir.mkdir()
+        result_path = review_dir / "result.json"
+        result_path.write_text('{"accepted":"original"}\n', encoding="utf-8")
+        original_read = runner.os.read
+        original_fstat = runner.os.fstat
+        stable_regular_stats: dict[int, os.stat_result] = {}
+        replaced = False
+
+        def replace_after_read(descriptor: int, size: int) -> bytes:
+            nonlocal replaced
+            chunk = original_read(descriptor, size)
+            if chunk and not replaced:
+                replaced = True
+                result_path.rename(review_dir / "result-original.json")
+                result_path.write_text('{"accepted":"replacement"}\n', encoding="utf-8")
+            return chunk
+
+        def stable_descriptor_stat(descriptor: int) -> os.stat_result:
+            observed = original_fstat(descriptor)
+            if stat.S_ISREG(observed.st_mode):
+                return stable_regular_stats.setdefault(descriptor, observed)
+            return observed
+
+        with mock.patch.object(runner.os, "read", side_effect=replace_after_read), \
+             mock.patch.object(runner.os, "fstat", side_effect=stable_descriptor_stat):
+            with self.assertRaisesRegex(runner.PipelineError, "Result.*identity"):
+                runner.read_human_review_result(review_dir)
+
+    def test_human_review_result_mutation_between_descriptor_and_name_stat_is_rejected(
+        self,
+    ) -> None:
+        review_dir = self.root / "human-review-result-stat-window"
+        review_dir.mkdir()
+        result_path = review_dir / "result.json"
+        result_path.write_text('{"accepted":"original"}\n', encoding="utf-8")
+        original_stat = runner.os.stat
+        name_stats = 0
+
+        def mutate_before_second_name_stat(
+            path: object,
+            *args: object,
+            **kwargs: object,
+        ) -> os.stat_result:
+            nonlocal name_stats
+            if path == "result.json":
+                name_stats += 1
+                if name_stats == 2:
+                    result_path.write_text(
+                        '{"accepted":"replacement-with-new-size"}\n',
+                        encoding="utf-8",
+                    )
+            return original_stat(path, *args, **kwargs)
+
+        with mock.patch.object(runner.os, "stat", side_effect=mutate_before_second_name_stat):
+            with self.assertRaisesRegex(runner.PipelineError, "Result.*metadata"):
+                runner.read_human_review_result(review_dir)
+
+    def test_human_review_artifact_replacement_during_hash_is_rejected(self) -> None:
+        review_dir = self.root / "human-review-artifact-name-replacement"
+        review_dir.mkdir()
+        artifact = review_dir / "evidence.json"
+        artifact.write_text('{"accepted":"original"}\n', encoding="utf-8")
+        directory_descriptor, _ = runner._safe_run_directory_descriptor(review_dir)
+        original_hash = runner._bounded_descriptor_sha256
+        original_fstat = runner.os.fstat
+        stable_regular_stats: dict[int, os.stat_result] = {}
+
+        def replace_after_hash(*args: object, **kwargs: object) -> tuple[int, str]:
+            fingerprint = original_hash(*args, **kwargs)
+            artifact.rename(review_dir / "evidence-original.json")
+            artifact.write_text('{"accepted":"replacement"}\n', encoding="utf-8")
+            return fingerprint
+
+        def stable_descriptor_stat(descriptor: int) -> os.stat_result:
+            observed = original_fstat(descriptor)
+            if stat.S_ISREG(observed.st_mode):
+                return stable_regular_stats.setdefault(descriptor, observed)
+            return observed
+
+        try:
+            with mock.patch.object(
+                runner,
+                "_bounded_descriptor_sha256",
+                side_effect=replace_after_hash,
+            ), mock.patch.object(
+                runner.os,
+                "fstat",
+                side_effect=stable_descriptor_stat,
+            ):
+                with self.assertRaisesRegex(runner.PipelineError, "Artifact.*identity"):
+                    runner.private_artifact_fingerprint(
+                        directory_descriptor,
+                        artifact.name,
+                        artifact,
+                        max_bytes=1024,
+                        deadline=time.monotonic() + 10,
+                    )
+        finally:
+            os.close(directory_descriptor)
+
+    def test_human_review_artifact_name_set_drift_is_rejected(self) -> None:
+        review_dir = self.root / "human-review-artifact-name-set"
+        review_dir.mkdir()
+        (review_dir / "evidence.json").write_text("{}\n", encoding="utf-8")
+        original_fingerprint = runner.private_artifact_fingerprint
+
+        def add_artifact(*args: object, **kwargs: object) -> dict[str, object]:
+            fingerprint = original_fingerprint(*args, **kwargs)
+            (review_dir / "late.json").write_text("{}\n", encoding="utf-8")
+            return fingerprint
+
+        with mock.patch.object(
+            runner,
+            "private_artifact_fingerprint",
+            side_effect=add_artifact,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "Artifact name set"):
+                runner.compute_human_review_binding(self.repo, review_dir, "0" * 64)
+
+    def test_human_review_summary_failure_compensates_both_outputs(self) -> None:
+        review_dir = self.make_human_review_result("human-review-summary-failure")
+        original_append = runner.append_pinned_private_artifact
+
+        def fail_summary(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+            *,
+            expected_starting_size: int,
+        ) -> int:
+            if pinned.name == "human-review-summary.json":
+                raise runner.PipelineError("forced Summary write failure", 9)
+            return original_append(
+                pinned,
+                payload,
+                expected_starting_size=expected_starting_size,
+            )
+
+        with mock.patch.object(
+            runner,
+            "append_pinned_private_artifact",
+            side_effect=fail_summary,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
+
+        summary = review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        self.assertTrue(summary["accepted"])
+
+    def test_human_review_terminal_replacement_after_summary_is_rejected(self) -> None:
+        review_dir = self.make_human_review_result(
+            "human-review-terminal-replaced-after-summary"
+        )
+        decisions = review_dir / "human-review.ndjson"
+        moved = review_dir / "human-review-original.ndjson"
+        victim = self.root / "terminal-after-summary-victim"
+        original_append = runner.append_pinned_private_artifact
+
+        def replace_after_summary(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+            *,
+            expected_starting_size: int,
+        ) -> int:
+            written = original_append(
+                pinned,
+                payload,
+                expected_starting_size=expected_starting_size,
+            )
+            if pinned.name == "human-review-summary.json":
+                victim.write_bytes(b"external-victim")
+                victim.chmod(0o640)
+                decisions.rename(moved)
+                os.link(victim, decisions)
+            return written
+
+        with mock.patch.object(
+            runner,
+            "append_pinned_private_artifact",
+            side_effect=replace_after_summary,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+
+        self.assertEqual(victim.read_bytes(), b"external-victim")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o640)
+        self.assertEqual(moved.read_bytes(), b"")
+        self.assertEqual((review_dir / "human-review-summary.json").read_bytes(), b"")
+
+    def test_human_review_summary_replacement_after_write_is_rejected(self) -> None:
+        review_dir = self.make_human_review_result(
+            "human-review-summary-replaced-after-write"
+        )
+        summary_path = review_dir / "human-review-summary.json"
+        moved = review_dir / "human-review-original-summary.json"
+        victim = self.root / "summary-after-write-victim"
+        original_append = runner.append_pinned_private_artifact
+
+        def replace_summary_after_write(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+            *,
+            expected_starting_size: int,
+        ) -> int:
+            written = original_append(
+                pinned,
+                payload,
+                expected_starting_size=expected_starting_size,
+            )
+            if pinned.name == "human-review-summary.json":
+                victim.write_bytes(b"external-summary-victim")
+                victim.chmod(0o640)
+                summary_path.rename(moved)
+                os.link(victim, summary_path)
+            return written
+
+        with mock.patch.object(
+            runner,
+            "append_pinned_private_artifact",
+            side_effect=replace_summary_after_write,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+
+        self.assertEqual(victim.read_bytes(), b"external-summary-victim")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o640)
+        self.assertEqual(moved.read_bytes(), b"")
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
+
+    def test_human_review_post_commit_close_error_does_not_report_failure(self) -> None:
+        review_dir = self.make_human_review_result(
+            "human-review-post-commit-close-error"
+        )
+        original_validate = runner.validate_pinned_private_artifact
+        original_close = runner.os.close
+        committed = False
+        close_failed = False
+        nonempty_summary_validations = 0
+
+        def mark_commit(
+            pinned: runner.PinnedPrivateArtifact,
+            *,
+            expected_size: int | None,
+            expected_mode: int | None = 0o600,
+        ) -> os.stat_result:
+            nonlocal committed, nonempty_summary_validations
+            observed = original_validate(
+                pinned,
+                expected_size=expected_size,
+                expected_mode=expected_mode,
+            )
+            if pinned.name == "human-review-summary.json" and expected_size:
+                nonempty_summary_validations += 1
+                committed = nonempty_summary_validations >= 2
+            return observed
+
+        def fail_first_post_commit_close(descriptor: int) -> None:
+            nonlocal close_failed
+            if committed and not close_failed:
+                close_failed = True
+                raise OSError("forced post-commit close failure")
+            original_close(descriptor)
+
+        with mock.patch.object(
+            runner,
+            "validate_pinned_private_artifact",
+            side_effect=mark_commit,
+        ), mock.patch.object(
+            runner.os,
+            "close",
+            side_effect=fail_first_post_commit_close,
+        ):
+            summary = review_decision.decide(
+                self.repo,
+                review_dir,
+                "reviewer@example.test",
+                "accept",
+            )
+
+        self.assertTrue(close_failed)
+        self.assertTrue(summary["accepted"])
+        self.assertGreater((review_dir / "human-review.ndjson").stat().st_size, 0)
+        self.assertGreater((review_dir / "human-review-summary.json").stat().st_size, 0)
+
+    def test_human_review_run_replacement_after_summary_is_rejected(self) -> None:
+        review_dir = self.make_human_review_result(
+            "human-review-run-replaced-after-summary"
+        )
+        moved_run = self.root / "human-review-original-run"
+        original_append = runner.append_pinned_private_artifact
+
+        def replace_run_after_summary(
+            pinned: runner.PinnedPrivateArtifact,
+            payload: bytes,
+            *,
+            expected_starting_size: int,
+        ) -> int:
+            written = original_append(
+                pinned,
+                payload,
+                expected_starting_size=expected_starting_size,
+            )
+            if pinned.name == "human-review-summary.json":
+                review_dir.rename(moved_run)
+                review_dir.mkdir()
+            return written
+
+        with mock.patch.object(
+            runner,
+            "append_pinned_private_artifact",
+            side_effect=replace_run_after_summary,
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+
+        self.assertEqual((moved_run / "human-review.ndjson").read_bytes(), b"")
+        self.assertEqual(
+            (moved_run / "human-review-summary.json").read_bytes(),
+            b"",
+        )
+
+    def test_human_review_summary_hardlink_preserves_external_victim(self) -> None:
+        review_dir = self.make_human_review_result("human-review-summary-hardlink")
+        victim = self.root / "summary-hardlink-victim"
+        victim.write_bytes(b"")
+        victim.chmod(0o640)
+        os.link(victim, review_dir / "human-review-summary.json")
+
+        with self.assertRaisesRegex(runner.PipelineError, "multi-linked"):
+            review_decision.decide(
+                self.repo,
+                review_dir,
+                "reviewer@example.test",
+                "accept",
+            )
+
+        self.assertEqual(victim.read_bytes(), b"")
+        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), 0o640)
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
 
     def test_human_review_artifact_growth_stops_at_first_excess_byte(self) -> None:
         artifact = self.root / "growing-human-review-artifact"

@@ -444,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.20"',
+            'RUNNER_VERSION = "2.21"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -537,6 +537,11 @@ def validate_system_assets(errors: list[str]) -> None:
             "pinned_empty_private_artifact",
             "append_pinned_private_artifact",
             "truncate_pinned_private_artifact",
+            "validate_named_regular_descriptor",
+            "validate_run_directory_descriptor",
+            "human_review_artifact_names",
+            "close_descriptor_quietly",
+            "human review Artifact name set changed",
             "expected_repository_state_commitment",
             "_bounded_descriptor_sha256",
             "human review already has a terminal decision",
@@ -596,6 +601,8 @@ def validate_system_assets(errors: list[str]) -> None:
             "human review metadata-only floor is missing or invalid",
             "human review repository commitment is missing or invalid",
             "human review binding drifted",
+            "human review decision commit failed",
+            "human review summary already exists",
         ):
             if contract not in review_text:
                 errors.append(f"human review command is missing contract: {contract}")

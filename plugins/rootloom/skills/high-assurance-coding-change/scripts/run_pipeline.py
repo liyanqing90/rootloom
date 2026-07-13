@@ -88,7 +88,7 @@ MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.20"
+RUNNER_VERSION = "2.21"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -3145,6 +3145,85 @@ class PinnedPrivateArtifact:
         self.descriptor = descriptor
 
 
+def close_descriptor_quietly(descriptor: int) -> None:
+    """Never turn an already committed private Artifact into a reported failure."""
+
+    try:
+        os.close(descriptor)
+    except OSError:
+        pass
+
+
+def validate_named_regular_descriptor(
+    directory_descriptor: int,
+    name: str,
+    descriptor: int,
+    display_path: Path,
+    *,
+    label: str,
+    expected_size: int | None,
+    expected_mode: int | None,
+) -> os.stat_result:
+    """Require one canonical name to keep identifying one safe regular descriptor."""
+
+    try:
+        opened = os.fstat(descriptor)
+        current = os.stat(
+            name,
+            dir_fd=directory_descriptor,
+            follow_symlinks=False,
+        )
+    except OSError as exc:
+        raise PipelineError(f"{label} identity drifted: {display_path}", 9) from exc
+    if (
+        not stat.S_ISREG(opened.st_mode)
+        or not stat.S_ISREG(current.st_mode)
+        or opened.st_nlink != 1
+        or current.st_nlink != 1
+    ):
+        if label == "human review Result":
+            message = "human review Result is not a private regular file"
+        elif label == "human review Artifact":
+            message = (
+                "human review run contains a non-file entry or multi-linked file: "
+                f"{name}"
+            )
+        else:
+            message = f"{label} is non-regular or multi-linked: {display_path}"
+        raise PipelineError(
+            message,
+            9,
+        )
+    if opened.st_dev != current.st_dev or opened.st_ino != current.st_ino:
+        raise PipelineError(f"{label} identity drifted: {display_path}", 9)
+    shared_fields = (
+        "st_mode",
+        "st_nlink",
+        "st_size",
+        "st_mtime_ns",
+        "st_ctime_ns",
+    )
+    if any(getattr(opened, field) != getattr(current, field) for field in shared_fields):
+        raise PipelineError(f"{label} metadata drifted: {display_path}", 9)
+    if expected_size is not None and (
+        opened.st_size != expected_size or current.st_size != expected_size
+    ):
+        raise PipelineError(
+            f"{label} size drifted: expected {expected_size}, observed "
+            f"descriptor={opened.st_size}, path={current.st_size}: {display_path}",
+            9,
+        )
+    if expected_mode is not None and (
+        stat.S_IMODE(opened.st_mode) != expected_mode
+        or stat.S_IMODE(current.st_mode) != expected_mode
+    ):
+        raise PipelineError(
+            f"{label} mode drifted: expected {expected_mode:o}: {display_path}",
+            9,
+        )
+    return opened
+
+
 def validate_pinned_private_artifact(
     pinned: PinnedPrivateArtifact,
     *,
@@ -3153,59 +3232,34 @@ def validate_pinned_private_artifact(
 ) -> os.stat_result:
     """Require a pinned private file to remain the only link at its original name."""
 
-    try:
-        opened = os.fstat(pinned.descriptor)
-        current = os.stat(
-            pinned.name,
-            dir_fd=pinned.directory_descriptor,
-            follow_symlinks=False,
-        )
-    except OSError as exc:
-        raise PipelineError(
-            f"private Artifact identity drifted: {pinned.path}",
-            9,
-        ) from exc
-    if (
-        not stat.S_ISREG(opened.st_mode)
-        or not stat.S_ISREG(current.st_mode)
-        or opened.st_nlink != 1
-        or current.st_nlink != 1
-    ):
-        raise PipelineError(
-            f"private Artifact is non-regular or multi-linked: {pinned.path}",
-            9,
-        )
-    if opened.st_dev != current.st_dev or opened.st_ino != current.st_ino:
-        raise PipelineError(
-            f"private Artifact identity drifted: {pinned.path}",
-            9,
-        )
-    if expected_size is not None and (
-        opened.st_size != expected_size or current.st_size != expected_size
-    ):
-        raise PipelineError(
-            f"private Artifact size drifted: expected {expected_size}, observed "
-            f"descriptor={opened.st_size}, path={current.st_size}: {pinned.path}",
-            9,
-        )
-    if expected_mode is not None and (
-        stat.S_IMODE(opened.st_mode) != expected_mode
-        or stat.S_IMODE(current.st_mode) != expected_mode
-    ):
-        raise PipelineError(
-            f"private Artifact mode drifted: expected {expected_mode:o}: {pinned.path}",
-            9,
-        )
-    return opened
+    return validate_named_regular_descriptor(
+        pinned.directory_descriptor,
+        pinned.name,
+        pinned.descriptor,
+        pinned.path,
+        label="private Artifact",
+        expected_size=expected_size,
+        expected_mode=expected_mode,
+    )
 
 
 @contextmanager
-def pinned_empty_private_artifact(path: Path) -> Iterator[PinnedPrivateArtifact]:
+def pinned_empty_private_artifact(
+    path: Path,
+    *,
+    directory_descriptor: int | None = None,
+    nonempty_error: str = "human review already has a terminal decision",
+) -> Iterator[PinnedPrivateArtifact]:
     """Create/open one empty single-link file and keep its safe descriptor pinned."""
 
     if not hasattr(os, "O_NOFOLLOW") or not hasattr(os, "O_DIRECTORY"):
         raise PipelineError("platform lacks pinned private Artifact support", 9)
-    directory_descriptor, _ = _safe_run_directory_descriptor(path.parent)
+    if directory_descriptor is None:
+        owned_directory_descriptor, _ = _safe_run_directory_descriptor(path.parent)
+    else:
+        validate_run_directory_descriptor(path.parent, directory_descriptor)
+        owned_directory_descriptor = os.dup(directory_descriptor)
+        validate_run_directory_descriptor(path.parent, owned_directory_descriptor)
     descriptor = -1
     flags = os.O_RDWR | os.O_APPEND | os.O_NOFOLLOW
     if hasattr(os, "O_CLOEXEC"):
@@ -3216,14 +3270,14 @@ def pinned_empty_private_artifact(path: Path) -> Iterator[PinnedPrivateArtifact]
                 path.name,
                 flags | os.O_CREAT | os.O_EXCL,
                 0o600,
-                dir_fd=directory_descriptor,
+                dir_fd=owned_directory_descriptor,
             )
         except FileExistsError:
             try:
                 descriptor = os.open(
                     path.name,
                     flags,
-                    dir_fd=directory_descriptor,
+                    dir_fd=owned_directory_descriptor,
                 )
             except OSError as exc:
                 raise PipelineError(
@@ -3233,7 +3287,7 @@ def pinned_empty_private_artifact(path: Path) -> Iterator[PinnedPrivateArtifact]
         pinned = PinnedPrivateArtifact(
             path,
             path.name,
-            directory_descriptor,
+            owned_directory_descriptor,
             descriptor,
         )
         opened = validate_pinned_private_artifact(
@@ -3242,14 +3296,14 @@ def pinned_empty_private_artifact(path: Path) -> Iterator[PinnedPrivateArtifact]
             expected_mode=None,
         )
         if opened.st_size != 0:
-            raise PipelineError("human review already has a terminal decision", 9)
+            raise PipelineError(nonempty_error, 9)
         os.fchmod(descriptor, 0o600)
         validate_pinned_private_artifact(pinned, expected_size=0)
         yield pinned
     finally:
         if descriptor >= 0:
-            os.close(descriptor)
-        os.close(directory_descriptor)
+            close_descriptor_quietly(descriptor)
+        close_descriptor_quietly(owned_directory_descriptor)
 
 
 def append_pinned_private_artifact(
@@ -3382,12 +3436,15 @@ def private_artifact_fingerprint(
             9,
         ) from exc
     try:
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise PipelineError(
-                f"human review run contains a non-file entry or multi-linked file: {name}",
-                9,
-            )
+        before = validate_named_regular_descriptor(
+            directory_descriptor,
+            name,
+            descriptor,
+            display_path,
+            label="human review Artifact",
+            expected_size=None,
+            expected_mode=None,
+        )
         if before.st_size > max_bytes:
             raise PipelineError(
                 f"human review Artifact byte budget exceeded: {display_path} "
@@ -3399,7 +3456,15 @@ def private_artifact_fingerprint(
             max_bytes=max_bytes,
             deadline=deadline,
         )
-        after = os.fstat(descriptor)
+        after = validate_named_regular_descriptor(
+            directory_descriptor,
+            name,
+            descriptor,
+            display_path,
+            label="human review Artifact",
+            expected_size=None,
+            expected_mode=None,
+        )
     finally:
         if descriptor >= 0:
             os.close(descriptor)
@@ -3459,6 +3524,53 @@ def human_review_result_document(result: dict[str, Any]) -> bytes:
     return payload
 
 
+def validate_run_directory_descriptor(
+    run_dir: Path,
+    descriptor: int,
+) -> dict[str, Any]:
+    """Require the canonical Run Directory path to keep naming one descriptor."""
+
+    try:
+        opened = os.fstat(descriptor)
+        current = run_dir.lstat()
+    except OSError as exc:
+        raise PipelineError(f"human review Run Directory identity drifted: {run_dir}", 9) from exc
+    if (
+        not stat.S_ISDIR(opened.st_mode)
+        or not stat.S_ISDIR(current.st_mode)
+        or stat.S_ISLNK(current.st_mode)
+        or opened.st_dev != current.st_dev
+        or opened.st_ino != current.st_ino
+    ):
+        raise PipelineError(
+            f"human review Run Directory identity drifted: {run_dir}",
+            9,
+        )
+    resolved_path = str(run_dir.resolve())
+    try:
+        final_current = run_dir.lstat()
+    except OSError as exc:
+        raise PipelineError(
+            f"human review Run Directory identity drifted: {run_dir}",
+            9,
+        ) from exc
+    if (
+        final_current.st_dev != opened.st_dev
+        or final_current.st_ino != opened.st_ino
+        or not stat.S_ISDIR(final_current.st_mode)
+    ):
+        raise PipelineError(
+            f"human review Run Directory identity drifted: {run_dir}",
+            9,
+        )
+    return {
+        "path": resolved_path,
+        "device": opened.st_dev,
+        "inode": opened.st_ino,
+        "mode": opened.st_mode,
+    }
+
+
 def _safe_run_directory_descriptor(run_dir: Path) -> tuple[int, dict[str, Any]]:
     if not hasattr(os, "O_DIRECTORY") or not hasattr(os, "O_NOFOLLOW"):
         raise PipelineError("platform lacks safe human review directory support", 9)
@@ -3470,25 +3582,7 @@ def _safe_run_directory_descriptor(run_dir: Path) -> tuple[int, dict[str, Any]]:
     except OSError as exc:
         raise PipelineError(f"could not open human review run safely: {run_dir}", 9) from exc
     try:
-        opened = os.fstat(descriptor)
-        current = run_dir.lstat()
-        if (
-            not stat.S_ISDIR(opened.st_mode)
-            or stat.S_ISLNK(current.st_mode)
-            or opened.st_dev != current.st_dev
-            or opened.st_ino != current.st_ino
-        ):
-            raise PipelineError(
-                f"human review run changed while it was opened: {run_dir}",
-                9,
-            )
-        identity = {
-            "path": str(run_dir.resolve()),
-            "device": opened.st_dev,
-            "inode": opened.st_ino,
-            "mode": opened.st_mode,
-        }
-        return descriptor, identity
+        return descriptor, validate_run_directory_descriptor(run_dir, descriptor)
     except BaseException:
         os.close(descriptor)
         raise
@@ -3513,9 +3607,15 @@ def read_human_review_result(
             )
         except OSError as exc:
             raise PipelineError("human review Result is missing or unsafe", 9) from exc
-        before = os.fstat(descriptor)
-        if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
-            raise PipelineError("human review Result is not a private regular file", 9)
+        before = validate_named_regular_descriptor(
+            directory_descriptor,
+            "result.json",
+            descriptor,
+            run_dir / "result.json",
+            label="human review Result",
+            expected_size=None,
+            expected_mode=None,
+        )
         if before.st_size > max_bytes:
             raise PipelineError(
                 f"human review Result byte budget exceeded ({before.st_size} > {max_bytes})",
@@ -3530,7 +3630,15 @@ def read_human_review_result(
             chunks.append(chunk)
             remaining -= len(chunk)
         payload = b"".join(chunks)
-        after = os.fstat(descriptor)
+        after = validate_named_regular_descriptor(
+            directory_descriptor,
+            "result.json",
+            descriptor,
+            run_dir / "result.json",
+            label="human review Result",
+            expected_size=None,
+            expected_mode=None,
+        )
         stable_fields = (
             "st_dev",
             "st_ino",
@@ -3720,6 +3828,33 @@ def protected_deletion_commitment(
     return values
 
 
+def human_review_artifact_names(
+    directory_descriptor: int,
+    *,
+    excluded: set[str],
+    deadline: float,
+) -> list[str]:
+    """Enumerate the exact bounded set of reviewed private Artifact names."""
+
+    try:
+        entries = os.scandir(directory_descriptor)
+    except OSError as exc:
+        raise PipelineError("could not enumerate human review run", 9) from exc
+    names: list[str] = []
+    with entries:
+        for entry in entries:
+            if time.monotonic() > deadline:
+                raise PipelineError("human review binding deadline exceeded", 9)
+            if entry.name not in excluded:
+                names.append(entry.name)
+                if len(names) > MAX_HUMAN_REVIEW_ARTIFACTS:
+                    raise PipelineError(
+                        f"human review Artifact count exceeds {MAX_HUMAN_REVIEW_ARTIFACTS}",
+                        9,
+                    )
+    return sorted(names)
+
+
 def compute_human_review_binding(
     repo: Path,
     run_dir: Path,
@@ -3751,39 +3886,38 @@ def compute_human_review_binding(
     ) as deadline:
         directory_descriptor, run_identity = _safe_run_directory_descriptor(run_dir)
         try:
-            try:
-                entries = os.scandir(directory_descriptor)
-            except OSError as exc:
+            initial_names = human_review_artifact_names(
+                directory_descriptor,
+                excluded=excluded,
+                deadline=deadline,
+            )
+            for name in initial_names:
+                remaining = policy["max_human_review_total_bytes"] - total_bytes
+                if remaining < 0:
+                    raise PipelineError("human review total Artifact byte budget exceeded", 9)
+                fingerprint = private_artifact_fingerprint(
+                    directory_descriptor,
+                    name,
+                    run_dir / name,
+                    max_bytes=min(
+                        policy["max_human_review_artifact_bytes"],
+                        remaining,
+                    ),
+                    deadline=deadline,
+                )
+                total_bytes += fingerprint["size"]
+                artifacts[name] = fingerprint
+            final_names = human_review_artifact_names(
+                directory_descriptor,
+                excluded=excluded,
+                deadline=deadline,
+            )
+            if final_names != initial_names:
                 raise PipelineError(
-                    f"could not enumerate human review run: {run_dir}",
+                    "human review Artifact name set changed while it was being bound",
                     9,
-                ) from exc
-            with entries:
-                for entry in entries:
-                    if time.monotonic() > deadline:
-                        raise PipelineError("human review binding deadline exceeded", 9)
-                    if entry.name in excluded:
-                        continue
-                    if len(artifacts) >= MAX_HUMAN_REVIEW_ARTIFACTS:
-                        raise PipelineError(
-                            f"human review Artifact count exceeds {MAX_HUMAN_REVIEW_ARTIFACTS}",
-                            9,
-                        )
-                    remaining = policy["max_human_review_total_bytes"] - total_bytes
-                    if remaining < 0:
-                        raise PipelineError("human review total Artifact byte budget exceeded", 9)
-                    fingerprint = private_artifact_fingerprint(
-                        directory_descriptor,
-                        entry.name,
-                        run_dir / entry.name,
-                        max_bytes=min(
-                            policy["max_human_review_artifact_bytes"],
-                            remaining,
-                        ),
-                        deadline=deadline,
-                    )
-                    total_bytes += fingerprint["size"]
-                    artifacts[entry.name] = fingerprint
+                )
+            validate_run_directory_descriptor(run_dir, directory_descriptor)
         finally:
             os.close(directory_descriptor)
         state = capture_repo_state(

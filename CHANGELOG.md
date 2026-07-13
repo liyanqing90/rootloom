@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.16] - 2026-07-13
+
+### Security
+
+- Require canonical `result.json` and every reviewed Artifact name to keep identifying the exact regular single-link descriptor before and after its bounded read. Stable descriptor metadata alone can no longer authorize bytes after a directory-entry replacement.
+- Commit the exact reviewed Artifact name set before and after hashing, rejecting additions, removals, or renames during Binding instead of accepting a one-sided directory enumeration.
+- Make Terminal and Summary one compensating pinned-descriptor transaction under a pinned Run Directory. A decision commits only after both outputs are durable and a final Result, repository commitment, Run Directory, Terminal, and Summary identity check passes; any earlier failure truncates both pinned originals to an unambiguous retryable empty state.
+- Prevent descriptor-cleanup errors after that final commit point from converting a durable two-output decision into a reported failure; cleanup cannot reopen or mutate either path.
+
+### Changed
+
+- Rootloom is now version 1.2.16 and the strict high-assurance runner is version 2.21.
+- Human Review remains format v4 because the persisted evidence and interpretation are unchanged. Existing valid v4 Results need no migration; older non-empty Terminal-without-Summary states remain fail closed rather than being inferred or rewritten.
+
+### Tests
+
+- Add real Result, Artifact, Terminal, and Run Directory rename/replacement regressions, including filesystems whose opened-descriptor metadata appears stable.
+- Add Artifact name-set drift, Summary hardlink victim preservation, forced Summary-write compensation, retry-after-compensation, and final two-output validation coverage.
+- Add a post-commit descriptor-close fault injection so cleanup cannot recreate the Terminal-without-reported-success ambiguity.
+
 ## [1.2.15] - 2026-07-13
 
 ### Security
