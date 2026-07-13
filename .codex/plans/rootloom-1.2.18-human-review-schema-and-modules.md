@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security, public CLI, architecture, and release
@@ -120,6 +120,7 @@ Release Rootloom 1.2.18 / Strict Runner 2.23 so Decision Pair verification alway
 - 2026-07-13 — Split composition but retain Runner primitives: this reduces classification drift without a high-risk rewrite of the already-tested general state and descriptor engines.
 - 2026-07-13 — Final local PASS: `make check` completed 58 repository tests and 127 Strict Runner tests; `make compatibility-smoke` passed against `codex-cli 0.144.0-alpha.4`; isolated `compileall` and `git diff --check` passed.
 - 2026-07-13 — Counterexample challenge PASS: malformed Binding classes are rejected before recapture, invalid pair files remain `INVALID`, canonical current-state repository drift remains `STALE`, exact 1 MiB payloads remain readable, and one-byte-over-budget producer paths fail before either pair file is created.
+- 2026-07-13 — Publication complete: release commit `16b9966a3512d46014da32196f331a73246ea4e3` passed all eight jobs in CI run `29237033241`; annotated tag `v1.2.18` targets that commit and the formal GitHub Release is public.
 
 ## Durable decision records
 
