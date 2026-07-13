@@ -6,6 +6,27 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.13] - 2026-07-13
+
+### Security
+
+- Replace Human Review v2's HEAD/status-only repository check with a v3 canonical commitment over bounded visible content fingerprints, metadata-only fingerprints, the Git index, Git control state, and status/path sets. Every authorized protected deletion also carries an exact-missing assertion and stable lexical parent-boundary fingerprints, so recreating an ignored target refuses a decision.
+- Serialize accept/reject under the Strict Runner repository lock, re-read Result in the lock, recheck state after appending the terminal decision, and compensate the just-written record if a non-cooperative writer changes repository state during that interval.
+- Reject isolation launchers inside the target repository or Artifact run root, capture their configured identity through a stable no-follow descriptor, and repeat the same identity check immediately before every model-stage and deterministic-verification spawn. Command records distinguish configured identity from actual pre-spawn identity.
+- Transfer ownership to `run_managed()` cleanup immediately after `Popen`, including selector construction, nonblocking setup, and registration failures. Directory fingerprints are now metadata-only, and verification entrypoints fail closed when they resolve to a directory instead of invoking unbounded nested Git commands.
+- Version Setup Recovery target schemas independently of the current plugin catalog. New Manifests record producer version, recovery schema, and target type; the reader preserves the implicit 1.2.12 schema so a future target removal or rename cannot orphan an interrupted transaction.
+
+### Changed
+
+- Rootloom is now version 1.2.13 and the strict high-assurance runner is version 2.18.
+- Name the canonical launcher-presence gate `--require-isolation-launcher`; retain `--require-isolation` as a compatibility alias so the option no longer implies Rootloom attests isolation semantics.
+- Split canonical Runner state commitments and stable process identity into `scripts/runner/`, and split Setup transaction writes and versioned recovery schemas into `scripts/setup/`, leaving the CLI files responsible for orchestration and compatibility wrappers.
+- Human Review binding/decision records advance to version 3. Existing version-2 review results fail closed and must be rerun or handled through an explicitly external review process; they are never silently upgraded from evidence they did not capture.
+
+### Tests
+
+- Add ignored protected-target recreation, repository-lock contention, post-write drift compensation, in-repository/run-root launcher rejection, per-spawn launcher drift, selector-initialization cleanup, metadata-only directory fingerprint, and historical Recovery target-schema regressions.
+
 ## [1.2.12] - 2026-07-13
 
 ### Security

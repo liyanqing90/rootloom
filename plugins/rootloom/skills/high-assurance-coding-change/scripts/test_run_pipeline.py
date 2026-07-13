@@ -21,6 +21,12 @@ SPEC = importlib.util.spec_from_file_location("high_assurance_runner", MODULE_PA
 assert SPEC and SPEC.loader
 runner = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(runner)
+sys.modules.setdefault("run_pipeline", runner)
+REVIEW_PATH = MODULE_PATH.with_name("review_decision.py")
+REVIEW_SPEC = importlib.util.spec_from_file_location("review_decision", REVIEW_PATH)
+assert REVIEW_SPEC and REVIEW_SPEC.loader
+review_decision = importlib.util.module_from_spec(REVIEW_SPEC)
+REVIEW_SPEC.loader.exec_module(review_decision)
 
 
 def git(repo: Path, *args: str) -> None:
@@ -993,6 +999,15 @@ class RunnerGateTests(unittest.TestCase):
             self.assertNotEqual(third["sha256"], first["sha256"])
             self.assertGreater(sha256.call_count, first_calls)
 
+    def test_directory_fingerprint_is_metadata_only_and_never_spawns_git(self) -> None:
+        directory = self.repo / "ordinary-directory"
+        directory.mkdir()
+        with mock.patch.object(runner.subprocess, "run") as spawn:
+            fingerprint = runner.file_fingerprint(directory)
+        spawn.assert_not_called()
+        self.assertEqual(fingerprint["kind"], "directory")
+        self.assertNotIn("sha256", fingerprint)
+
     def test_stage_json_and_required_isolation_fail_before_use(self) -> None:
         output = self.root / "oversized.json"
         output.write_text('{"value":"' + ("x" * 100) + '"}', encoding="utf-8")
@@ -1030,6 +1045,28 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(argv, [str(launcher.resolve())])
         assert metadata is not None
         self.assertEqual(metadata["executable_sha256"], runner.file_sha256(launcher))
+        command, actual = runner.prepare_isolated_command(argv, metadata, ["true"])
+        self.assertEqual(command, [str(launcher.resolve()), "--", "true"])
+        self.assertEqual(actual, metadata["configured_executable_identity"])
+        launcher.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+        launcher.chmod(0o755)
+        with self.assertRaisesRegex(runner.PipelineError, "identity drifted"):
+            runner.prepare_isolated_command(argv, metadata, ["true"])
+
+        for forbidden_root, label in ((self.repo, "repository"), (self.run_dir, "run root")):
+            forbidden = forbidden_root / "launcher"
+            forbidden.write_text("#!/bin/sh\nexec \"$@\"\n", encoding="utf-8")
+            forbidden.chmod(0o755)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                runner.PipelineError,
+                label,
+            ):
+                runner.normalize_isolation_launcher(
+                    str(forbidden),
+                    required=True,
+                    repo=self.repo,
+                    run_root=self.run_dir,
+                )
 
     def test_human_review_decision_binds_artifacts_and_refuses_drift(self) -> None:
         script = MODULE_PATH.with_name("review_decision.py")
@@ -1044,6 +1081,7 @@ class RunnerGateTests(unittest.TestCase):
             self.repo,
             first,
             runner.human_review_result_core_sha256(first_core),
+            first_core["protected_deletions"],
         )
         first_result = {**first_core, "human_review_binding": binding}
         runner.write_json(
@@ -1074,6 +1112,28 @@ class RunnerGateTests(unittest.TestCase):
         self.assertNotEqual(tampered.returncode, 0)
         self.assertIn("binding drifted", tampered.stderr)
         runner.write_json(first / "result.json", first_result)
+        with runner.repository_lock(self.repo):
+            locked = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--repo",
+                    str(self.repo),
+                    "--run-dir",
+                    str(first),
+                    "--reviewer",
+                    "reviewer@example.test",
+                    "--decision",
+                    "accept",
+                ],
+                check=False,
+                text=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        self.assertNotEqual(locked.returncode, 0)
+        self.assertIn("another high-assurance pipeline holds", locked.stderr)
+        self.assertFalse((first / "human-review.ndjson").exists())
         accepted = subprocess.run(
             [
                 sys.executable,
@@ -1119,11 +1179,15 @@ class RunnerGateTests(unittest.TestCase):
         second = self.root / "human-review-drift"
         second.mkdir()
         (second / "evidence.json").write_text("{}\n", encoding="utf-8")
-        second_core = {"result": "HUMAN_REVIEW_REQUIRED"}
+        second_core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": [],
+        }
         binding = runner.compute_human_review_binding(
             self.repo,
             second,
             runner.human_review_result_core_sha256(second_core),
+            second_core["protected_deletions"],
         )
         runner.write_json(
             second / "result.json",
@@ -1168,7 +1232,10 @@ class RunnerGateTests(unittest.TestCase):
         full.mkdir()
         for index in range(256):
             (full / f"{index}.json").touch()
-        full_core = {"result": "HUMAN_REVIEW_REQUIRED"}
+        full_core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": [],
+        }
         core_hash = runner.human_review_result_core_sha256(full_core)
         full_binding = runner.compute_human_review_binding(self.repo, full, core_hash)
         runner.write_json(
@@ -1179,6 +1246,122 @@ class RunnerGateTests(unittest.TestCase):
             runner.compute_human_review_binding(self.repo, full, core_hash),
             full_binding,
         )
+
+    def test_human_review_refuses_recreated_ignored_deletion_target(self) -> None:
+        (self.repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+        git(self.repo, "add", ".gitignore")
+        git(self.repo, "commit", "-qm", "ignore env")
+        review_dir = self.root / "human-review-recreated-ignored"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": [".env"],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
+        )
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": binding},
+        )
+        (self.repo / ".env").write_text("SECRET=restored\n", encoding="utf-8")
+        refused = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("must remain exactly missing", refused.stderr)
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+
+    def test_human_review_v2_result_fails_closed_instead_of_upgrading(self) -> None:
+        review_dir = self.root / "human-review-v2"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": [],
+        }
+        legacy_binding = {
+            "format": "rootloom-human-review-binding-v2",
+            "repo": str(self.repo.resolve()),
+            "git_head": subprocess.check_output(
+                ["git", "rev-parse", "HEAD"],
+                cwd=self.repo,
+                text=True,
+            ).strip(),
+        }
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": legacy_binding},
+        )
+        refused = subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+                "--reviewer",
+                "reviewer@example.test",
+                "--decision",
+                "accept",
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("binding drifted", refused.stderr)
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+
+    def test_human_review_post_write_drift_compensates_terminal_record(self) -> None:
+        review_dir = self.root / "human-review-post-write-drift"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "protected_deletions": [],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+        )
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": binding},
+        )
+        with mock.patch.object(
+            runner,
+            "compute_human_review_binding",
+            side_effect=[binding, runner.PipelineError("exact target reappeared", 9)],
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "was compensated"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+        self.assertEqual((review_dir / "human-review.ndjson").read_bytes(), b"")
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
 
     def test_verification_coverage_requires_successful_machine_records(self) -> None:
         diagnosis = {
@@ -1483,7 +1666,7 @@ class RunnerGateTests(unittest.TestCase):
         for raw, expected in (
             (".env", "sensitive untracked"),
             ("scripts/missing.sh", "existing regular file"),
-            ("scripts", "existing regular file"),
+            ("scripts", "regular file, not a directory"),
         ):
             bindings = runner.normalize_verification_bindings([raw], commands)
             with self.assertRaises(runner.PipelineError) as caught:
@@ -2223,6 +2406,26 @@ class RunnerGateTests(unittest.TestCase):
                 )
         time.sleep(1.1)
         self.assertFalse(child_done.exists())
+
+    def test_selector_initialization_failure_reaps_started_process(self) -> None:
+        marker = self.root / "selector-init-child-survived"
+        command = (
+            "import pathlib, sys, time; time.sleep(0.6); "
+            "pathlib.Path(sys.argv[1]).write_text('survived')"
+        )
+        with mock.patch.object(
+            runner.selectors,
+            "DefaultSelector",
+            side_effect=RuntimeError("selector init failed"),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "selector init failed"):
+                runner.run_managed(
+                    [sys.executable, "-c", command, str(marker)],
+                    cwd=self.root,
+                    timeout=5,
+                )
+        time.sleep(0.8)
+        self.assertFalse(marker.exists())
 
     def test_verification_batch_output_budget_stops_remaining_commands(self) -> None:
         marker = self.root / "third-verification-ran"

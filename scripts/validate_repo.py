@@ -394,11 +394,33 @@ def validate_system_assets(errors: list[str]) -> None:
             "ensure_no_unresolved_transaction",
             "build_recovery_plan",
             '"operation": "rollback"',
+            '"producer_version"',
+            '"recovery_schema_version"',
+            '"target_type"',
             "manifest_sha256",
             '"recover"',
         ):
             if contract not in setup_text:
                 errors.append(f"setup script is missing capability contract: {contract}")
+        for module, contracts in {
+            setup_script.parent / "setup" / "recovery.py": (
+                "RECOVERY_SCHEMA_VERSION = 2",
+                "RECOVERY_TARGET_SCHEMAS",
+                "recovery_target_schema",
+            ),
+            setup_script.parent / "setup" / "transaction.py": (
+                "def atomic_write",
+                "os.fsync",
+                "os.replace",
+            ),
+        }.items():
+            if not module.is_file():
+                errors.append(f"setup ownership module is missing: {module}")
+                continue
+            module_text = module.read_text(encoding="utf-8")
+            for contract in contracts:
+                if contract not in module_text:
+                    errors.append(f"setup ownership module is missing contract: {contract}")
 
     scanner_text = SCANNER.read_text(encoding="utf-8") if SCANNER.is_file() else ""
     for contract in (
@@ -420,7 +442,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.17"',
+            'RUNNER_VERSION = "2.18"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -448,6 +470,7 @@ def validate_system_assets(errors: list[str]) -> None:
             '"--max-state-paths"',
             '"--max-state-bytes"',
             '"--isolation-launcher"',
+            '"--require-isolation-launcher"',
             '"--require-isolation"',
             '"--verify-env"',
             "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
@@ -493,6 +516,9 @@ def validate_system_assets(errors: list[str]) -> None:
             "max_ignored_paths",
             "validate_verification_coverage",
             "compute_human_review_binding",
+            '"rootloom-human-review-binding-v3"',
+            "protected_deletion_commitment",
+            "prepare_isolated_command",
             "human_review_result_core_sha256",
             "ensure_empty_private_file",
             "atomic_write_json",
@@ -508,13 +534,32 @@ def validate_system_assets(errors: list[str]) -> None:
         ):
             if contract not in runner_text:
                 errors.append(f"high-assurance runner is missing contract: {contract}")
+        for module, contracts in {
+            runner.parent / "runner" / "state.py": (
+                "repository_state_commitment",
+                "rootloom-repository-state-commitment-v1",
+            ),
+            runner.parent / "runner" / "process.py": (
+                "executable_identity",
+                "O_NOFOLLOW",
+            ),
+        }.items():
+            if not module.is_file():
+                errors.append(f"runner ownership module is missing: {module}")
+                continue
+            module_text = module.read_text(encoding="utf-8")
+            for contract in contracts:
+                if contract not in module_text:
+                    errors.append(f"runner ownership module is missing contract: {contract}")
     review_decision = runner.with_name("review_decision.py")
     if not review_decision.is_file():
         errors.append("human review decision command is missing")
     else:
         review_text = review_decision.read_text(encoding="utf-8")
         for contract in (
-            "rootloom-human-review-decision-v2",
+            "rootloom-human-review-decision-v3",
+            "repository_lock",
+            "truncate_private_artifact",
             "human review binding drifted",
             "human review already has a terminal decision",
         ):

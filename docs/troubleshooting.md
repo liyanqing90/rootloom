@@ -93,7 +93,7 @@ This can be the correct result. The runner and native route have separate readin
 
 ## The strict runner exits 10 with `HUMAN_REVIEW_REQUIRED`
 
-This is the intended result after an explicitly authorized `--allow-protected-path-delete` operation. The authorization is checked before the writer runs and makes the run deletion-only, so ordinary edits, renames, moves, and visible file creations must be handled separately. Protected deletion mode also requires a clean baseline and `--max-repair-cycles 0`. Verification and model review passed, but the old protected content was deliberately never read, so the Runner cannot issue automated PASS. A human must confirm the exact deletion and decide whether to accept the working-tree change. Do not convert exit 10 to success in automation.
+This is the intended result after an explicitly authorized `--allow-protected-path-delete` operation. The authorization is checked before the writer runs and makes the run deletion-only, so ordinary edits, renames, moves, and visible file creations must be handled separately. Protected deletion mode also requires a clean baseline and `--max-repair-cycles 0`. Verification and model review passed, but the old protected content was deliberately never read, so the Runner cannot issue automated PASS. Use the bundled decision command; Human Review v3 refuses acceptance if any protected target exists again (including ignored files), its parent boundary changes, the canonical repository commitment drifts, or reviewed evidence changes. Version-2 review results must be rerun or handled through an explicitly external process. Do not convert exit 10 to success in automation.
 
 ## The strict runner rejects a verification entrypoint change
 

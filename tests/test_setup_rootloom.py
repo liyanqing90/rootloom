@@ -225,6 +225,29 @@ class RootloomSetupTests(unittest.TestCase):
             setup.recover(self.codex_home)
         self.assertEqual(victim.read_text(encoding="utf-8"), "preserve me")
 
+    def test_recovery_uses_historical_target_schema_after_catalog_removal(self) -> None:
+        result = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+        )
+        transaction = Path(result["transaction"])
+        manifest_path = transaction / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest.pop("recovery_schema_version")
+        manifest.pop("producer_version")
+        for entry in manifest["files"]:
+            entry.pop("target_type")
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        setup.write_recovery_journal(transaction, "applying", [])
+
+        with mock.patch.object(setup, "all_targets", return_value=[]):
+            recovered = setup.recover(self.codex_home)
+
+        self.assertEqual(recovered["status"], "recovered")
+        self.assertFalse((self.codex_home / "AGENTS.md").exists())
+        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
+
     def test_recovery_preflights_backup_hash_before_mutation(self) -> None:
         agents = self.codex_home / "AGENTS.md"
         agents.write_text("# User policy\n", encoding="utf-8")

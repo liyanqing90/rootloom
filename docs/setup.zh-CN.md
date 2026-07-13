@@ -82,7 +82,7 @@ python3 <skill-dir>/scripts/setup_rootloom.py plan \
 
 Setup 与 rollback 会在 `~/.codex/.rootloom/` 下获取非阻塞跨进程锁；竞争操作会在不触碰受管目标的前提下失败。Apply 在第一次修改目标前准备全部备份与事务清单。Apply 目标写入、rollback 目标写入及各自的最终状态提交都位于补偿边界，因此失败会恢复旧文件与旧状态。清单记录原始权限模式，回滚会恢复这些模式，而不是继承临时文件的默认权限。
 
-这套补偿覆盖能够把控制权返回给 Python 的失败，但尚不是崩溃一致事务。`SIGKILL`、主机故障、断电与父目录持久性问题都可能在目标替换和状态提交之间中断，而且目前没有自动孤儿事务恢复命令。突然终止后重试前，应先检查托管状态与备份。
+能够把控制权返回给 Python 的失败会立即补偿。Apply 与 rollback 还会在第一次修改前写入受 Manifest 绑定的恢复契约；进程突然中断后，必须先运行 `setup_rootloom.py recover`，再执行 apply/rollback。Recovery 会在写入前完整预检计划、备份、Hash、Mode、当前 before/after 状态和版本化历史 target schema。新 Manifest 记录 producer version 与 target type，同时 reader 保留 1.2.12 隐式 target catalog，避免未来 target 重命名/删除使旧事务永久孤立。这仍不是存储级崩溃一致性：主机故障、断电、存储损坏以及原子替换以下的父目录持久性仍属于外部边界。
 
 ## 冲突处理
 

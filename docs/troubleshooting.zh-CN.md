@@ -93,7 +93,7 @@ codex execpolicy check --pretty \
 
 ## 严格 Runner 以退出码 10 和 `HUMAN_REVIEW_REQUIRED` 结束
 
-这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。必须由人确认精确删除并决定是否接受工作树修改；自动化不得把退出码 10 转成成功。
+这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。请使用内置决定命令；Human Review v3 会在任一 protected 目标重新出现（包括 ignored 文件）、父边界变化、规范化仓库承诺漂移或已审证据变化时拒绝 accept。版本 2 审核结果必须重跑，或通过显式外部流程处理。自动化不得把退出码 10 转成成功。
 
 ## 严格 Runner 拒绝 verification entrypoint 变化
 

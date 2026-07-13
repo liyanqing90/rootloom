@@ -82,7 +82,7 @@ It does not change the default model, reasoning effort, approval policy, sandbox
 
 Setup and rollback take a non-blocking cross-process lock under `~/.codex/.rootloom/`; a competing operation fails without touching managed targets. Apply prepares all backups and the transaction manifest before its first target mutation. Apply target writes, rollback target writes, and their final state commits each share a compensation boundary, so a failure restores the previous files and state. Manifests record original file modes, and rollback restores those modes instead of inheriting a temporary-file default.
 
-This compensation covers failures that return control to Python; it is not a crash-consistent transaction. `SIGKILL`, host failure, power loss, and parent-directory durability can interrupt between target replacement and state commit, and there is no automatic orphan-transaction recovery command yet. Inspect managed state and backups before retrying after an abrupt termination.
+Failures that return control to Python are compensated immediately. Apply and rollback also journal a Manifest-bound recovery contract before their first mutation; after an abrupt process interruption, run `setup_rootloom.py recover` before apply/rollback. Recovery preflights the complete plan, backups, hashes, modes, current before/after state, and historically versioned target schema before writing. New Manifests record producer version and target type, while the reader retains the implicit 1.2.12 target catalog so a future target rename/removal does not orphan that transaction. This is still not storage-level crash consistency: host failure, power loss, corruption, and parent-directory durability below atomic replacement remain external boundaries.
 
 ## Conflicts
 

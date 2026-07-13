@@ -19,6 +19,17 @@ import tempfile
 import tomllib
 from typing import Any, Iterator
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from setup.recovery import (
+    RECOVERY_SCHEMA_VERSION,
+    recovery_target_schema,
+    validate_recovery_target_entry,
+)
+from setup.transaction import atomic_write as _transaction_atomic_write
+
 
 MANAGED_TOKEN = "rootloom:managed"
 LIMITS_START = "# rootloom:agent-limits-start version=1"
@@ -594,20 +605,7 @@ def build_plan(
 
 
 def atomic_write(path: Path, value: bytes, mode: int = 0o600) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if path.is_symlink():
-        raise ValueError(f"refusing to write symlink: {path}")
-    file_descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    temp_path = Path(temp_name)
-    try:
-        with os.fdopen(file_descriptor, "wb") as handle:
-            handle.write(value)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(temp_path, mode)
-        os.replace(temp_path, path)
-    finally:
-        temp_path.unlink(missing_ok=True)
+    _transaction_atomic_write(path, value, mode)
 
 
 def make_transaction_dir(codex_home: Path) -> Path:
@@ -746,16 +744,19 @@ def build_recovery_plan(
     if not isinstance(entries, list) or not isinstance(state_contract, dict):
         raise ValueError("setup transaction has no complete recovery contract")
 
-    allowed_paths = {target.relative_path for target in all_targets(plugin_root())}
+    schema_version, recovery_targets = recovery_target_schema(manifest)
     seen: set[str] = set()
     plan: list[tuple[Path, bytes | None, int | None]] = []
     for raw_entry in entries:
         if not isinstance(raw_entry, dict):
             raise ValueError("invalid setup recovery entry")
-        relative = raw_entry.get("path")
-        if not isinstance(relative, str) or relative not in allowed_paths or relative in seen:
-            raise ValueError(f"invalid recovery target: {relative!r}")
-        seen.add(relative)
+        relative, _target_type = validate_recovery_target_entry(
+            raw_entry,
+            schema_version=schema_version,
+            targets=recovery_targets,
+            seen=seen,
+            label="recovery",
+        )
         destination = codex_home / relative
         if has_symlink_component(destination, codex_home):
             raise ValueError(f"refusing symlinked recovery target: {relative}")
@@ -945,6 +946,7 @@ def _apply_plan_locked(
         }
 
     transaction = make_transaction_dir(codex_home)
+    target_types = {target.relative_path: target.kind for target in targets}
     manifest_entries: list[dict[str, Any]] = []
     for action in changed:
         destination = codex_home / action.path
@@ -962,6 +964,7 @@ def _apply_plan_locked(
         manifest_entries.append(
             {
                 "path": action.path,
+                "target_type": target_types[action.path],
                 "before_exists": before is not None,
                 "before_hash": sha256_bytes(before) if before is not None else None,
                 "before_mode": before_mode,
@@ -973,6 +976,8 @@ def _apply_plan_locked(
     transaction_manifest = {
         "operation": "apply",
         "version": version,
+        "producer_version": version,
+        "recovery_schema_version": RECOVERY_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "codex_home": str(codex_home),
         "capabilities": list(selected_capabilities),
@@ -1141,17 +1146,20 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
     else:
         active_capabilities = None
 
-    allowed_paths = {target.relative_path for target in all_targets(plugin_root())}
+    schema_version, recovery_targets = recovery_target_schema(manifest)
     rollback_snapshots: list[tuple[str, bytes | None, int | None]] = []
     rollback_mutations: list[tuple[str, bytes | None, int | None]] = []
     seen_paths: set[str] = set()
     for entry in entries:
         if not isinstance(entry, dict):
             raise ValueError("invalid transaction manifest entry")
-        relative_path = entry.get("path")
-        if relative_path not in allowed_paths or relative_path in seen_paths:
-            raise ValueError(f"invalid transaction target: {relative_path!r}")
-        seen_paths.add(relative_path)
+        relative_path, _target_type = validate_recovery_target_entry(
+            entry,
+            schema_version=schema_version,
+            targets=recovery_targets,
+            seen=seen_paths,
+            label="transaction",
+        )
         destination = codex_home / relative_path
         if has_symlink_component(destination, codex_home):
             raise ValueError(f"refusing symlinked rollback target: {relative_path}")
@@ -1267,6 +1275,7 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
         recovery_entries.append(
             {
                 "path": relative,
+                "target_type": recovery_targets[relative],
                 "before_exists": before is not None,
                 "before_hash": sha256_bytes(before) if before is not None else None,
                 "before_mode": before_mode,
@@ -1283,6 +1292,8 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
     rollback_manifest = {
         "operation": "rollback",
         "version": plugin_version(plugin_root()),
+        "producer_version": plugin_version(plugin_root()),
+        "recovery_schema_version": RECOVERY_SCHEMA_VERSION,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "codex_home": str(codex_home),
         "files": recovery_entries,

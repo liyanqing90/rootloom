@@ -98,8 +98,8 @@ developer instructions and enforces the following locally, without trusting mode
 - process-group termination on timeout, interruption, or any parent exit that leaves children, with bounded SIGTERM waiting, SIGKILL escalation, group-exit confirmation, and an immediate final hard deadline for draining inherited output pipes after direct-parent exit; a drain cutoff forces effective exit 125 for Evidence, Diagnosis, Implementation, Review, and deterministic verification while retaining the direct process status separately;
 - `0700` run directories and `0600` artifacts under an effective `umask 077`.
 - source-bounded repository topology, visible paths, status, Git control/index, task/role input, and model structured-output capture through the shared `--max-state-paths` and `--max-state-bytes` controls;
-- optional fingerprinted isolation-launcher wrapping and a required-isolation preflight; the launcher, not Rootloom, owns host containment;
-- drift-bound Human Review accept/reject records for protected-deletion results, with Artifact hashes captured through stable directory-relative no-follow descriptors.
+- optional isolation-launcher wrapping outside the repository/run root, a required-isolation preflight, and stable no-follow identity checks at configuration plus immediately before every spawn; the launcher, not Rootloom, owns host containment;
+- Human Review v3 accept/reject records for protected-deletion results, bound under the cooperative repository lock to canonical bounded repository state, exact-missing targets and parent boundaries, and Artifact hashes captured through stable directory-relative no-follow descriptors, with a compensating post-write drift check.
 
 The artifact root must be outside the target repository. The runner saves staged,
 unstaged, and HEAD-to-worktree patches for tracked content, an ordinary visible-untracked

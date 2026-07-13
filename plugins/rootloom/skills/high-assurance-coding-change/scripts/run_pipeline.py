@@ -25,6 +25,13 @@ import time
 import tomllib
 from typing import Any, Callable, Iterator
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from runner.process import executable_identity as _stable_executable_identity
+from runner.state import repository_state_commitment
+
 if os.name == "posix":
     import fcntl
 else:  # pragma: no cover - import behavior is asserted through the platform gate
@@ -73,7 +80,7 @@ MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.17"
+RUNNER_VERSION = "2.18"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -652,6 +659,11 @@ def _entrypoint_fingerprint(
     resolved_path = current.relative_to(repo_root).as_posix()
     _reject_protected_entrypoint(state, resolved_path)
     resolved_fingerprint = file_fingerprint(current)
+    if resolved_fingerprint.get("kind") == "directory":
+        raise PipelineError(
+            f"verification entrypoint must resolve to a regular file, not a directory: {path}",
+            9,
+        )
     if require_existing_file and resolved_fingerprint.get("kind") != "file":
         raise PipelineError(
             f"explicit verification harness must resolve to an existing regular file: {path}",
@@ -1427,28 +1439,12 @@ def file_fingerprint(
             }
         return base
     if path.is_dir():
-        nested = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(path),
-                "status",
-                "--porcelain=v1",
-                "-z",
-                "--untracked-files=all",
-            ],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
+        base.update(
+            kind="directory",
+            size=info.st_size,
+            mtime_ns=info.st_mtime_ns,
+            ctime_ns=info.st_ctime_ns,
         )
-        head = subprocess.run(
-            ["git", "-C", str(path), "rev-parse", "HEAD"],
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-        )
-        payload = head.stdout + b"\x00" + nested.stdout
-        base.update(kind="directory", sha256=hashlib.sha256(payload).hexdigest())
         return base
     base.update(kind="other", size=info.st_size)
     return base
@@ -2681,18 +2677,10 @@ def run_managed(
         start_new_session=True,
         env=command_environment,
     )
-    assert process.stdout is not None
-    selector = selectors.DefaultSelector()
-    os.set_blocking(process.stdout.fileno(), False)
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    stdout_open = True
-    stdin_open = input_bytes is not None
+    selector: selectors.BaseSelector | None = None
+    stdout_open = False
+    stdin_open = False
     input_offset = 0
-    if stdin_open:
-        assert process.stdin is not None
-        os.set_blocking(process.stdin.fileno(), False)
-        selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
-
     output = OutputTailBuffer(max_output_bytes)
     command_deadline = time.monotonic() + timeout
     drain_deadline: float | None = None
@@ -2703,6 +2691,17 @@ def run_managed(
     leftover_process_group = False
 
     try:
+        assert process.stdout is not None
+        selector = selectors.DefaultSelector()
+        os.set_blocking(process.stdout.fileno(), False)
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        stdout_open = True
+        stdin_open = input_bytes is not None
+        if stdin_open:
+            assert process.stdin is not None
+            os.set_blocking(process.stdin.fileno(), False)
+            selector.register(process.stdin, selectors.EVENT_WRITE, "stdin")
+
         while True:
             now = time.monotonic()
             if not cleanup_started and output.observed > max_output_bytes:
@@ -2718,6 +2717,7 @@ def run_managed(
                 timed_out or output_limit_exceeded or parent_exited_with_open_output
             ):
                 if stdin_open:
+                    assert selector is not None
                     close_selector_stream(selector, process.stdin)
                     stdin_open = False
                 if process_group_exists(process.pid):
@@ -2742,6 +2742,7 @@ def run_managed(
             active_deadline = drain_deadline if cleanup_started else command_deadline
             assert active_deadline is not None
             wait = max(0.0, min(0.1, active_deadline - time.monotonic()))
+            assert selector is not None
             for key, mask in selector.select(wait):
                 if key.data == "stdout" and mask & selectors.EVENT_READ:
                     try:
@@ -2783,9 +2784,17 @@ def run_managed(
             process.wait(timeout=2)
         raise
     finally:
-        close_selector_stream(selector, process.stdin)
-        close_selector_stream(selector, process.stdout)
-        selector.close()
+        if selector is not None:
+            close_selector_stream(selector, process.stdin)
+            close_selector_stream(selector, process.stdout)
+            selector.close()
+        else:
+            for stream in (process.stdin, process.stdout):
+                if stream is not None and not stream.closed:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
 
     command_exit_code = process.returncode if process.returncode is not None else 1
     exit_code = command_exit_code
@@ -2988,9 +2997,14 @@ def parse_args() -> argparse.Namespace:
         help="Shell-like argv prefix placed before '--' and every managed command",
     )
     parser.add_argument(
+        "--require-isolation-launcher",
         "--require-isolation",
+        dest="require_isolation",
         action="store_true",
-        help="Fail before stages unless an isolation launcher is configured",
+        help=(
+            "Fail before stages unless an operator-supplied isolation launcher is "
+            "configured; --require-isolation is a compatibility alias"
+        ),
     )
     parser.add_argument(
         "--sensitive-path",
@@ -3116,6 +3130,28 @@ def ensure_empty_private_file(path: Path) -> None:
         os.close(descriptor)
 
 
+def truncate_private_artifact(path: Path, expected_size: int) -> None:
+    """Compensate one just-written private Artifact without following symlinks."""
+
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise PipelineError("platform lacks no-follow Artifact compensation support", 9)
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise PipelineError(f"private Artifact is not safely compensatable: {path}", 9) from exc
+    try:
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_size != expected_size:
+            raise PipelineError(
+                f"private Artifact drifted before compensation: {path}",
+                9,
+            )
+        os.ftruncate(descriptor, 0)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -3192,12 +3228,113 @@ def human_review_result_core_sha256(result: dict[str, Any]) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
+def normalize_human_review_state_policy(
+    value: dict[str, Any] | None,
+) -> tuple[dict[str, Any], list[tuple[str, bool]]]:
+    policy = {
+        "max_ignored_paths": DEFAULT_MAX_IGNORED_PATHS,
+        "max_state_paths": DEFAULT_MAX_STATE_PATHS,
+        "max_state_bytes": DEFAULT_MAX_STATE_BYTES,
+        "sensitive_paths": [],
+        "redact_untracked_dotfiles": False,
+    }
+    if value is not None:
+        if not isinstance(value, dict):
+            raise PipelineError("human review state policy must be an object", 9)
+        unexpected = sorted(set(value) - set(policy))
+        if unexpected:
+            raise PipelineError(
+                "human review state policy has unknown fields: " + ", ".join(unexpected),
+                9,
+            )
+        policy.update(value)
+    for field in ("max_ignored_paths", "max_state_paths", "max_state_bytes"):
+        setting = policy[field]
+        if isinstance(setting, bool) or not isinstance(setting, int) or setting <= 0:
+            raise PipelineError(f"human review {field} must be a positive integer", 9)
+    if not isinstance(policy["sensitive_paths"], list) or not all(
+        isinstance(item, str) for item in policy["sensitive_paths"]
+    ):
+        raise PipelineError("human review sensitive_paths must be a string list", 9)
+    if not isinstance(policy["redact_untracked_dotfiles"], bool):
+        raise PipelineError("human review redact_untracked_dotfiles must be boolean", 9)
+    sensitive_rules = normalize_sensitive_paths(policy["sensitive_paths"])
+    return policy, sensitive_rules
+
+
+def _directory_boundary_fingerprint(path: Path) -> dict[str, Any]:
+    try:
+        info = path.lstat()
+    except FileNotFoundError as exc:
+        raise PipelineError(
+            f"protected deletion parent disappeared before review: {path}",
+            9,
+        ) from exc
+    if path.is_symlink():
+        return file_fingerprint(path)
+    if not path.is_dir():
+        raise PipelineError(
+            f"protected deletion parent is not a directory: {path}",
+            9,
+        )
+    return {
+        "kind": "directory-boundary",
+        "device": info.st_dev,
+        "inode": info.st_ino,
+        "mode": info.st_mode,
+        "mtime_ns": info.st_mtime_ns,
+        "ctime_ns": info.st_ctime_ns,
+    }
+
+
+def protected_deletion_commitment(
+    repo: Path,
+    protected_deletions: list[str],
+) -> dict[str, Any]:
+    """Assert exact missing targets and bind every lexical parent boundary."""
+
+    repo = repo.resolve()
+    values: dict[str, Any] = {}
+    for raw in protected_deletions:
+        path = normalize_repo_path(raw, contract=True)
+        if path in values:
+            raise PipelineError(f"duplicate protected deletion path: {path}", 9)
+        validate_repo_path_symlink_boundary(repo, path, "human review protected deletion")
+        target = repo / path
+        try:
+            target.lstat()
+        except FileNotFoundError:
+            pass
+        else:
+            raise PipelineError(
+                f"protected deletion target must remain exactly missing: {path}",
+                9,
+            )
+        ancestors: list[dict[str, Any]] = [
+            {"path": ".", "fingerprint": _directory_boundary_fingerprint(repo)}
+        ]
+        current = repo
+        for part in PurePosixPath(path).parts[:-1]:
+            current = current / part
+            ancestors.append(
+                {
+                    "path": current.relative_to(repo).as_posix(),
+                    "fingerprint": _directory_boundary_fingerprint(current),
+                }
+            )
+        values[path] = {"state": "exact-missing", "parents": ancestors}
+    return values
+
+
 def compute_human_review_binding(
     repo: Path,
     run_dir: Path,
     result_core_sha256: str,
+    protected_deletions: list[str] | None = None,
+    *,
+    state_policy: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Bind a human decision to current Git state and reviewed private Artifacts."""
+    """Bind a human decision to exact bounded repository state and private Artifacts."""
 
     if re.fullmatch(r"[0-9a-f]{64}", result_core_sha256) is None:
         raise PipelineError("human review result-core hash is invalid", 9)
@@ -3237,12 +3374,30 @@ def compute_human_review_binding(
                 artifacts[entry.name] = fingerprint
     finally:
         os.close(directory_descriptor)
-    status = git_status_raw(repo)
+    policy, sensitive_rules = normalize_human_review_state_policy(state_policy)
+    normalized_deletions = sorted(
+        normalize_protected_deletions(list(protected_deletions or []))
+    )
+    state = capture_repo_state(
+        repo,
+        max_ignored_paths=policy["max_ignored_paths"],
+        max_state_paths=policy["max_state_paths"],
+        max_state_bytes=policy["max_state_bytes"],
+        sensitive_rules=sensitive_rules,
+        redact_untracked_dotfiles=policy["redact_untracked_dotfiles"],
+        metadata_only_floor=set(normalized_deletions),
+        check_topology=True,
+    )
     return {
-        "format": "rootloom-human-review-binding-v2",
+        "format": "rootloom-human-review-binding-v3",
         "repo": str(repo.resolve()),
         "git_head": run_checked(["git", "rev-parse", "HEAD"], repo),
-        "git_status_sha256": hashlib.sha256(status).hexdigest(),
+        "state_policy": policy,
+        "repository_state": repository_state_commitment(state),
+        "protected_deletions": protected_deletion_commitment(
+            repo,
+            normalized_deletions,
+        ),
         "result_core_sha256": result_core_sha256,
         "artifacts": artifacts,
     }
@@ -3372,8 +3527,13 @@ def run_stage(
     for feature in COMMON_DISABLED_FEATURES:
         command.extend(("--disable", feature))
     command.append("-")
+    launcher_execution_identity: dict[str, Any] | None = None
     if isolation_launcher:
-        command = [*isolation_launcher, "--", *command]
+        command, launcher_execution_identity = prepare_isolated_command(
+            isolation_launcher,
+            getattr(args, "isolation_metadata", None),
+            command,
+        )
 
     print(
         f"[{stage_name}] {role['model']} / {role['model_reasoning_effort']} / "
@@ -3418,6 +3578,7 @@ def run_stage(
         {
             "stage": stage_name,
             "output_log": log_path.name,
+            "isolation_launcher_execution_identity": launcher_execution_identity,
             **managed_result_metadata(result),
         },
     )
@@ -3499,11 +3660,13 @@ def normalize_isolation_launcher(
     raw: str | None,
     *,
     required: bool,
+    repo: Path | None = None,
+    run_root: Path | None = None,
 ) -> tuple[list[str], dict[str, Any] | None]:
     if not raw:
         if required:
             raise PipelineError(
-                "--require-isolation requires --isolation-launcher",
+                "--require-isolation-launcher requires --isolation-launcher",
                 9,
             )
         return [], None
@@ -3516,14 +3679,58 @@ def normalize_isolation_launcher(
     if supplied_executable.is_symlink():
         raise PipelineError("isolation launcher must not be a symlink", 9)
     executable = supplied_executable.resolve()
-    if not executable.is_file() or not os.access(executable, os.X_OK):
-        raise PipelineError("isolation launcher must be an executable regular file", 9)
+    for writable_root, label in ((repo, "target repository"), (run_root, "run root")):
+        if writable_root is None:
+            continue
+        resolved_root = writable_root.expanduser().resolve()
+        if executable == resolved_root or executable.is_relative_to(resolved_root):
+            raise PipelineError(
+                f"isolation launcher must be outside the {label}: {executable}",
+                9,
+            )
+    identity = isolation_launcher_identity(executable)
     argv[0] = str(executable)
     return argv, {
         "argv": argv,
-        "executable_sha256": file_sha256(executable),
+        "executable_sha256": identity["sha256"],
+        "configured_executable_identity": identity,
         "attestation": "operator-supplied-launcher-not-kernel-attested",
     }
+
+
+def isolation_launcher_identity(executable: Path) -> dict[str, Any]:
+    """Hash one launcher through a stable no-follow descriptor."""
+
+    try:
+        return _stable_executable_identity(executable)
+    except (OSError, ValueError) as exc:
+        raise PipelineError(
+            f"isolation launcher identity check failed for {executable}: {exc}",
+            9,
+        ) from exc
+
+
+def prepare_isolated_command(
+    launcher: list[str],
+    metadata: dict[str, Any] | None,
+    command: list[str],
+) -> tuple[list[str], dict[str, Any] | None]:
+    """Revalidate the configured launcher immediately before one managed spawn."""
+
+    if not launcher:
+        return command, None
+    if metadata is None or not launcher:
+        raise PipelineError("isolation launcher metadata is missing", 9)
+    expected = metadata.get("configured_executable_identity")
+    if not isinstance(expected, dict):
+        raise PipelineError("isolation launcher configured identity is missing", 9)
+    actual = isolation_launcher_identity(Path(launcher[0]))
+    if actual != expected:
+        raise PipelineError(
+            "isolation launcher identity drifted before spawn; command refused",
+            9,
+        )
+    return [*launcher, "--", *command], actual
 
 
 def json_string_content_byte_length(value: str) -> int:
@@ -3657,6 +3864,7 @@ def empty_verification_record(
     command_id: str,
     argv: list[str],
     byte_hint: int = 0,
+    isolation_launcher_execution_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     return {
         "id": command_id,
@@ -3674,6 +3882,9 @@ def empty_verification_record(
         "output_drain_timed_out": False,
         "detached_descendant_possible": False,
         "verification_output_budget_exceeded": False,
+        "isolation_launcher_execution_identity": (
+            isolation_launcher_execution_identity
+        ),
     }
 
 
@@ -3693,6 +3904,7 @@ def run_verification(
     max_total_output_bytes: int,
     max_artifact_bytes: int = DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES,
     isolation_launcher: list[str] | None = None,
+    isolation_metadata: dict[str, Any] | None = None,
 ) -> tuple[bool, list[dict[str, Any]]]:
     if max_total_output_bytes <= 0:
         raise PipelineError("verification output byte limit must be positive", 9)
@@ -3749,6 +3961,11 @@ def run_verification(
                 command_id,
                 argv,
                 preflight_output_bytes,
+                (
+                    isolation_metadata.get("configured_executable_identity")
+                    if isolation_launcher and isinstance(isolation_metadata, dict)
+                    else None
+                ),
             ),
             max_bytes=max_artifact_bytes - artifact_bytes_written,
             artifact_bytes_written=artifact_bytes_written,
@@ -3794,9 +4011,12 @@ def run_verification(
             before,
             {command_id},
         )
+        launcher_execution_identity: dict[str, Any] | None = None
         try:
-            managed_argv = (
-                [*isolation_launcher, "--", *argv] if isolation_launcher else argv
+            managed_argv, launcher_execution_identity = prepare_isolated_command(
+                isolation_launcher or [],
+                isolation_metadata,
+                argv,
             )
             result = run_managed(
                 managed_argv,
@@ -3837,6 +4057,9 @@ def run_verification(
                 "id": command_id,
                 "command": shlex.join(argv),
                 "output": output,
+                "isolation_launcher_execution_identity": (
+                    launcher_execution_identity
+                ),
                 **managed_result_metadata(result),
                 "verification_output_budget_exceeded": (
                     verification_output_budget_exceeded
@@ -3994,11 +4217,6 @@ def run_pipeline_locked(
         args.max_state_paths,
         args.max_state_bytes,
     )
-    isolation_argv, isolation_metadata = normalize_isolation_launcher(
-        args.isolation_launcher,
-        required=args.require_isolation,
-    )
-    args.isolation_argv = isolation_argv
     verification_environment = build_verification_environment(args.verify_env)
     sensitive_rules = normalize_sensitive_paths(args.sensitive_path)
     allowed_protected_deletions = normalize_protected_deletions(
@@ -4058,6 +4276,14 @@ def run_pipeline_locked(
     run_root = requested_run_root.resolve()
     if run_root == repo or run_root.is_relative_to(repo):
         raise PipelineError("artifact root must be outside the target repository")
+    isolation_argv, isolation_metadata = normalize_isolation_launcher(
+        args.isolation_launcher,
+        required=args.require_isolation,
+        repo=repo,
+        run_root=run_root,
+    )
+    args.isolation_argv = isolation_argv
+    args.isolation_metadata = isolation_metadata
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     short_sha = run_checked(["git", "rev-parse", "--short", "HEAD"], repo)
     run_dir = run_root / f"{timestamp}-{short_sha}-{os.urandom(4).hex()}"
@@ -4416,6 +4642,7 @@ def run_pipeline_locked(
             max_total_output_bytes=args.max_verification_output_bytes,
             max_artifact_bytes=args.max_verification_artifact_bytes,
             isolation_launcher=isolation_argv,
+            isolation_metadata=isolation_metadata,
         )
         post_verification_state = capture_state(check_topology=True)
         assert_repo_unchanged(
@@ -4549,6 +4776,14 @@ def run_pipeline_locked(
                     repo,
                     run_dir,
                     human_review_result_core_sha256(summary),
+                    delta["protected_deletions"],
+                    state_policy={
+                        "max_ignored_paths": args.max_ignored_paths,
+                        "max_state_paths": args.max_state_paths,
+                        "max_state_bytes": args.max_state_bytes,
+                        "sensitive_paths": args.sensitive_path,
+                        "redact_untracked_dotfiles": args.redact_untracked_dotfiles,
+                    },
                 )
             atomic_write_json(run_dir / "result.json", summary)
             print(json.dumps(summary, ensure_ascii=False, indent=2), flush=True)
