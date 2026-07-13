@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security and release
@@ -127,6 +127,7 @@ Observed local evidence:
 - 2026-07-13 — Keep Human Review v4 because no persisted field or interpretation changes; this is a compatible safety correction.
 - 2026-07-13 — Define commit as Terminal + Summary + final validations, with no later Rootloom write.
 - 2026-07-13 — Strongest-counterexample challenge found that a post-commit descriptor-close exception could still report failure; cleanup errors are now non-authoritative after the validated durable pair, with explicit fault injection.
+- 2026-07-13 — Published annotated tag `v1.2.16` (tag object `847dcade7750233d14ea89123735947c698c11cc`) at exact commit `ecb466b23517f454476719b3f2d30158486a40a0` after CI run `29230293154` passed 8/8 jobs; formal Release: `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.16`.
 
 ## Durable decision records
 
