@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security, public CLI, and release
@@ -114,6 +114,7 @@ Release Rootloom 1.2.17 / Strict Runner 2.22 so a Human Review v4 decision commi
 - 2026-07-13 — Freeze local adversarial scope after descriptor content hashes; route stronger guarantees to immutable/external systems.
 - 2026-07-13 — Focused PASS: 118 Strict Runner tests, including exact-payload compensation/retry and read-only VALID/INVALID/STALE verifier cases.
 - 2026-07-13 — Repository PASS: `make validate`, `make check` (58 repository tests + 118 Strict Runner tests), compatibility smoke against `codex-cli 0.144.0-alpha.4`, isolated `compileall`, and `git diff --check`.
+- 2026-07-13 — Publication PASS: exact commit `4b749632ca042a73546defd1e3ff0ddf2bdfe82c` passed all eight jobs in CI run `29234377961`, then received annotated tag `v1.2.17` and the formal GitHub Release.
 
 ## Durable decision records
 
