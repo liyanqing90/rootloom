@@ -31,9 +31,9 @@ There are no runtime or test dependencies outside the Python standard library.
 .agents/plugins/marketplace.json       Git marketplace catalog
 plugins/rootloom/       Installable Codex plugin
   .codex-plugin/plugin.json            Plugin metadata
-  assets/system/                       Installable global guidance, Agents, profile, and Rules
-  hooks/                               SessionStart seeding and SubagentStart advisory audit
-  skills/                              Setup, guidance, operating, review, risk, and assurance workflows
+  assets/system/                       Installable global guidance and command Rules
+  hooks/                               Optional SessionStart project-guidance seeding
+  skills/                              Personal workflow, memory, setup, guidance, review, and risk Skills
 tests/                                 Unit and live integration checks
 scripts/validate_repo.py               Repository contract validation
 docs/                                  Design and troubleshooting docs
@@ -52,7 +52,7 @@ Changes should preserve these invariants:
 6. Traversal, file count, file size, and nested depth stay bounded.
 7. The runtime remains Python-standard-library only unless a strong, reviewed need proves otherwise.
 8. Semantic judgment stays in Skills, outside the deterministic automatic core.
-9. Global setup remains plan-first, transactional, backed up, and conflict refusing.
+9. Global setup remains plan-first, lock-serialized, backed up, atomic per file, and conflict refusing.
 10. Hooks never claim stronger enforcement than the current event API provides.
 11. Local `git commit` remains distinct from remote publication and destructive Git operations.
 

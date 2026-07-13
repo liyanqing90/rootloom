@@ -1,107 +1,62 @@
 ---
 name: setup-rootloom
-description: Plan, install, inspect, update, or roll back Rootloom's selectable capability layers in a user's Codex home. Supports Skills-only, guidance, ordinary engineering, controlled delegation, and full high-assurance presets plus exact capability selection. Use when the user explicitly asks to install, configure, bootstrap, repair, audit, update, reduce, or remove this system. Never overwrite user-owned files without showing the plan and obtaining explicit replacement authorization.
+description: Plan, install, inspect, update, or roll back Rootloom Personal Core in a user's Codex home. Supports Skills-only, guidance, and the recommended personal preset. Use when the user explicitly asks to install, configure, bootstrap, repair, audit, update, reduce, or remove Rootloom. Never overwrite user-owned files without showing the plan and obtaining exact replacement authorization.
 ---
 
-# Set up Rootloom
+# Set up Rootloom Personal Core
 
-Resolve this Skill directory and use its deterministic setup script. Do not recreate the files manually.
+Resolve this Skill directory and use its deterministic setup script.
 
-## 1. Choose a capability layer, not a file pile
-
-Run:
+## Choose a preset
 
 ```bash
 python3 <skill-dir>/scripts/setup_rootloom.py list-components
 ```
 
-Use one of these valid presets:
-
-| Preset | Capability result |
+| Preset | Result |
 | --- | --- |
-| `skills-only` | Plugin Skills remain available; no global assets; both lifecycle Hooks disabled |
-| `guidance` | Global working agreement plus automatic project-context guidance |
-| `engineering` | Guidance plus command safety; recommended for normal single-agent coding |
-| `delegated` | Engineering plus the atomic four-role Agent set, limits, and subagent audit |
-| `full` | Delegated plus the quality-first profile and deterministic high-assurance route |
+| `skills-only` | Plugin Skills only; the project-guidance Hook is disabled |
+| `guidance` | Global working agreement plus project-guidance Hook |
+| `personal` | Guidance plus command safety; recommended and default |
+| `engineering` | Compatibility alias for `personal` |
 
-The user may instead select exact capability dimensions with `--capabilities`:
+Exact capabilities are `global-policy`, `project-context`, and `command-safety`.
 
-- `global-policy`
-- `project-context`
-- `command-safety`
-- `delegation-control`
-- `high-assurance` (automatically includes `delegation-control`)
-
-Do not split `delegation-control` into individual Agent files. Its four roles, runtime limits, and audit Hook form one valid control boundary.
-
-## 2. Inspect first
-
-Run:
+## Inspect, then apply
 
 ```bash
-python3 <skill-dir>/scripts/setup_rootloom.py plan --preset engineering
-```
-
-Use `--preset full` when the user asks for the complete system. Explain every `CONFLICT`. The complete mapping is:
-
-- `~/.codex/AGENTS.md` — stable global working agreement;
-- `~/.codex/config.toml` — only `[agents]` limits (`max_threads = 4`, `max_depth = 1`, interruption visibility);
-- `~/.codex/high-assurance.config.toml` — quality-first CLI profile;
-- `~/.codex/agents/*.toml` — evidence, diagnosis, implementation, and verification roles;
-- `~/.codex/rules/rootloom.rules` — local commit allowed, destructive and remote actions separated.
-- `~/.codex/.rootloom/components.json` — managed Hook enablement and selected capability record.
-
-The script preserves unrelated `config.toml` keys. It refuses symlinks and unmanaged files, except when an existing file exactly matches the managed template before ownership markers. Apply and rollback hold one non-blocking lock per Codex home; a competing transaction stops before mutation.
-
-## 3. Apply only with authority
-
-An explicit request to install or configure this system authorizes the conflict-free apply:
-
-```bash
-python3 <skill-dir>/scripts/setup_rootloom.py apply --preset engineering
-```
-
-Apply the same preset or exact capability set that was reviewed in the plan. Changing an installed capability selection requires `rollback --all` first; do not silently leave assets from the previous layer behind.
-
-Apply and rollback each prepare their complete backups, Manifest-bound prior state, and phase journal before the first mutation. If target or state commit fails, they restore prior files, state, and modes before reporting failure. A later apply or rollback refuses an unresolved prepared/applying transaction. After `SIGKILL`, host interruption, or equivalent orphaning, inspect and run `python3 <skill-dir>/scripts/setup_rootloom.py recover`; recovery first validates a unique managed-target plan, every backup Hash/Mode, and all current before/after hashes, then restores the pre-operation state or refuses ambiguity without writing.
-
-If the plan contains user-owned conflicts, do not use `--replace-conflicts` until the user has seen the exact affected paths and explicitly authorizes replacement. Every replacement is backed up, but backup is not a substitute for authorization.
-
-Do not change the user's default model, reasoning effort, sandbox, approval policy, MCP servers, plugins, or apps. The profile carries high-assurance defaults without changing ordinary sessions.
-
-## 4. Verify
-
-Run:
-
-```bash
+python3 <skill-dir>/scripts/setup_rootloom.py plan --preset personal
+python3 <skill-dir>/scripts/setup_rootloom.py apply --preset personal
 python3 <skill-dir>/scripts/setup_rootloom.py status
 ```
 
-When `command-safety` is selected, use `codex execpolicy check` against the installed Rules for at least `git commit`, `git push`, and `git reset --hard`.
+The personal preset manages only:
 
-When `delegation-control` is selected, verify that status lists `agent-limits`, `custom-agents`, and `subagent-audit-hook`, and state clearly that `agents.max_threads` is a concurrent open-thread cap while the cumulative four-child budget is advisory.
+- `~/.codex/AGENTS.md`;
+- `~/.codex/rules/rootloom.rules`;
+- `~/.codex/.rootloom/components.json`;
+- `~/.codex/.rootloom/state.json` and a simple backup manifest.
 
-When `high-assurance` is selected, also run:
+Setup is serialized by an ordinary local lock, refuses symlinked or user-owned targets, backs up every replaced file before mutation, writes each file atomically, and preserves original content and mode for rollback. It does not claim whole-transaction crash compensation or hostile shared-filesystem locking.
 
-```bash
-python3 <plugin-root>/skills/high-assurance-coding-change/scripts/validate_setup.py
-```
+If the plan contains `conflict`, show the exact paths. Use `--replace-conflicts` only after the user authorizes those replacements. A backup does not replace authorization.
 
-For `skills-only`, `guidance`, or `engineering`, do not report missing custom agents or a missing profile as failures; those assets were intentionally not selected.
+## Verify command safety
 
-Start a new Codex task after setup or plugin update so global guidance, Skills, Agents, Rules, and Hooks are rediscovered.
+When `command-safety` is selected, run `codex execpolicy check` for at least:
 
-## 5. Roll back or change layers
+- `git commit` → allow;
+- `git push` → prompt;
+- `git reset --hard` → forbidden.
 
-When the user asks to undo the most recent setup transaction, preview status and run:
+Start a new Codex task after setup or plugin update so assets and Hooks are rediscovered.
+
+## Roll back or change preset
 
 ```bash
 python3 <skill-dir>/scripts/setup_rootloom.py rollback
 ```
 
-Rollback refuses to overwrite managed files changed after setup. For `config.toml`, it restores only the three setup-owned `[agents]` keys and preserves unrelated settings that Codex or the user added later; it still stops if one of those managed keys changed. Exact file restoration also restores the recorded pre-setup mode. Resolve real conflicts manually with the user instead of forcing them.
+Rollback first validates that managed files still match the installed hashes. It refuses to overwrite post-setup edits, then restores the backed-up content and mode or removes files created by setup. A normal rollback returns to the previous simple backup; `rollback --all` follows the available backup chain to the pre-install state.
 
-To change from one installed preset/capability set to another, run `rollback --all`, plan the new selection, then apply it. A normal rollback restores only the latest update; `--all` follows the safe transaction chain to the original pre-install baseline and avoids ambiguous partial removal.
-
-If the user wants to keep the plugin's Skills but disable all active global behavior, apply `skills-only` after `rollback --all`. If the user explicitly wants to uninstall the whole plugin, complete the global rollback and then remove `rootloom@rootloom`; plugin removal is separate from setup rollback.
+To change presets, roll back, plan the new selection, and apply it. Enterprise Assurance 1.2.19 uses a different branch and installation contract; roll it back with that version before installing Personal Core.

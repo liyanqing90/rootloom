@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the repository's public plugin, documentation, and release contract."""
+"""Validate Rootloom Personal Core's public repository contract."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ import ast
 import json
 import re
 import sys
-import tomllib
 import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
@@ -18,177 +17,80 @@ MARKETPLACE = ROOT / ".agents" / "plugins" / "marketplace.json"
 PLUGIN = ROOT / "plugins" / "rootloom"
 MANIFEST = PLUGIN / ".codex-plugin" / "plugin.json"
 HOOKS = PLUGIN / "hooks" / "hooks.json"
-SKILLS_DIR = PLUGIN / "skills"
-SYSTEM_ASSETS = PLUGIN / "assets" / "system"
-SCANNER = (
-    PLUGIN
-    / "skills"
-    / "seed-project-guidance"
-    / "scripts"
-    / "seed_project_guidance.py"
-)
-COMPONENT_HOOK = PLUGIN / "hooks" / "run_component_hook.py"
-REQUIRED_SKILLS = {
-    "setup-rootloom",
-    "seed-project-guidance",
-    "refine-project-guidance",
-    "record-engineering-decision",
-    "operating-coding-change",
+SKILLS = PLUGIN / "skills"
+SYSTEM = PLUGIN / "assets" / "system"
+EXPECTED_SKILLS = {
+    "engineering-change",
     "operating-code-review",
+    "operating-coding-change",
     "operating-high-risk-change",
-    "high-assurance-coding-change",
+    "project-memory",
+    "record-engineering-decision",
+    "refine-project-guidance",
+    "seed-project-guidance",
+    "setup-rootloom",
 }
-
-WORKFLOW_CONTRACTS = {
-    ROOT / ".github" / "workflows" / "ci.yml": (
-        "ubuntu-latest",
-        "macos-latest",
-        "windows-latest",
-        "portable-platforms",
-        "macos-strict-runner",
-        "Codex CLI contracts",
-    ),
-    SYSTEM_ASSETS / "AGENTS.md": (
-        "Tier 0 Direct",
-        "Tier 1 Scoped",
-        "Tier 2 Governed",
-        "Intent",
-        "Context",
-        "Tools",
-        "Constraints",
-        "Verification",
-    ),
-    SKILLS_DIR / "operating-coding-change" / "SKILL.md": (
-        "Software 3.0 = Intent + Context + Tools + Constraints + Verification",
-        "Tier 0 Direct",
-        "Tier 1 Scoped",
-        "ROOT_CAUSE_ALIGNMENT",
-        "MITIGATION",
-        "provenance record",
-        "adjacent negative",
-    ),
-    SKILLS_DIR / "operating-code-review" / "SKILL.md": (
-        "ROOT_CAUSE_ALIGNMENT: PASS | FAIL | NOT_APPLICABLE",
-        "false fix",
-        "original failure path",
-        "unattributed model summary",
-        "adjacent negative",
-        "Discovery yield",
-        "Mechanism value",
-        "strongest counterexample",
-    ),
-    SKILLS_DIR / "operating-high-risk-change" / "SKILL.md": (
-        "Tier 2 Governed",
-        "Intent + Context + Tools + Constraints + Verification",
-        "competing hypotheses",
-        "ROOT_CAUSE_ALIGNMENT: PASS",
-        "MITIGATION",
-        "material runtime or external evidence",
-        "adjacent negative",
-        "mechanism-value gate",
-        "fresh challenge pass",
-    ),
-    SKILLS_DIR / "high-assurance-coding-change" / "SKILL.md": (
-        "Tier 1 Scoped",
-        "Tier 2 Governed",
-        "ROOT_CAUSE_ALIGNMENT: PASS",
-        "do not establish factual truth",
-        "evidence provenance",
-        "existing provenance ID",
-    ),
-    SYSTEM_ASSETS / "agents" / "evidence_explorer.toml": (
-        "leads, not as the investigation boundary",
-        "analogous sibling",
-        "contradicts or falsifies",
-    ),
-    SYSTEM_ASSETS / "agents" / "root_cause_reviewer.toml": (
-        "Reject at least one serious alternative",
-        "decision it changes",
-    ),
-    SYSTEM_ASSETS / "agents" / "verification_reviewer.toml": (
-        "strongest counterexample",
-        "analogous sibling",
-        "earns its complexity",
-    ),
-    SKILLS_DIR / "record-engineering-decision" / "SKILL.md": (
-        "durable repository-owned engineering decision",
-        "fact, inference, or unresolved uncertainty",
-        "does not prove the conclusion true",
-    ),
-}
-
 SEMVER = re.compile(
     r"^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)"
     r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
 )
-LOCAL_LINK = re.compile(r"!?(?:\[[^\]]*\])\(([^)]+)\)")
-HTML_SOURCE = re.compile(r"(?:src|href)=[\"']([^\"']+)[\"']")
 ACTION_USE = re.compile(r"^\s*uses:\s*[^\s@]+@([^\s#]+)", re.MULTILINE)
+LOCAL_LINK = re.compile(r"!?(?:\[[^\]]*\])\(([^)]+)\)")
+HTML_SRC = re.compile(r'<(?:img|source)\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
 SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"\bgh[opusr]_[A-Za-z0-9]{20,}\b"),
 )
-TODO_MARKER = "[TO" + "DO:"
 
 
 def load_json(path: Path, errors: list[str]) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
         errors.append(f"missing file: {path.relative_to(ROOT)}")
         return {}
     except json.JSONDecodeError as exc:
         errors.append(f"invalid JSON: {path.relative_to(ROOT)}: {exc}")
         return {}
-    if not isinstance(value, dict):
+    if not isinstance(payload, dict):
         errors.append(f"expected JSON object: {path.relative_to(ROOT)}")
         return {}
-    return value
+    return payload
 
 
 def validate_marketplace(errors: list[str]) -> None:
     payload = load_json(MARKETPLACE, errors)
     if payload.get("name") != "rootloom":
         errors.append("marketplace name must be rootloom")
-    if payload.get("interface", {}).get("displayName") != "Rootloom":
-        errors.append("marketplace displayName must be Rootloom")
     plugins = payload.get("plugins")
     if not isinstance(plugins, list) or len(plugins) != 1:
-        errors.append("marketplace must contain exactly one plugin entry")
+        errors.append("marketplace must contain exactly one plugin")
         return
     entry = plugins[0]
-    if not isinstance(entry, dict):
-        errors.append("marketplace plugin entry must be an object")
+    if not isinstance(entry, dict) or entry.get("name") != "rootloom":
+        errors.append("marketplace plugin name must be rootloom")
         return
-    if entry.get("name") != "rootloom":
-        errors.append("marketplace plugin name mismatch")
-    source = entry.get("source")
-    if source != {"source": "local", "path": "./plugins/rootloom"}:
-        errors.append("marketplace source must target ./plugins/rootloom")
-    policy = entry.get("policy")
-    if policy != {"installation": "AVAILABLE", "authentication": "ON_INSTALL"}:
-        errors.append("marketplace policy must be AVAILABLE/ON_INSTALL")
+    if entry.get("source") != {"source": "local", "path": "./plugins/rootloom"}:
+        errors.append("marketplace must point to ./plugins/rootloom")
 
 
 def validate_manifest(errors: list[str]) -> None:
     payload = load_json(MANIFEST, errors)
-    if payload.get("name") != PLUGIN.name:
-        errors.append("plugin folder and manifest name must match")
+    if payload.get("name") != "rootloom":
+        errors.append("plugin name must be rootloom")
     version = payload.get("version")
     if not isinstance(version, str) or not SEMVER.fullmatch(version):
         errors.append("plugin version must be strict semver")
     elif f"## [{version}]" not in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"):
-        errors.append("plugin version must have a CHANGELOG release section")
-    for field in ("description", "license", "repository", "homepage"):
+        errors.append("plugin version must have a CHANGELOG section")
+    for field in ("description", "author", "homepage", "repository", "license", "skills"):
         if not payload.get(field):
             errors.append(f"plugin manifest is missing {field}")
-    if "hooks" in payload:
-        errors.append("hooks must be discovered from hooks/hooks.json, not declared in plugin.json")
     interface = payload.get("interface")
     if not isinstance(interface, dict):
-        errors.append("plugin manifest is missing interface metadata")
+        errors.append("plugin interface metadata is missing")
         return
     for field in (
         "displayName",
@@ -201,678 +103,241 @@ def validate_manifest(errors: list[str]) -> None:
     ):
         if not interface.get(field):
             errors.append(f"plugin interface is missing {field}")
-    if interface.get("displayName") != "Rootloom":
-        errors.append("plugin displayName must be Rootloom")
     prompts = interface.get("defaultPrompt")
-    if isinstance(prompts, list):
-        if len(prompts) > 3:
-            errors.append("plugin defaultPrompt supports at most three entries")
-        if any(not isinstance(item, str) or len(item) > 128 for item in prompts):
-            errors.append("plugin defaultPrompt entries must be strings of at most 128 characters")
+    if not isinstance(prompts, list) or len(prompts) > 3:
+        errors.append("plugin defaultPrompt must be a list with at most three entries")
+    elif any(not isinstance(item, str) or len(item) > 128 for item in prompts):
+        errors.append("plugin defaultPrompt entries must be strings <= 128 chars")
     for field in ("composerIcon", "logo", "logoDark"):
-        raw_path = interface.get(field)
-        if not isinstance(raw_path, str) or not raw_path.startswith("./"):
-            errors.append(f"plugin interface {field} must be a relative path")
+        raw = interface.get(field)
+        if not isinstance(raw, str) or not raw.startswith("./"):
+            errors.append(f"plugin interface {field} must be relative")
             continue
-        target = (PLUGIN / raw_path).resolve()
+        target = (PLUGIN / raw).resolve()
         if not target.is_relative_to(PLUGIN.resolve()) or not target.is_file():
             errors.append(f"plugin interface {field} does not resolve to a file")
 
 
-def validate_hooks(errors: list[str]) -> None:
-    payload = load_json(HOOKS, errors)
-    session_hooks = payload.get("hooks", {}).get("SessionStart") if payload else None
-    if not isinstance(session_hooks, list) or len(session_hooks) != 1:
-        errors.append("hooks must define exactly one SessionStart entry")
-        return
-    entry = session_hooks[0]
-    if entry.get("matcher") != "startup|resume|clear":
-        errors.append("SessionStart matcher must remain startup|resume|clear")
-    commands = entry.get("hooks")
-    if not isinstance(commands, list) or len(commands) != 1:
-        errors.append("SessionStart must contain exactly one command hook")
-        return
-    command = commands[0]
-    if command.get("type") != "command":
-        errors.append("SessionStart hook must be a command hook")
-    raw_command = command.get("command", "")
-    if (
-        "$PLUGIN_ROOT" not in raw_command
-        or "run_component_hook.py" not in raw_command
-        or "project-guidance-hook" not in raw_command
-    ):
-        errors.append("SessionStart must resolve its selectable component gate through $PLUGIN_ROOT")
-    timeout = command.get("timeout")
-    if not isinstance(timeout, int) or timeout < 1 or timeout > 30:
-        errors.append("SessionStart timeout must be between 1 and 30 seconds")
-    if not SCANNER.is_file():
-        errors.append("SessionStart scanner is missing")
-    if not COMPONENT_HOOK.is_file():
-        errors.append("selectable component Hook gate is missing")
-
-    subagent_hooks = payload.get("hooks", {}).get("SubagentStart") if payload else None
-    if not isinstance(subagent_hooks, list) or len(subagent_hooks) != 1:
-        errors.append("hooks must define exactly one SubagentStart entry")
-        return
-    subagent_entry = subagent_hooks[0]
-    if subagent_entry.get("matcher") != "*":
-        errors.append("SubagentStart matcher must cover every child agent")
-    handlers = subagent_entry.get("hooks")
-    if not isinstance(handlers, list) or len(handlers) != 1:
-        errors.append("SubagentStart must contain exactly one command hook")
-        return
-    subagent_command = handlers[0].get("command", "")
-    if (
-        "$PLUGIN_ROOT" not in subagent_command
-        or "run_component_hook.py" not in subagent_command
-        or "subagent-audit-hook" not in subagent_command
-    ):
-        errors.append("SubagentStart must resolve its selectable component gate through $PLUGIN_ROOT")
-    if not (PLUGIN / "hooks" / "subagent_budget.py").is_file():
-        errors.append("Subagent budget Hook script is missing")
+def frontmatter_name(path: Path) -> str | None:
+    text = path.read_text(encoding="utf-8")
+    match = re.match(r"---\n(?P<body>.*?)\n---\n", text, re.DOTALL)
+    if not match:
+        return None
+    name = re.search(r"^name:\s*([^\n]+)$", match.group("body"), re.MULTILINE)
+    return name.group(1).strip() if name else None
 
 
 def validate_skills(errors: list[str]) -> None:
-    discovered = {path.parent.name for path in SKILLS_DIR.glob("*/SKILL.md")}
-    missing = REQUIRED_SKILLS - discovered
-    extra = discovered - REQUIRED_SKILLS
-    if missing:
-        errors.append(f"missing required Skills: {', '.join(sorted(missing))}")
-    if extra:
-        errors.append(f"unexpected unvalidated Skills: {', '.join(sorted(extra))}")
-    for name in sorted(discovered):
-        skill = SKILLS_DIR / name / "SKILL.md"
-        content = skill.read_text(encoding="utf-8")
-        if not content.startswith("---\n") or f"name: {name}" not in content[:800]:
-            errors.append(f"Skill frontmatter name is invalid: {name}")
-        if TODO_MARKER in content:
-            errors.append(f"Skill contains an unresolved TODO placeholder: {name}")
-        metadata = skill.parent / "agents" / "openai.yaml"
-        if not metadata.is_file():
-            errors.append(f"Skill UI metadata is missing: {name}")
-        else:
-            metadata_text = metadata.read_text(encoding="utf-8")
-            if f"${name}" not in metadata_text or "default_prompt:" not in metadata_text:
-                errors.append(f"Skill UI metadata default prompt is invalid: {name}")
+    actual = {path.parent.name for path in SKILLS.glob("*/SKILL.md")}
+    if actual != EXPECTED_SKILLS:
+        errors.append(
+            "skill catalog mismatch: expected "
+            + ", ".join(sorted(EXPECTED_SKILLS))
+            + "; found "
+            + ", ".join(sorted(actual))
+        )
+    for name in sorted(actual):
+        path = SKILLS / name / "SKILL.md"
+        if frontmatter_name(path) != name:
+            errors.append(f"Skill frontmatter name mismatch: {path.relative_to(ROOT)}")
+        agent = SKILLS / name / "agents" / "openai.yaml"
+        if not agent.is_file():
+            errors.append(f"Skill is missing agents/openai.yaml: {name}")
+    forbidden = (
+        SKILLS / "high-assurance-coding-change" / "SKILL.md",
+        SYSTEM / "profiles" / "high-assurance.config.toml",
+    )
+    for path in forbidden:
+        if path.exists():
+            errors.append(f"Assurance artifact must not ship on main: {path.relative_to(ROOT)}")
+    if any((SYSTEM / "agents").glob("*.toml")):
+        errors.append("Personal Core must not ship custom-agent TOMLs")
 
 
-def load_toml(path: Path, errors: list[str]) -> dict[str, Any]:
-    try:
-        with path.open("rb") as handle:
-            payload = tomllib.load(handle)
-    except FileNotFoundError:
-        errors.append(f"missing file: {path.relative_to(ROOT)}")
-        return {}
-    except tomllib.TOMLDecodeError as exc:
-        errors.append(f"invalid TOML: {path.relative_to(ROOT)}: {exc}")
-        return {}
-    return payload
+def validate_hooks(errors: list[str]) -> None:
+    payload = load_json(HOOKS, errors)
+    hooks = payload.get("hooks")
+    if not isinstance(hooks, dict) or set(hooks) != {"SessionStart"}:
+        errors.append("Personal Core must expose exactly one SessionStart Hook type")
+        return
+    entries = hooks["SessionStart"]
+    if not isinstance(entries, list) or len(entries) != 1:
+        errors.append("SessionStart must contain exactly one entry")
+        return
+    entry = entries[0]
+    handlers = entry.get("hooks") if isinstance(entry, dict) else None
+    if entry.get("matcher") != "startup|resume|clear":
+        errors.append("SessionStart matcher must remain startup|resume|clear")
+    if not isinstance(handlers, list) or len(handlers) != 1:
+        errors.append("SessionStart must contain exactly one command")
+        return
+    command = handlers[0]
+    raw = command.get("command", "") if isinstance(command, dict) else ""
+    if "$PLUGIN_ROOT" not in raw or "run_component_hook.py" not in raw or "project-guidance-hook" not in raw:
+        errors.append("SessionStart must route through the managed component gate")
 
 
-def validate_system_assets(errors: list[str]) -> None:
-    guidance = SYSTEM_ASSETS / "AGENTS.md"
-    if not guidance.is_file():
-        errors.append("managed global AGENTS.md template is missing")
-    else:
-        text = guidance.read_text(encoding="utf-8")
-        if "rootloom:managed-start" not in text:
-            errors.append("global AGENTS.md template is not managed")
-        if "rootloom:managed-end" not in text:
-            errors.append("global AGENTS.md template has no managed end marker")
-        if len(text.encode("utf-8")) > 16_384:
-            errors.append("global AGENTS.md template exceeds the 16 KiB suite budget")
-
-    expected_agents = {
-        "evidence_explorer": "read-only",
-        "root_cause_reviewer": "read-only",
-        "implementation_worker": "workspace-write",
-        "verification_reviewer": "read-only",
+def validate_personal_contracts(errors: list[str]) -> None:
+    contracts = {
+        SKILLS / "engineering-change" / "SKILL.md": (
+            "Evidence → Diagnosis → Change Contract → Implementation → Verification",
+            "ROOT_CAUSE_ALIGNMENT: PASS",
+            "Final Review Summary",
+            "--confirm-dangerous-delete",
+        ),
+        SKILLS / "engineering-change" / "scripts" / "finalize_change.py": (
+            "diff.patch",
+            "test.log",
+            "summary.json",
+            "DANGEROUS_DELETE_EXIT",
+        ),
+        SKILLS / "project-memory" / "SKILL.md": (
+            ".project-memory/",
+            "current source",
+            "record-failure",
+        ),
+        SKILLS / "setup-rootloom" / "scripts" / "setup_rootloom.py": (
+            '"personal": FULL_CAPABILITIES',
+            "simple_lock",
+            "rootloom-simple-backup-v1",
+            "refusing rollback because",
+        ),
+        SYSTEM / "AGENTS.md": (
+            "Personal risk analyzer",
+            "engineering-change",
+            "Verification Intelligence",
+            ".project-memory/",
+        ),
+        ROOT / "README.md": (
+            "Rootloom Personal Core",
+            "codex/enterprise-assurance",
+            "$engineering-change",
+            "$project-memory",
+        ),
+        ROOT / "README.zh-CN.md": (
+            "Rootloom Personal Core",
+            "codex/enterprise-assurance",
+            "$engineering-change",
+            "$project-memory",
+        ),
     }
-    for name, sandbox in expected_agents.items():
-        path = SYSTEM_ASSETS / "agents" / f"{name}.toml"
-        payload = load_toml(path, errors)
-        if not payload:
+    for path, needles in contracts.items():
+        if not path.is_file():
+            errors.append(f"missing contract file: {path.relative_to(ROOT)}")
             continue
-        for field in ("name", "description", "model", "model_reasoning_effort", "developer_instructions"):
-            if not payload.get(field):
-                errors.append(f"custom agent {name} is missing {field}")
-        if payload.get("name") != name:
-            errors.append(f"custom agent filename/name mismatch: {name}")
-        if payload.get("sandbox_mode") != sandbox:
-            errors.append(f"custom agent {name} must use {sandbox}")
+        text = path.read_text(encoding="utf-8")
+        for needle in needles:
+            if needle not in text:
+                errors.append(f"missing contract {needle!r} in {path.relative_to(ROOT)}")
+    ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    for forbidden in ("macos-strict-runner", "high-assurance-coding-change"):
+        if forbidden in ci:
+            errors.append(f"CI retains Assurance-only surface: {forbidden}")
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    for target in ("check:", "validate:", "test:", "compatibility-smoke:"):
+        if target not in makefile:
+            errors.append(f"Makefile is missing {target}")
 
-    profile = load_toml(SYSTEM_ASSETS / "profiles" / "high-assurance.config.toml", errors)
-    if profile:
-        if profile.get("approval_policy") != "on-request":
-            errors.append("high-assurance profile must use on-request approval")
-        if profile.get("sandbox_mode") != "workspace-write":
-            errors.append("high-assurance profile must use workspace-write")
-        if profile.get("agents", {}).get("max_threads") != 4:
-            errors.append("high-assurance profile max_threads must be 4")
-        if profile.get("agents", {}).get("max_depth") != 1:
-            errors.append("high-assurance profile max_depth must be 1")
 
-    rules = SYSTEM_ASSETS / "rules" / "rootloom.rules"
-    if not rules.is_file():
-        errors.append("Rootloom Rules template is missing")
-    else:
-        rules_text = rules.read_text(encoding="utf-8")
-        for expected in (
-            'pattern = ["git", "commit"]',
-            'pattern = ["git", "push"]',
-            'pattern = ["git", "reset", "--hard"]',
-        ):
-            if expected not in rules_text:
-                errors.append(f"Rules template is missing contract: {expected}")
-
-    setup_script = (
-        SKILLS_DIR
-        / "setup-rootloom"
-        / "scripts"
-        / "setup_rootloom.py"
-    )
-    if not setup_script.is_file():
-        errors.append("setup script is missing")
-    else:
-        setup_text = setup_script.read_text(encoding="utf-8")
-        for contract in (
-            '"skills-only"',
-            '"guidance"',
-            '"engineering"',
-            '"delegated"',
-            '"full"',
-            '"delegation-control"',
-            '"high-assurance"',
-            '"project-guidance-hook"',
-            '"subagent-audit-hook"',
-            "setup_lock",
-            "hardened_lock",
-            '"before_mode"',
-            '"after_mode"',
-            "setup failed and compensation was incomplete",
-            "rollback failed and compensation was incomplete",
-            "rootloom-setup-recovery-v2",
-            "ensure_no_unresolved_transaction",
-            "build_recovery_plan",
-            '"operation": "rollback"',
-            '"producer_version"',
-            '"recovery_schema_version"',
-            '"target_type"',
-            "manifest_sha256",
-            '"recover"',
-        ):
-            if contract not in setup_text:
-                errors.append(f"setup script is missing capability contract: {contract}")
-        for module, contracts in {
-            setup_script.parent / "setup" / "recovery.py": (
-                "RECOVERY_SCHEMA_VERSION = 2",
-                "RECOVERY_TARGET_SCHEMAS",
-                "recovery_target_schema",
-            ),
-            setup_script.parent / "setup" / "transaction.py": (
-                "def atomic_write",
-                "os.fsync",
-                "os.replace",
-            ),
-        }.items():
-            if not module.is_file():
-                errors.append(f"setup ownership module is missing: {module}")
+def validate_python(errors: list[str]) -> None:
+    for path in sorted((PLUGIN, ROOT / "tests", ROOT / "scripts"), key=str):
+        candidates = path.rglob("*.py") if path.is_dir() else ()
+        for candidate in candidates:
+            if "__pycache__" in candidate.parts:
                 continue
-            module_text = module.read_text(encoding="utf-8")
-            for contract in contracts:
-                if contract not in module_text:
-                    errors.append(f"setup ownership module is missing contract: {contract}")
-
-    scanner_text = SCANNER.read_text(encoding="utf-8") if SCANNER.is_file() else ""
-    for contract in (
-        "guidance_lock",
-        "hardened_lock",
-        "guidance_changed_during_seed",
-        "_safe_repo_file",
-    ):
-        if contract not in scanner_text:
-            errors.append(f"project seeder is missing safety contract: {contract}")
-
-    runner = (
-        SKILLS_DIR
-        / "high-assurance-coding-change"
-        / "scripts"
-        / "run_pipeline.py"
-    )
-    if not runner.is_file():
-        errors.append("high-assurance runner is missing")
-    else:
-        runner_text = runner.read_text(encoding="utf-8")
-        for contract in (
-            'RUNNER_VERSION = "2.24"',
-            "DEFAULT_MAX_STATE_PATHS",
-            "DEFAULT_MAX_STATE_BYTES",
-            "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
-            "DEFAULT_MAX_VERIFICATION_OUTPUT_BYTES",
-            "DEFAULT_MAX_VERIFICATION_ARTIFACT_BYTES",
-            "DEFAULT_MAX_DELTA_BYTES",
-            "DEFAULT_MAX_UNTRACKED_PATCH_BYTES",
-            "DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES",
-            "DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES",
-            "DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS",
-            "MAX_HUMAN_REVIEW_RESULT_BYTES",
-            "MAX_HUMAN_REVIEW_DECISION_BYTES",
-            "MAX_DELTA_PATCH_EXCERPT_BYTES",
-            "MAX_VERIFICATION_COMMANDS",
-            "MAX_VERIFICATION_PROMPT_CHARS",
-            "COMMAND_OUTPUT_LIMIT_EXIT",
-            "COMMAND_LIFECYCLE_UNCERTAIN_EXIT",
-            "ManagedResult",
-            "managed_result_metadata",
-            "append_complete_artifact",
-            '"rootloom-verification-ndjson-v2"',
-            '"rootloom-verification-summary-v2"',
-            "OutputTailBuffer",
-            "build_verification_environment",
-            '"--max-command-output-bytes"',
-            '"--max-verification-output-bytes"',
-            '"--max-verification-artifact-bytes"',
-            '"--max-delta-bytes"',
-            '"--max-untracked-patch-bytes"',
-            '"--max-state-paths"',
-            '"--max-state-bytes"',
-            '"--max-human-review-artifact-bytes"',
-            '"--max-human-review-total-bytes"',
-            '"--max-human-review-binding-seconds"',
-            '"--isolation-launcher"',
-            '"--require-isolation-launcher"',
-            '"--require-isolation"',
-            '"--verify-env"',
-            "PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS",
-            "metadata_only_floor",
-            "protected_metadata_paths",
-            "intrinsic_protected_paths",
-            "wait_for_process_group_exit",
-            "file_metadata_fingerprint",
-            "sensitive_untracked_paths",
-            "state_untracked_manifests",
-            "stream_command_artifact",
-            "remaining_deadline_seconds",
-            "stream_untracked_patch",
-            "read_artifact_excerpt",
-            '"--no-textconv"',
-            "verification_record_line",
-            "json_string_content_byte_length",
-            "empty_verification_record",
-            '"verification_artifact_format": "ndjson-v2"',
-            "redacted_untracked_metadata",
-            '"--sensitive-path"',
-            '"--redact-untracked-dotfiles"',
-            '"--bind-verification-path"',
-            '"--allow-protected-path-delete"',
-            "validate_protected_changes",
-            "validate_protected_deletion_preflight",
-            "validate_protected_deletion_runtime_options",
-            "validate_allowed_path_boundaries",
-            "discover_verification_entrypoints",
-            "_entrypoint_fingerprint",
-            "_reject_protected_entrypoint",
-            "normalize_verification_bindings",
-            "validate_verification_entrypoints_unchanged",
-            "ensure_process_group_finished",
-            "repository topology budget exceeded",
-            "iter_nul_fields",
-            "byte budget exceeded",
-            "read_text_bounded",
-            '"HUMAN_REVIEW_REQUIRED"',
-            "post_implementation_state = capture_state(check_topology=True)",
-            "post_verification_state = capture_state(check_topology=True)",
-            "post_review_state = capture_state(check_topology=True)",
-            "max_ignored_paths",
-            "validate_verification_coverage",
-            "compute_human_review_binding",
-            '"rootloom-human-review-binding-v4"',
-            "protected_deletion_commitment",
-            "prepare_isolated_command",
-            "human_review_result_core_sha256",
-            "human_review_full_result_sha256",
-            "human_review_result_document",
-            "read_human_review_result",
-            "final_metadata_only_floor_paths",
-            "run_directory",
-            "pinned_empty_private_artifact",
-            "read_pinned_private_artifact",
-            "append_pinned_private_artifact",
-            "truncate_pinned_private_artifact",
-            "validate_named_regular_descriptor",
-            "pinned_private_artifact_sha256",
-            "validate_run_directory_descriptor",
-            "human_review_artifact_names",
-            "close_descriptor_quietly",
-            "human review Artifact name set changed",
-            "expected_repository_state_commitment",
-            "_bounded_descriptor_sha256",
-            "human review already has a terminal decision",
-            "atomic_write_json",
-            '"provenance_ids"',
-            '"evidence_ids"',
-            '"source_type"',
-            '"runtime_external"',
-            '"strongest_counterexample"',
-            '"adjacent_analog_checked"',
-            '"complexity_value"',
-            "reproduced defects require competing hypotheses",
-            "rejected_alternatives",
-        ):
-            if contract not in runner_text:
-                errors.append(f"high-assurance runner is missing contract: {contract}")
-        for module, contracts in {
-            PLUGIN / "lib" / "rootloom_lock.py": (
-                "def hardened_lock",
-                "O_NOFOLLOW",
-                "FILE_FLAG_OPEN_REPARSE_POINT",
-                "st_nlink != 1",
-                "LockFileEx",
-            ),
-            runner.parent / "runner" / "state.py": (
-                "repository_state_commitment",
-                "rootloom-repository-state-commitment-v1",
-            ),
-            runner.parent / "runner" / "process.py": (
-                "executable_identity",
-                "O_NOFOLLOW",
-            ),
-            runner.parent / "runner" / "contracts.py": (
-                "MAX_HUMAN_REVIEW_DECISION_BYTES",
-                "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
-                "VERIFY_INVALID_EXIT = 9",
-                "VERIFY_STALE_EXIT = 12",
-                "VERIFY_UNVERIFIED_EXIT = 13",
-                "class VerificationLimits",
-                "constrain_policy",
-            ),
-            runner.parent / "runner" / "errors.py": (
-                "class EvidenceInvalidError",
-                "class BindingDriftError",
-                "class VerificationError",
-            ),
-            runner.parent / "runner" / "git_capture.py": (
-                "GIT_OPTIONAL_LOCKS",
-                "core.fsmonitor",
-                "core.untrackedCache",
-            ),
-            runner.parent / "human_review" / "schema.py": (
-                "validate_human_review_binding_v4_schema",
-                "rootloom-human-review-result-v1",
-                "validate_repository_state_commitment",
-                "validate_run_directory_identity",
-                "validate_protected_deletion_commitment",
-                "validate_artifact_map",
-                "result-core hash does not match Result",
-            ),
-            runner.parent / "human_review" / "binding.py": (
-                "recompute_human_review_binding",
-                "_preflight_current_artifacts",
-                "_preflight_protected_deletions",
-                "read_only_git_environment",
-            ),
-            runner.parent / "human_review" / "pinned_io.py": (
-                "read_decision_pair_payloads",
-                "read_pinned_private_artifact",
-            ),
-            runner.parent / "human_review" / "decision.py": (
-                "def decide",
-                "validate_decision_payload_budget",
-                "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
-                "rootloom-human-review-decision-v4",
-                "human review decision commit failed",
-            ),
-            runner.parent / "human_review" / "verify.py": (
-                "StaleDecisionPair",
-                "verify_decision_pair",
-                "BindingDriftError",
-                "VerificationError",
-            ),
-        }.items():
-            if not module.is_file():
-                errors.append(f"runner ownership module is missing: {module}")
-                continue
-            module_text = module.read_text(encoding="utf-8")
-            for contract in contracts:
-                if contract not in module_text:
-                    errors.append(f"runner ownership module is missing contract: {contract}")
-    review_decision = runner.with_name("review_decision.py")
-    if not review_decision.is_file():
-        errors.append("human review decision command is missing")
-    else:
-        review_text = review_decision.read_text(encoding="utf-8")
-        for contract in (
-            "verify_decision_pair",
-            "validate_human_review_binding_v4_schema",
-            "validate_decision_payload_budget",
-            "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
-            "VERIFY_INVALID_EXIT",
-            "VERIFY_STALE_EXIT",
-            "VERIFY_UNVERIFIED_EXIT",
-            "VerificationLimits",
-            "bounded_diagnostic",
-            'print("VALID")',
-            'print("INVALID")',
-            'print("STALE")',
-            'print("UNVERIFIED")',
-        ):
-            if contract not in review_text:
-                errors.append(f"human review command is missing contract: {contract}")
-
-
-def validate_workflow_contracts(errors: list[str]) -> None:
-    legacy_tier = re.compile(r"\bR[1-4]\b")
-    for path, contracts in WORKFLOW_CONTRACTS.items():
-        try:
-            content = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            errors.append(f"missing workflow contract file: {path.relative_to(ROOT)}")
-            continue
-        for contract in contracts:
-            if contract not in content:
-                errors.append(
-                    f"workflow contract missing in {path.relative_to(ROOT)}: {contract}"
-                )
-        if legacy_tier.search(content):
-            errors.append(
-                f"legacy R1-R4 tier vocabulary remains in {path.relative_to(ROOT)}"
-            )
-
-    for path in (
-        ROOT / "README.md",
-        ROOT / "README.zh-CN.md",
-        ROOT / "docs" / "architecture.md",
-        ROOT / "docs" / "architecture.zh-CN.md",
-    ):
-        content = path.read_text(encoding="utf-8")
-        for tier in ("Tier 0 Direct", "Tier 1 Scoped", "Tier 2 Governed"):
-            if tier not in content:
-                errors.append(
-                    f"public tier documentation missing in {path.relative_to(ROOT)}: {tier}"
-                )
-        if legacy_tier.search(content):
-            errors.append(
-                f"legacy R1-R4 tier vocabulary remains in {path.relative_to(ROOT)}"
-            )
-
-
-def iter_public_text_files() -> list[Path]:
-    files: list[Path] = []
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
-            continue
-        if path.suffix.lower() in {
-            ".md",
-            ".json",
-            ".yml",
-            ".yaml",
-            ".toml",
-            ".rules",
-            ".py",
-            ".sh",
-        }:
-            files.append(path)
-    return sorted(files)
+            try:
+                ast.parse(candidate.read_text(encoding="utf-8"), filename=str(candidate))
+            except (OSError, SyntaxError, UnicodeDecodeError) as exc:
+                errors.append(f"invalid Python: {candidate.relative_to(ROOT)}: {exc}")
 
 
 def validate_links(errors: list[str]) -> None:
-    for path in sorted(ROOT.rglob("*.md")):
-        if ".git" in path.parts:
-            continue
-        content = path.read_text(encoding="utf-8")
-        links = [*LOCAL_LINK.findall(content), *HTML_SOURCE.findall(content)]
-        for raw in links:
-            target_text = raw.strip().split(maxsplit=1)[0].strip("<>\"'")
-            if not target_text or target_text.startswith(("#", "http://", "https://", "mailto:")):
+    documents = [ROOT / "README.md", ROOT / "README.zh-CN.md"] + sorted(
+        (ROOT / "docs").glob("*.md")
+    )
+    for path in documents:
+        text = path.read_text(encoding="utf-8")
+        for raw in LOCAL_LINK.findall(text) + HTML_SRC.findall(text):
+            target = raw.strip().strip("<>").split("#", 1)[0]
+            if not target or target.startswith(("http://", "https://", "mailto:")):
                 continue
-            target_text = target_text.split("#", 1)[0].split("?", 1)[0]
-            if not target_text:
-                continue
-            target = (path.parent / target_text).resolve()
-            if not target.is_relative_to(ROOT.resolve()) or not target.exists():
-                errors.append(
-                    f"broken local link in {path.relative_to(ROOT)}: {raw}"
-                )
-
-
-def validate_source_files(errors: list[str]) -> None:
-    for path in sorted(ROOT.rglob("*.py")):
-        if ".git" in path.parts:
-            continue
-        try:
-            ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        except SyntaxError as exc:
-            errors.append(f"Python syntax error in {path.relative_to(ROOT)}: {exc}")
-    for path in sorted(ROOT.rglob("*.svg")):
-        try:
-            ET.parse(path)
-        except ET.ParseError as exc:
-            errors.append(f"invalid SVG XML in {path.relative_to(ROOT)}: {exc}")
+            target = target.replace("%20", " ")
+            if not (path.parent / target).resolve().exists():
+                errors.append(f"broken local link in {path.relative_to(ROOT)}: {raw}")
 
 
 def validate_workflows(errors: list[str]) -> None:
     for path in sorted((ROOT / ".github" / "workflows").glob("*.yml")):
-        content = path.read_text(encoding="utf-8")
-        for ref in ACTION_USE.findall(content):
-            if not re.fullmatch(r"[0-9a-f]{40}", ref):
-                errors.append(
-                    f"GitHub Action is not pinned to a full commit SHA in {path.relative_to(ROOT)}: {ref}"
-                )
+        text = path.read_text(encoding="utf-8")
+        for reference in ACTION_USE.findall(text):
+            if not re.fullmatch(r"[0-9a-f]{40}", reference):
+                errors.append(f"workflow action is not pinned to a commit: {path.relative_to(ROOT)}: {reference}")
 
 
-def validate_repository_hygiene(errors: list[str]) -> None:
-    required = (
-        ROOT / "README.md",
-        ROOT / "README.zh-CN.md",
-        ROOT / "LICENSE",
-        ROOT / "CONTRIBUTING.md",
-        ROOT / "CONTRIBUTING.zh-CN.md",
-        ROOT / "SECURITY.md",
-        ROOT / "CODE_OF_CONDUCT.md",
-        ROOT / "CHANGELOG.md",
-        ROOT / "AGENTS.md",
-        ROOT / "docs" / "architecture.md",
-        ROOT / "docs" / "architecture.zh-CN.md",
-        ROOT
-        / "docs"
-        / "decisions"
-        / "2026-07-12-strict-runner-resource-artifacts.md",
-        ROOT / "docs" / "guidance-design.md",
-        ROOT / "docs" / "guidance-design.zh-CN.md",
-        ROOT / "docs" / "maturity.md",
-        ROOT / "docs" / "maturity.zh-CN.md",
-        ROOT / "docs" / "setup.md",
-        ROOT / "docs" / "setup.zh-CN.md",
-        ROOT / "examples" / "AGENTS.project.md",
-        ROOT / "tests" / "compatibility_smoke.py",
+def validate_assets(errors: list[str]) -> None:
+    svg_paths = (
+        sorted(PLUGIN.rglob("*.svg"))
+        + sorted((ROOT / "assets").glob("*.svg"))
+        + sorted((ROOT / "docs" / "diagram").glob("*.svg"))
     )
-    for path in required:
-        if not path.is_file():
-            errors.append(f"missing project file: {path.relative_to(ROOT)}")
-    for path in ROOT.rglob("*"):
-        if not path.is_file() or ".git" in path.parts:
+    for path in svg_paths:
+        try:
+            ET.parse(path)
+        except ET.ParseError as exc:
+            errors.append(f"invalid SVG: {path.relative_to(ROOT)}: {exc}")
+    required_images = {
+        ROOT / "assets" / "rootloom-brand.webp": b"RIFF",
+        ROOT / "docs" / "diagram" / "architecture.svg": b"<svg",
+        ROOT / "docs" / "diagram" / "architecture@2x.png": b"\x89PNG\r\n\x1a\n",
+    }
+    for path, signature in required_images.items():
+        try:
+            header = path.read_bytes()[: max(12, len(signature))]
+        except FileNotFoundError:
+            errors.append(f"missing public image: {path.relative_to(ROOT)}")
             continue
-        if path.stat().st_size > 1_000_000:
-            errors.append(f"unexpected file larger than 1 MB: {path.relative_to(ROOT)}")
-    for path in iter_public_text_files():
-        content = path.read_text(encoding="utf-8")
-        if TODO_MARKER in content:
-            errors.append(f"unresolved TODO placeholder in {path.relative_to(ROOT)}")
-        if path.is_relative_to(ROOT / "tests"):
+        if not header.startswith(signature):
+            errors.append(f"invalid public image: {path.relative_to(ROOT)}")
+        if path.suffix == ".webp" and header[8:12] != b"WEBP":
+            errors.append(f"invalid WebP image: {path.relative_to(ROOT)}")
+
+
+def validate_secrets(errors: list[str]) -> None:
+    suffixes = {".md", ".py", ".json", ".toml", ".yml", ".yaml", ".rules"}
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts:
+            continue
+        if "tests" in path.parts:
+            continue
+        if path.suffix.lower() not in suffixes and path.name not in {"Makefile", "AGENTS.md"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
             continue
         for pattern in SECRET_PATTERNS:
-            if pattern.search(content):
-                errors.append(f"secret-like content in {path.relative_to(ROOT)}")
-
-
-def validate_maturity_contract(errors: list[str]) -> None:
-    contracts = {
-        ROOT / "docs" / "maturity.md": (
-            "early-stage, single-maintainer",
-            "do not yet demonstrate broad adoption",
-            "does not prove the conclusion true",
-            "scheduled latest-version probe",
-            "does not collect telemetry from user repositories",
-            "Do not turn a process-conformance rate into a product-quality claim",
-            "GEB article is acknowledged as informal design inspiration",
-        ),
-        ROOT / "docs" / "maturity.zh-CN.md": (
-            "早期、单维护者",
-            "尚不能证明广泛采用",
-            "不能证明模型陈述为真",
-            "定时使用最新版本探测",
-            "不从用户仓库收集遥测",
-            "不能把流程遵从率包装成产品质量结论",
-            "GEB 文章仅作为",
-        ),
-    }
-    for path, expected in contracts.items():
-        try:
-            content = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        for contract in expected:
-            if contract not in content:
-                errors.append(
-                    f"maturity boundary missing in {path.relative_to(ROOT)}: {contract}"
-                )
-
-    workflow = ROOT / ".github" / "workflows" / "codex-compatibility.yml"
-    try:
-        content = workflow.read_text(encoding="utf-8")
-    except FileNotFoundError:
-        errors.append("missing Codex latest-version compatibility probe")
-        return
-    for contract in (
-        "schedule:",
-        "workflow_dispatch:",
-        "@openai/codex@latest",
-        "make check",
-        "make compatibility-smoke",
-    ):
-        if contract not in content:
-            errors.append(f"Codex compatibility probe is missing contract: {contract}")
+            if pattern.search(text):
+                errors.append(f"possible secret in {path.relative_to(ROOT)}")
+                break
 
 
 def main() -> int:
     errors: list[str] = []
     validate_marketplace(errors)
     validate_manifest(errors)
-    validate_hooks(errors)
     validate_skills(errors)
-    validate_system_assets(errors)
-    validate_workflow_contracts(errors)
+    validate_hooks(errors)
+    validate_personal_contracts(errors)
+    validate_python(errors)
     validate_links(errors)
-    validate_source_files(errors)
     validate_workflows(errors)
-    validate_repository_hygiene(errors)
-    validate_maturity_contract(errors)
+    validate_assets(errors)
+    validate_secrets(errors)
     if errors:
-        print("Repository validation failed:", file=sys.stderr)
         for error in errors:
-            print(f"- {error}", file=sys.stderr)
+            print(f"ERROR: {error}")
         return 1
-    print("Repository validation passed.")
+    print("Rootloom Personal Core repository validation passed.")
     return 0
 
 

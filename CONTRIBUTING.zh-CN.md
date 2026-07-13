@@ -31,9 +31,9 @@ make check
 .agents/plugins/marketplace.json       Git marketplace 目录
 plugins/rootloom/       可安装 Codex 插件
   .codex-plugin/plugin.json            插件元数据
-  assets/system/                       可安装的全局指导、Agents、profile 与 Rules
-  hooks/                               SessionStart 播种与 SubagentStart 行为审计
-  skills/                              Setup、指导、实施、审查、风险与高保障流程
+  assets/system/                       可安装的全局指导与命令 Rules
+  hooks/                               可选的 SessionStart 项目指导播种
+  skills/                              个人工作流、记忆、Setup、指导、审查与风险 Skills
 tests/                                 单元与真实集成检查
 scripts/validate_repo.py               仓库契约校验
 docs/                                  设计和排障文档
@@ -52,7 +52,7 @@ assets/                                README 配图
 6. 遍历范围、文件数量、文件大小和嵌套深度保持有界。
 7. 除非有经过评审的强需求，运行时只使用 Python 标准库。
 8. 语义判断保留在 Skills 中，不进入确定性自动核心。
-9. 全局 setup 必须先计划、事务化、备份并拒绝冲突。
+9. 全局 setup 必须先计划、加锁串行、备份、逐文件原子写入并拒绝冲突。
 10. Hooks 不得宣称超过当前事件 API 的执行强度。
 11. 本地 `git commit` 必须与远程发布和破坏性 Git 操作分开治理。
 

@@ -1,91 +1,40 @@
-# 成熟度、保证边界与兼容性
+# 成熟度、保证与兼容性
 
-Rootloom 目前是一个早期、单维护者项目。仓库结构、测试与发布门禁能够证明已实现机制如何运行，但尚不能证明广泛采用、团队级收益、生产缺陷减少或返工成本下降。第三方使用反馈和长期质量数据目前都不是已建立证据。
+Rootloom Personal Core 2.0 是早期、单维护者产品。目标是让 Codex 工程行为更审慎、更可检查；仓库目前还没有受控证据证明它能降低缺陷或审查时间。
 
-## 这里的“可靠”是什么意思
+## 可执行保证
 
-“可靠的 Codex 工程”是设计目标。只有在 Rootloom 存在可执行证据的边界内，具体声明才成立：
+- 确定性、有界、无网络的项目指导扫描；
+- 由托管本地策略控制的 fail-closed Hook；
+- 个人 setup 目标的 plan/apply/status/rollback；
+- 普通本地锁串行与逐文件原子替换；
+- 拒绝漂移的备份恢复；
+- 不使用 shell、有界输出的验证命令；
+- 敏感删除路径精确确认；
+- 经过 Schema 检查的项目记忆集合；
+- 仓库校验、单元测试与离线 Codex 兼容冒烟。
 
-| 声明 | 当前证据 | 不保证 |
-| --- | --- | --- |
-| Setup 会补偿可捕获失败，并恢复已记录的 apply/rollback 中断 | 共用的 no-follow/reparse-aware 单链接锁入口、Manifest 绑定恢复日志、状态提交故障注入补偿、模拟 apply/rollback 突然中断后执行 `recover`、哈希和权限模式保留回滚测试 | 真实 `SIGKILL`、主机/断电故障、存储损坏，或原子文件替换之下的父目录持久性 |
-| 项目播种受限 | 确定性本地扫描器、仓库内非符号链接证据、共用加固 Git 公共目录写锁、快照复查与回归测试 | 语义完整性或始终准确的架构认知 |
-| 命令策略有明确意图 | 固定版与最新版 CLI 的离线生命周期冒烟测试，覆盖直接 argv 的 commit、push 和破坏性 reset | shell 包装的等价命令、所有管理员/平台策略组合或未来 CLI 语义 |
-| 高保障执行具有确定性 | 固定阶段顺序、已关联来源 ID、入口读取者共享 ignored/敏感内容元数据分类、捕获前范围门禁、映射命令结果、逐命令仓库围栏、有界命令输出 tail、最小验证环境变量名、检测到和按命令绑定的验证入口指纹与有限修复循环 | 模型证据真实、输出 secret 脱敏、隐藏 CLI 路径解析、证明命令使用每项绑定依赖、完整依赖闭包绑定、所选命令语义充分、根因正确、业务正确或生产安全 |
-| 评审在角色上独立 | 独立只读评审角色配置 | 无需人工即可正确，或消除同源模型偏差 |
+## 仍属于语义判断的部分
 
-JSON Schema 校验必需形状，语义门禁校验部分跨阶段一致性；二者都不能证明模型陈述为真。仓库源码、可复现行为、可归因运行时证据、测试、评审、CI 与生产控制仍不可缺少。
+Rootloom 无法机械证明：
 
-Runner 产物脱敏也比文件访问隔离更窄。ignored 以及已知/显式配置的敏感未跟踪路径不会被内容哈希，也不会随 Delta Prompt 提供；但具有读取能力的模型阶段仍可以从仓库主动打开它们。需要 deny-read 时，应使用无 secret worktree、仓库外 secret 存储或 OS/container 挂载策略。内置敏感名称识别刻意保持有限，仓库专有名称必须配置显式规则或启用未跟踪 dotfile 脱敏。
+- 证据完整或真实；
+- 根因判断正确；
+- Change Contract 包含所有消费者；
+- 选择的测试足够；
+- 最终审查没有遗漏；
+- 项目记忆仍然最新。
 
-脱敏跟踪路径，而不跟踪字节来源。把 protected 字节复制到普通允许路径后，副本可能进入内容哈希和 Delta。Delta 生成会在显式 tracked/普通未跟踪字节预算下流式执行并要求完整或失败；内部捕获会禁用仓库 diff/textconv 执行、核对完整写入与批次回滚，并只加载固定 Prompt 摘要，但它仍不是内容血缘 DLP。进程清理也只治理原始 POSIX 进程组：后代可以创建新 session 并继续存活。直接父进程完成时，托管命令和 Runner 自有 Artifact 捕获都会立即启动本地 drain 硬期限；检测到 drain 到期会强制有效退出 125 并阻止自动验收。逃逸进程仍可在失败后行动，或通过关闭继承输出避开检测，因此不可信命令仍需要容器、cgroup 或等价作业隔离。
+Skills 负责指导这些判断，当前仓库与运行时证据必须再次验证它们。
 
-每条命令的 stdout/stderr 保留量都有上限；验证批次还受保留输出、实际序列化 NDJSON、命令数量和模型摘要上限约束。Runner 会在物化被拒绝的记录前统计转义字节，并在命令执行前检查最小记录空间。模型阶段结果拥有结构化 sidecar，异常退出也会在直接父进程结束后清理原进程组。确定性验证不再默认继承完整宿主机环境。显式 `--verify-env` 会把变量值传给命令，但产物只记录名称。这些控制降低内存拒绝服务、重复写放大和意外凭据传播风险；如果命令通过获准变量、HOME、文件、子进程或网络取得 secret 并在保留 tail 中打印，Rootloom 不会自动脱敏。
+## 个人安全边界
 
-可见路径集合、`git status`、index/控制引用数据、Delta/日志记录和模型 `-o` JSON 现在都有各自生产者上限，稳定内容摘要也可在同一个锁定 Run 内复用。这些控制不是统一文件系统配额：Codex 仍可能在命令结束后的拒绝检查前短暂写出超过 stage-output 限额的文件，元数据清单仍会增长到路径上限，恶意恢复同 inode 元数据也超出缓存威胁模型。超大或敌对工作负载仍需隔离 worktree 和外部文件系统/作业配额。
+个人 Artifact bundle 是可变的本地文件。setup 锁是普通协作锁。setup 逐文件原子，但整个目标集不是一个原子事务。备份/回滚用于普通本地失误，不面向掉电恢复、敌对同用户竞态、签名审批、不可变审计、合规保留或多操作方环境。
 
-检测到的 metadata-only 路径变化默认没有资格获得自动验收。门禁发生在 Writer 之后，不是 OS 级写入预防或回滚，因此失败后操作方可能需要恢复 protected 文件系统变化。操作方可以精确授权删除一个基线既有路径，但授权会在 Writer 前预检，要求干净基线和无修复循环，并强制该任务成为 deletion-only；普通修改、rename、move 或 visible 文件创建必须拆到另一次任务。Runner 随后会以 `HUMAN_REVIEW_REQUIRED` 退出；由于模型与产物都不能证明旧的 protected 内容，它不能声称自动 PASS。Protected 验证 harness 会在指纹前被拒绝。Topology 与逐命令状态检查点降低了 Writer 或验证命令新建嵌套仓库及批次内变更的 TOCTOU 风险，检测到和按命令绑定的验证入口指纹降低了 Writer 重定向 harness 的风险，但任意外部进程、隐藏命令间接引用、绑定依赖未被命令真实使用和未绑定的 harness 依赖文件仍可能在这些检查点外改变行为。
+这些 Assurance 机制保留在 `codex/enterprise-assurance`，Personal Core 不隐含它们。
 
-`HUMAN_REVIEW_REQUIRED` 现在拥有 v4 accept/reject 命令，并绑定精确 Result Envelope v1、最终验证 worktree/index/Git-control 承诺、protected 目标 exact-missing 状态与父边界、mode 0700 Run 身份、完整 metadata-only 下限、受限私有 Artifact 哈希，以及规范审核者/本地身份与 UTC 时间。Envelope 证明非空、零修复、deletion-only 变更集、allowed paths、未变 index、匹配 metadata 记录、已绑定 Delta/metadata Artifact 及 Runner/Run 身份；旧的不完整 Result 关闭式失败。Terminal 与 Summary 共用 Producer/Consumer 各 1 MiB 上限，并保持 pinned 直到最终精确字节数/SHA-256 校验。验证器现在只作四种结论：格式或安全无效为 `INVALID`/9，完整重捕获后证明当前状态不同才是 `STALE`/12，Git、权限/I/O、拓扑、Deadline 或独立本地资源上限阻止结论则为 `UNVERIFIED`/13，`VALID` 仍为 0；持久化生产预算不能抬高消费者上限。Git 重捕获禁用 Optional Lock、fsmonitor 与 untracked cache 写入，文件系统回归覆盖仓库、index/control、锁路径、worktree 与 Run Directory。类型化异常/合同/Git 行为归属中立 Runner 模块，Human Review 通过显式接口接收剩余原语，不再导入 `run_pipeline.py`。加固协作式锁与重复检查仍不能阻止任意同 UID Writer，也不能阻止已锁路径被新 inode 替换。因此 Human Review v4 仍冻结为可信个人或小团队环境下的可归因人工终局，而不是本地对抗型审批或带密码学签名/WORM 的组织证据；更强治理应由不可变快照、独立 Worker 或 UID、外部签名者、远端不可变 Artifact Store 与 WORM 审计系统承担。
+## 兼容性
 
-可选 isolation launcher 必须位于仓库与 Artifact root 之外，并在配置时和每次 spawn 前通过稳定 no-follow 描述符核验身份。这只证明检查时的路径身份，不证明启动器语义、内核策略，也不消除最终 path-to-`exec` 竞态。敌对命令仍需不可变容器/cgroup Worker 或等价的外部证明执行平台。
+普通 CI 在 Linux 验证 Python 3.11–3.14，并在 macOS/Windows 验证可移植契约。固定版本 Codex 兼容任务覆盖 marketplace 安装、插件发现、个人 setup 往返和命令 Rules。live smoke 因需要登录 Codex 与真实模型回合而保持手动。
 
-## 适用场景与学习成本
-
-只选择能够回收自身成本的最小能力：
-
-- 个人只需要复用流程或项目上下文时，选择 `skills-only` 或 `guidance`；
-- 普通开发默认选择单 Agent 的 `engineering`；
-- 只有受控角色分工值得额外 Token 与协调成本时，才选择 `delegated`；
-- 只有固定阶段和更强本地门禁值得安装与运维成本时，才选择 `full`。
-
-五档预设、四份角色文件、Rules、Hooks 和 Runner 都刻意保持可检查，但确实带来学习与维护成本。对于小型、低风险仓库，Rootloom 不一定优于一份简洁 `AGENTS.md` 加 CI。
-
-挑战契约能改善默认搜索行为，但不能证明模型真的完成了探索或证伪；已填写的反例或同类实现字段仍可能肤浅甚至虚构。失败前/修复后复现、所有者边界测试、原始运行时证据和独立源码检查仍比结构化文字更强。因此该机制复用现有阶段与字段，不假装再加一个 Reviewer 或更长清单就能制造保障。
-
-## 平台范围
-
-Rootloom 有意专注 Codex。Skills、Hooks、Rules、profiles 与自定义 Agent 配置遵循 Codex 接口，并可能随接口变化而需要维护。可移植的项目事实应存在于源码、测试、Schema、普通文档与决策记录中，而不能只存在于 Codex 配置里。
-
-严格高保障 Runner 支持 Linux、macOS 和 WSL，并拒绝原生 Windows。v1.2.19 CI 矩阵在 Python 3.11–3.14 上运行完整 Linux 检查、macOS Strict Runner 测试、macOS/Windows 可移植 setup/guidance/hook 与加固协作式锁测试，以及固定 Codex CLI compatibility smoke；由于 Windows 暴露的是 ACL/只读语义而不是 `fchmod`，精确 POSIX 权限模式断言仍只在 Linux/macOS 执行。发布运行 `29248176398` 的八个 Job 已针对精确标签提交 `68f08cf64527d1a726ca469f2612a219da7893b2` 全部通过。当前已验证 spawn 表面仍不能证明原生自定义角色/模型路由，因此必须给出模型分配证据时，应使用连续 Runner。
-
-兼容策略分两条轨道：
-
-1. 普通 CI 使用固定 Codex CLI 版本，作为必过、可复现契约；
-2. 定时使用最新版本探测上游漂移，在人工审查并采用前只提供信息，不改变稳定基线。
-
-两条轨道都会运行离线生命周期冒烟：本地 marketplace 注册、插件安装/发现、完整 setup 与 status、setup 验证、高保障 profile 解析、commit/push/reset Rules 决策、完整回滚以及既有配置保留。它无需凭据和模型调用，只验证 Linux 集成形状；不证明模型别名可调用、未来交互式 Hook 语义、原生自定义角色路由、模型行为或 Windows/macOS 兼容性。
-
-模型 ID 与配置键集中在托管资产中并接受结构校验，但零凭据探测无法发现模型别名被删除或重命名。相关资产变更时，发布采用仍需在公开 CI 之外进行带身份的人工模型路由检查。任何上层治理工具都无法消除上游变化风险。
-
-Codex 命令 Rules 是 argv 前缀策略，不会解析嵌套 shell 程序。直接 `git push` 可以命中 Rootloom 规则，而 `bash -c 'git push'` 会按更宽泛的 `bash` 策略评估。Rules 和子代理预算 Hook 都只是纵深防御信号，不是预防性安全边界；Hook 无法取消已经启动的超预算子代理。
-
-## 外部证据与 MCP
-
-Rootloom 不提供通用证据 MCP。不同组织的运行时事实可能位于日志、Trace、指标、Issue、部署记录或用户反馈中。只连接角色真正需要且已授权的狭窄来源，并保留精简来源记录：环境、观察时间或时间窗、稳定引用、新鲜度/脱敏，以及事实或推断状态。
-
-严格 Runner 会关闭外部工具与网络。应在运行前收集已授权外部证据，只传入受限且脱敏的材料。来源记录能提高可审计性，但不能把不完整证据变成事实。
-
-## 治理现状
-
-当前 bus factor 为 1。安全响应时间是目标，不是服务级保证。首批版本在很短的单作者窗口内完成，且没有外部代码评审，因此本地/CI 通过只能证明已实现契约，不能证明长期运行可靠性。版本应保持小步、可逆，针对固定基线完成测试，并明确未支持或未验证的范围。只有在公开方法和可复现数据存在后，才应增加更强的可靠性效果声明。
-
-Human Review v4 内容完整性收口后，投入应优先转向覆盖面更大的证据与运营收益：容器/cgroup 一等集成、大型仓库基准、增量路径快照、Verification 依赖闭包绑定、带身份的模型路由冒烟测试、Artifact Retention 与清理策略、外部 Human Review Signer，以及第三方使用/缺陷逃逸数据。后续若要继续增加同 UID 本地 TOCTOU 补丁，必须先证明新的具体不变量，而不是默认继续扩张 v4。
-
-## 效果证据协议
-
-Rootloom 不从用户仓库收集遥测。要评估它是否改善结果，应进行显式选择加入且经过隐私审查的研究，使用有代表性的任务集和预先声明的基线。保持任务、仓库版本、模型、推理等级、工具权限和验收检查一致；区分合成基准与真实维护任务；公开排除项和失败，不只挑选成功样本。
-
-至少记录：
-
-- 针对可执行验收标准的一次通过率；
-- 每个已接受任务的修复循环与模型/工具总工作量；
-- 人工评审时间与按严重程度划分的 findings；
-- 根因对齐失败，或被错误包装成完整修复的缓解方案；
-- 在预先声明观察窗口内出现的回归或逃逸缺陷。
-
-报告样本量、不确定性、环境、原始或可复现推导的聚合数据与局限。不能把流程遵从率包装成产品质量结论。
-
-## 参考资料权威性
-
-平台契约以 OpenAI 官方文档和实际观察到的 Codex 行为为准。GEB 文章仅作为分层上下文与反馈回路的非正式设计启发，不是官方或同行评审规范。
+Personal Core 2.0 有意破坏 1.2.19 的 high-assurance Skill、严格 Runner CLI、自定义代理/profile setup、Human Review 格式、protected-deletion approval 与恢复日志契约。迁移前先使用 1.2.19 回滚。

@@ -25,6 +25,12 @@
 - Treat behavioral defects as Tier 1 or higher unless the correction is demonstrably mechanical. Escalate uncertain root cause, cross-boundary impact, repeated failed repair, or high-risk domains to Tier 2.
 - Do not turn small, low-risk, reversible work into planning bureaucracy.
 
+### Personal risk analyzer
+
+- Raise risk for persisted state, authentication/authorization, money, concurrency, state machines, migrations, shared APIs, destructive operations, or many consumers.
+- Explain the concrete risk signals and choose the lightest workflow that still proves the result.
+- Use Tier 0 for mechanical edits, Tier 1 for bounded behavior or defects, and Tier 2 for governed contracts or materially uncertain blast radius.
+
 ## Engineering Defaults
 
 - Preserve unrelated user modifications. Never reset, clean, stash, bulk-restore, or overwrite work merely to obtain a clean tree.
@@ -48,8 +54,10 @@
 - Use `operating-high-risk-change` for Tier 2 Governed work involving public or persisted contracts, schemas, migrations, security, infrastructure, production dependencies, deployment, release, destructive effects, or materially uncertain root cause.
 - Use installed design/product/frontend Skills for formal UI, UX, Figma, or visual work.
 - Use `record-engineering-decision` only for accepted durable architecture, contract, dependency, security, data, or operational decisions; keep routine task history out of permanent records.
-- Keep `high-assurance-coding-change` opt-in; use it only when the user explicitly requests controlled multi-agent work or the selected workflow requires it.
+- Use `engineering-change` for the default single-agent quality loop; delegation remains explicit and platform-governed.
 - Keep task-specific requirements in the current prompt and reusable procedures in Skills.
+- Use `engineering-change` as the default personal implementation loop: Evidence → Diagnosis → Change Contract → Implementation → Verification → Final Review Summary.
+- Load `.project-memory/` when present, but treat memory as leads until current repository evidence confirms it.
 
 ## Automatic Project Guidance
 
@@ -66,6 +74,11 @@
 - Use no more than four child agents in total per task; reuse existing agents rather than recycling slots to exceed the total.
 - Never let multiple write-capable agents edit the same workspace concurrently.
 - Treat subagent output as evidence, not truth; the parent remains responsible for final verification.
+
+## Verification Intelligence
+
+- Derive verification from the changed behavior: prove the primary path, the owning-boundary invariant, and an adjacent negative or alternate path.
+- Do not equate one passing command with complete verification; explain what each command proves and what remains unverified.
 
 ## Communication
 

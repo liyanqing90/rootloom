@@ -1,127 +1,49 @@
 # Troubleshooting
 
-## The plugin is installed but no hook runs
+## The project-guidance Hook does nothing
 
-1. Start a new Codex task; plugins and hooks are loaded at task startup.
-2. Run `/hooks` and inspect the `SessionStart` entry.
-3. Trust the exact command if Codex reports that review is required.
-4. Confirm the plugin is enabled:
+Check that the personal or guidance preset is installed and that `~/.codex/.rootloom/components.json` contains a managed boolean `project-guidance-hook: true`. Missing, malformed, or symlinked policy disables the Hook. Start a new Codex task after plugin or setup changes and review `/hooks` again.
 
-   ```bash
-   codex plugin list --json
-   ```
+The scanner also skips untrusted repositories unless the platform marks them trusted. `ROOTLOOM_ALLOW_UNTRUSTED=1` is intended only for controlled tests.
 
-Do not use `--dangerously-bypass-hook-trust` for normal operation.
+## Setup reports a conflict
 
-## No `AGENTS.md` was created
+Run `plan` and inspect every affected path. Unmarked content is user-owned. Use `--replace-conflicts` only after exact authorization; Rootloom will create a backup first.
 
-Probe the repository directly:
+Symlinked targets are always refused. Move or resolve the symlink explicitly rather than asking setup to follow it.
 
-```bash
-python3 plugins/rootloom/skills/seed-project-guidance/scripts/seed_project_guidance.py \
-  probe --cwd /path/to/repository
-```
+## Setup stopped partway through
 
-Common skip reasons are intentional:
-
-- `not_a_git_repository`
-- `untrusted_project`
-- `override_exists`
-- `user_owned_guidance`
-- `disabled`
-- `guidance_is_symlink`
-- `unsafe_path`
-- `plan_mode`
-
-## The repository is trusted but reports `untrusted_project`
-
-Use `/debug-config` to confirm which Codex configuration layer is active and whether the repository or a parent root has `trust_level = "trusted"`. Do not add a broad trust root merely to make the hook pass; review the repository first.
-
-## My existing `AGENTS.md` was not updated
-
-This is expected when the file lacks seeder markers. Unmarked guidance is user-owned. The plugin will not adopt or rewrite it. If you want a managed baseline, move the existing content aside, run the seeder once, then place your custom rules below the managed block.
-
-## Validation reports `managed_block_drift`
-
-The managed section was edited manually or no longer matches repository evidence. Keep custom content outside the markers and run `seed` again to regenerate the managed block.
-
-## Validation reports secret-like content
-
-Remove credentials, tokens, private keys, or secret-looking examples from guidance. Store secrets in the repository's approved secret manager or environment, never in `AGENTS.md`.
-
-## The hook works in normal mode but not Plan mode
-
-This is by design. Plan mode is read-only for automatic seeding. Run the Skill after returning to a write-capable mode.
-
-## Nested guidance is not created
-
-Nested seeding is lazy. The target must be inside the Git root, no more than three directories deep, and have an independent recognized manifest. Ordinary folders do not receive their own `AGENTS.md`.
-
-## Setup reports a user-owned conflict
-
-Run `$setup-rootloom` in plan mode and inspect the exact paths. The installer refuses unmanaged files and managed files edited after the last apply. Prefer merging useful personal policy into the managed template through a reviewed change. Use `--replace-conflicts` only after explicitly authorizing those paths; the installer creates backups but will replace their contents.
-
-## I do not need subagents
-
-Install `--preset engineering`, not `delegated` or `full`. It keeps global/project guidance and command safety but does not write `[agents]` limits, custom Agent TOMLs, the quality profile, or active subagent auditing. `skills-only` and `guidance` are even smaller. Use `list-components` to inspect the exact mapping.
-
-If another preset is already installed, run `rollback --all` before applying the smaller level. The installer refuses an in-place capability switch so omitted assets cannot become ambiguous leftovers.
-
-## `git commit` is rejected under `approval_policy = "never"`
-
-Check every active Rules file, not only the suite file. Rules choose the most restrictive match, so a broad `git → prompt` rule overrides `git commit → allow`. A non-interactive `never` policy cannot answer the prompt and the command fails.
+Personal Core has per-file atomic writes and pre-mutation backups, not a recovery journal. Run:
 
 ```bash
-codex execpolicy check --pretty \
-  --rules ~/.codex/rules/rootloom.rules \
-  -- git commit -m test
+python3 <setup-skill>/scripts/setup_rootloom.py status
 ```
 
-The suite result should be `allow`. If combined policy still prompts, remove or narrow the conflicting rule after reviewing why it exists. Do not change `git push` to allow merely to fix local commits.
+Inspect the newest `~/.codex/.rootloom/backups/*/manifest.json`, compare target hashes, and restore only the affected paths. Do not re-run with conflict replacement until the partial state is understood.
 
-## `max_threads = 4` but the task shows ten agents
+## Rollback refuses a changed file
 
-`max_threads` caps concurrently open threads, not the cumulative total. Completed/closed children free slots. The advisory Hook counts unique children for the parent session and warns after four, but `SubagentStart` cannot cancel a child. Use the deterministic runner when a hard stage count is required.
+Rollback protects post-setup edits. Preserve or merge the current file manually, restore it to the recorded managed version, then run rollback again. Do not delete the state or backup merely to bypass the check.
 
-## A custom Agent appears to use the wrong model
+## Commands still prompt unexpectedly
 
-First confirm that `delegation-control` or `full` was intentionally selected. Then confirm the custom role file exists under `~/.codex/agents/`, start a new task, and run the setup status and high-assurance validator. A thread label or nickname is not proof that the role TOML was selected. If the current spawn surface cannot explicitly select and attest the role, use the deterministic runner instead of relying on natural-language routing.
+Use `codex execpolicy check` against every active Rules file. The most restrictive matching decision wins, so a broader `git` prompt may override Rootloom's local `git commit` allow. Rules inspect argv prefixes; nested shell commands need their own policy and approval boundary.
 
-## High-assurance validation says native routing is not ready
+## Verification helper rejects a command
 
-This can be the correct result. The runner and native route have separate readiness. If Agent files and the profile pass but the local spawn tool cannot attest `agent_type`, the deterministic sequential runner remains supported while native model routing stays disabled.
+`finalize_change.py` parses commands with `shlex` and does not run a shell. Pipelines, redirects, `&&`, environment assignment, or command substitution are not interpreted. Put complex verification in a reviewed repository-owned script or Make target and invoke that executable directly.
 
-## The strict runner exits 10 with `HUMAN_REVIEW_REQUIRED`
+Exit 124 is timeout. Exit 125 means the bounded output tail was exceeded. Increase budgets only when the larger evidence is necessary and safe to retain.
 
-This is the intended result after an explicitly authorized `--allow-protected-path-delete` operation. The authorization is checked before the writer runs and makes the run deletion-only, so ordinary edits, renames, moves, and visible file creations must be handled separately. Protected deletion mode also requires a clean baseline and `--max-repair-cycles 0`. Verification and model review passed, but the old protected content was deliberately never read, so the Runner cannot issue automated PASS. Use the bundled decision command; Human Review v4 refuses acceptance if the supplied Run is a copy, Result changes, any protected target exists again (including ignored files), its parent boundary changes, the complete metadata-only floor cannot be preserved, the canonical repository commitment drifts, or reviewed evidence changes. Version-2/3 review results must be rerun or handled through an explicitly external process. Do not convert exit 10 to success in automation.
+## Sensitive deletion returns exit 10
 
-## Decision Pair verification reports `INVALID`, `STALE`, or `UNVERIFIED`
+The helper detected an exact `.env`, secret, migration, or database path deletion. Obtain confirmation for that exact path and repeat it with `--confirm-dangerous-delete`. This is a lightweight guard, not an approval ledger.
 
-Run `review_decision.py verify --repo ... --run-dir ...` without reviewer or decision flags. `VALID`/0 means the canonical Result Envelope, Terminal, Summary, repository/protected-deletion commitment, and Run Directory identity still agree. `INVALID`/9 means persisted Result/Binding/Pair evidence is malformed, inconsistent, noncanonical, path-unsafe, or no longer safely readable as the required private files. `STALE`/12 means structurally valid evidence was fully recaptured and the current repository, reviewed Artifact, or protected-deletion state differs. `UNVERIFIED`/13 means Git startup, permission/I/O, topology scan, deadline, or an independent local resource ceiling prevented a conclusion; retry only after correcting that environment or deliberately adjusting a verifier limit. Recorded policy never raises local limits automatically. Stdout remains one status word and stderr contains one bounded reason without Artifact contents. Verification uses no optional Git locks and disables fsmonitor/untracked-cache behavior for its subprocesses; it does not refresh, repair, sign, or rewrite evidence.
+## Project memory is stale or malformed
 
-## The strict runner rejects a verification entrypoint change
+Repository evidence wins. Correct the `.project-memory/` file in a reviewed change. The helper refuses unknown formats or non-list `entries`; it never silently migrates ambiguous content.
 
-The Runner fingerprints detected verification entrypoints before the writer, checks the relevant set before each deterministic verification command, and confirms repository immutability immediately afterward. It records common missing candidates too, so creating a new `GNUmakefile`, `pytest.ini`, or similar harness after baseline capture is treated as an entrypoint change. It records every repository-internal symlink path component and binds the final target content.
+## I need the old Human Review or strict Runner
 
-If the writer modifies `Makefile`, `package.json`, pytest configuration, a detected repository-relative script used by `--verify`, or a path supplied with `--bind-verification-path verify-N:path`, the run stops before executing verification. Explicit bindings must resolve to existing regular files and are recorded as command-scoped stability dependencies; they do not prove the command actually imports or executes the file. A protected harness is rejected before content access. Use an external trusted harness, bind important repo-owned dependencies to the correct command, split test-harness changes into a separate task, or choose a verification command whose entrypoint is outside the writer's allowed scope.
-
-If the Runner instead reports an unauthorized protected-path change, acceptance stopped after the writer returned; the sandbox did not prevent the filesystem mutation. Inspect and recover that path manually. Rootloom does not read or back up ignored/sensitive content for automatic rollback.
-
-## Python reports that `tomllib` is missing
-
-Use Python 3.11 or newer:
-
-```bash
-python3 --version
-```
-
-## Updating the plugin
-
-```bash
-codex plugin marketplace upgrade rootloom
-codex plugin add rootloom@rootloom
-```
-
-Then start a new Codex task. If the hook definition changed, review and trust the new definition through `/hooks`.
-
-Run `$setup-rootloom` again after upgrading so new managed global assets are planned and applied. Plugin installation alone never overwrites Codex-home policy files.
+Those features are not hidden flags in Personal Core. Use `codex/enterprise-assurance`, which preserves Rootloom 1.2.19. Roll back one product's setup with its own version before installing the other.

@@ -1,127 +1,49 @@
-# 故障排查
+# 排障
 
-## 插件已安装，但 Hook 没有运行
+## 项目指导 Hook 没有执行
 
-1. 新建 Codex 任务；插件与 Hook 在任务启动时加载。
-2. 执行 `/hooks`，检查 `SessionStart` 条目。
-3. 如果提示需要审查，核对精确命令后完成信任。
-4. 确认插件已启用：
+确认已安装 personal 或 guidance preset，并且 `~/.codex/.rootloom/components.json` 中存在托管布尔值 `project-guidance-hook: true`。策略缺失、损坏或为符号链接时 Hook 会关闭。插件或 setup 变化后新建 Codex 任务，并重新检查 `/hooks`。
 
-   ```bash
-   codex plugin list --json
-   ```
+仓库未被平台信任时扫描器也会跳过。`ROOTLOOM_ALLOW_UNTRUSTED=1` 仅用于受控测试。
 
-正常使用时不要添加 `--dangerously-bypass-hook-trust`。
+## Setup 报告 conflict
 
-## 没有创建 `AGENTS.md`
+运行 `plan` 并检查所有路径。无标记内容属于用户。只有得到精确授权后才能使用 `--replace-conflicts`；Rootloom 会先创建备份。
 
-直接探查仓库：
+符号链接目标始终被拒绝。请显式处理或移动链接，不要让 setup 跟随它。
 
-```bash
-python3 plugins/rootloom/skills/seed-project-guidance/scripts/seed_project_guidance.py \
-  probe --cwd /path/to/repository
-```
+## Setup 中途停止
 
-以下跳过原因通常是有意设计：
-
-- `not_a_git_repository`
-- `untrusted_project`
-- `override_exists`
-- `user_owned_guidance`
-- `disabled`
-- `guidance_is_symlink`
-- `unsafe_path`
-- `plan_mode`
-
-## 仓库已信任，但仍报告 `untrusted_project`
-
-使用 `/debug-config` 确认当前生效的 Codex 配置层，以及仓库或父级根目录是否包含 `trust_level = "trusted"`。不要仅为了让 Hook 通过而信任一个过大的目录；应先审查仓库。
-
-## 已有 `AGENTS.md` 没有更新
-
-没有播种器标记的文件归用户所有，插件不会接管或改写。如果希望获得托管基线，可以先备份原内容，运行一次播种器，再把自定义规则放到托管区块之后。
-
-## 校验报告 `managed_block_drift`
-
-托管区块被手动编辑，或已不再匹配仓库证据。把自定义内容保留在标记之外，然后重新运行 `seed`。
-
-## 校验报告疑似密钥
-
-从指导中移除凭据、Token、私钥或看起来像密钥的示例。秘密应存放在仓库批准的 Secret Manager 或环境中，不能写入 `AGENTS.md`。
-
-## 普通模式有效，但 Plan 模式不运行
-
-这是设计行为。Plan 模式下自动播种只读不写；回到可写模式后再运行 Skill。
-
-## 没有生成嵌套指导
-
-嵌套播种是懒执行的。目标必须位于 Git 根目录内部、深度不超过三层，并包含独立的受支持 Manifest。普通目录不会获得自己的 `AGENTS.md`。
-
-## Setup 报告用户自有冲突
-
-让 `$setup-rootloom` 先展示计划并检查具体路径。安装器拒绝无托管标记的文件，也拒绝上次 apply 后被修改的托管文件。优先通过经过审查的变更把有价值的个人策略合并到模板中。只有明确授权这些路径后才使用 `--replace-conflicts`；安装器会备份，但仍会替换文件内容。
-
-## 我不需要子代理
-
-安装 `--preset engineering`，不要选 `delegated` 或 `full`。它保留全局/项目指导和命令安全，但不会写入 `[agents]` 限制、自定义 Agent TOML、质量 profile，也不会启用子代理审计。`skills-only` 和 `guidance` 还可以更小；使用 `list-components` 查看精确映射。
-
-若已经安装其他预设，先运行 `rollback --all`，再应用更小层级。安装器拒绝原地切换能力，避免未选择的旧资产变成含义不明的残留。
-
-## `approval_policy = "never"` 时 `git commit` 被拒绝
-
-检查所有生效的 Rules，而不只是本系统文件。Rules 采用最严格匹配，因此宽泛的 `git → prompt` 会覆盖 `git commit → allow`。非交互的 `never` 无法回答 prompt，命令只会失败。
+Personal Core 提供逐文件原子写入与修改前备份，不提供恢复日志。运行：
 
 ```bash
-codex execpolicy check --pretty \
-  --rules ~/.codex/rules/rootloom.rules \
-  -- git commit -m test
+python3 <setup-skill>/scripts/setup_rootloom.py status
 ```
 
-本系统自身应返回 `allow`。若组合策略仍为 prompt，应先理解来源，再删除或收窄冲突规则。不要为了修复本地 commit 而把 `git push` 改成 allow。
+检查最新 `~/.codex/.rootloom/backups/*/manifest.json`，比较目标哈希，只恢复受影响路径。理解部分状态前不要使用 conflict replacement 重跑。
 
-## 已设置 `max_threads = 4`，任务里却出现十个 Agent
+## Rollback 拒绝已修改文件
 
-`max_threads` 限制同时打开的线程，不限制累计总数。已完成或关闭的子代理会释放槽位。审计 Hook 会统计父会话的唯一子代理并在超过四个时告警，但 `SubagentStart` 无法取消子代理。必须硬限制阶段数量时，使用确定性 Runner。
+Rollback 会保护 setup 后的修改。手动保留或合并当前文件，把它恢复到记录的托管版本后再次 rollback。不要通过删除 state 或 backup 绕过检查。
 
-## 自定义 Agent 看起来用了错误模型
+## 命令仍然意外询问
 
-先确认确实选择了 `delegation-control` 或 `full`，再确认角色文件存在于 `~/.codex/agents/`。新建任务，然后运行 setup status 和高保障校验器。线程标签或昵称不能证明角色 TOML 已被选择。如果当前 spawn 工具无法显式选择并证明 `agent_type`，应使用确定性 Runner，而不是依赖自然语言路由。
+对每个生效 Rules 文件运行 `codex execpolicy check`。最严格匹配结果优先，所以更宽的 `git` prompt 可能覆盖 Rootloom 对本地 `git commit` 的 allow。Rules 检查 argv 前缀；嵌套 shell 命令需要自己的策略与授权边界。
 
-## 高保障校验显示原生路由未就绪
+## 验证辅助工具拒绝命令
 
-这可能是正确结果。Runner 与原生路由分别判断 readiness。若 Agent 文件和 profile 通过，但本地 spawn 工具不能证明 `agent_type`，确定性连续 Runner 仍可使用，而原生模型路由保持关闭。
+`finalize_change.py` 使用 `shlex` 解析，不运行 shell。管道、重定向、`&&`、环境变量赋值或命令替换不会被解释。把复杂验证放进经过审查的仓库脚本或 Make target，再直接调用该可执行入口。
 
-## 严格 Runner 以退出码 10 和 `HUMAN_REVIEW_REQUIRED` 结束
+退出 124 表示超时；125 表示超过有界输出尾部。只有更大证据确实必要且适合保留时才提高预算。
 
-这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。请使用内置决定命令；Human Review v4 会在 supplied Run 是副本、Result 变化、任一 protected 目标重新出现（包括 ignored 文件）、父边界变化、完整 metadata-only 下限无法保持、规范化仓库承诺漂移或已审证据变化时拒绝 accept。版本 2/3 审核结果必须重跑，或通过显式外部流程处理。自动化不得把退出码 10 转成成功。
+## 敏感删除返回 exit 10
 
-## Decision Pair 验证报告 `INVALID`、`STALE` 或 `UNVERIFIED`
+辅助工具发现精确 `.env`、secret、migration 或 database 路径删除。请先获得该路径的确认，再通过 `--confirm-dangerous-delete` 重复传入。这是轻量 guard，不是审批账本。
 
-运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result Envelope、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Result/Binding/Pair 格式、安全、规范性或内部一致性无效。`STALE`/12 表示结构有效且完整重捕获后当前仓库、已审 Artifact 或 protected deletion 状态不同。`UNVERIFIED`/13 表示 Git 启动、权限/I/O、拓扑扫描、Deadline 或独立本地资源上限阻止了结论；只有修复环境或明确调整 verifier 上限后才应重试，记录中的 Policy 不能自动抬高本地上限。stdout 仍只有一个状态词，stderr 包含一条不带 Artifact 内容的有界原因。验证子进程禁用 Git Optional Lock、fsmonitor 与 untracked cache 行为，不会刷新、修复、签名或改写证据。
+## 项目记忆过期或损坏
 
-## 严格 Runner 拒绝 verification entrypoint 变化
+仓库证据优先。通过经过审查的修改修正 `.project-memory/`。辅助工具拒绝未知格式或非 list 的 `entries`，不会静默迁移模糊内容。
 
-Runner 会在 Writer 前为检测到的验证入口建立指纹，在每条确定性验证命令前检查对应入口，并在命令结束后立即确认仓库未变化。它也会记录常见缺失候选，因此 Writer 在基线后新建 `GNUmakefile`、`pytest.ini` 或类似 harness 会被视为验证入口变化。它会记录仓库内每个符号链接路径组件，并绑定最终目标内容。
+## 我需要旧 Human Review 或严格 Runner
 
-如果 Writer 修改了 `Makefile`、`package.json`、pytest 配置、`--verify` 使用的已检测仓库相对脚本，或通过 `--bind-verification-path verify-N:path` 显式绑定的路径，任务会在执行验证前停止。显式绑定必须解析为已存在的普通文件，并作为按命令关联的稳定性依赖记录；它不能证明命令真实导入或执行了该文件。protected harness 会在内容访问前被拒绝。应使用外部可信 harness，把重要的仓库内依赖绑定到正确命令，将测试入口变更拆成单独任务，或选择不在 Writer 允许范围内的验证入口。
-
-如果 Runner 报告的是未授权 protected 路径变化，说明它在 Writer 返回后停止了验收，sandbox 并未预防文件系统修改。应人工检查并恢复该路径；Rootloom 不会读取或备份 ignored/敏感内容用于自动回滚。
-
-## Python 报告缺少 `tomllib`
-
-请使用 Python 3.11 或更高版本：
-
-```bash
-python3 --version
-```
-
-## 更新插件
-
-```bash
-codex plugin marketplace upgrade rootloom
-codex plugin add rootloom@rootloom
-```
-
-随后新建 Codex 任务。如果 Hook 定义发生变化，请通过 `/hooks` 重新审查并信任。
-
-升级后再次运行 `$setup-rootloom`，让新的全局托管资产经过计划后应用。仅安装插件不会覆盖 Codex home 中的策略文件。
+这些能力不是 Personal Core 的隐藏开关。请使用保留 Rootloom 1.2.19 的 `codex/enterprise-assurance`。安装另一个产品前，使用对应版本回滚当前 setup。

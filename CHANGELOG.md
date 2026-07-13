@@ -6,6 +6,36 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-07-13
+
+### Changed
+
+- Reposition `main` as Rootloom Personal Core: a single-agent quality loop for risk classification, evidence, root-cause diagnosis, scoped implementation, intelligent verification, and final review summaries.
+- Replace `$high-assurance-coding-change` with `$engineering-change` and its lightweight `diff.patch`, `test.log`, and `summary.json` bundle.
+- Make the `personal` setup preset the default; retain `engineering` only as an alias for migration.
+- Simplify setup to an ordinary local lock, pre-mutation file backups, atomic per-file writes, drift-refusing status, and explicit rollback.
+
+### Added
+
+- Add `$project-memory` and `.project-memory/` for reviewable architecture, known risks, decision indexes, and evidence-backed failure lessons.
+- Add a lightweight dangerous-deletion guard for exact `.env`, secret, migration, and database paths.
+
+### Removed
+
+- Remove Human Review, Decision Pair, protected-deletion approval, strict multi-agent Runner, hardened Artifact transactions, custom-agent/profile assets, SubagentStart audit, and setup recovery journals from `main`.
+- Preserve the complete Rootloom 1.2.19 Assurance product on branch `codex/enterprise-assurance`.
+
+### Migration
+
+- Roll back a 1.2.19 Assurance setup with that version before installing Personal Core. Users who still need the former audited workflow should use the enterprise branch rather than expecting compatibility on `main`.
+
+### Fixed
+
+- Fail lightweight verification bundles when a verification command changes the tracked patch or captured path set, and re-check tracked or captured-untracked dangerous deletions after verification.
+- Preserve the intentional empty capability selection installed by `skills-only` instead of falling back to the `personal` preset.
+- Generate review bundles in Git repositories that have not created their first commit yet.
+- Replace stale Assurance-oriented README imagery with the Personal Core product split and reuse the synchronized artwork in English and Chinese documentation.
+
 ## [1.2.19] - 2026-07-13
 
 ### Security

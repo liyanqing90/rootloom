@@ -1,7 +1,7 @@
 {
   "name": "rootloom",
-  "version": "1.2.19",
-  "description": "Codex engineering controls woven from attributable evidence to verified process.",
+  "version": "2.0.0",
+  "description": "A personal engineering quality layer for Codex: risk-aware, root-cause-driven, and verifiable.",
   "author": {
     "name": "liyanqing",
     "url": "https://github.com/liyanqing90"
@@ -17,21 +17,22 @@
     "automation",
     "hooks",
     "skills",
-    "subagents",
+    "personal-engineering",
+    "project-memory",
     "code-review"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Rootloom",
     "shortDescription": "Reliable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom weaves tiered task intake, repository guidance, attributable evidence, durable decision records, root-cause workflows, command Rules, model-routed agents, lifecycle audits, and deterministic process gates into five selectable capability layers. Teams can start with Skills only, choose the single-agent engineering default, or explicitly opt into controlled delegation and high assurance.",
+    "longDescription": "Rootloom helps an individual developer make Codex choose the right level of care, diagnose the owning cause, keep changes scoped, verify behavior intelligently, and reuse project lessons. Personal Core is single-agent by default and keeps enterprise approval and audit machinery outside the main product.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [
       "Automation",
       "Write",
       "Review",
-      "Orchestration"
+      "Project Memory"
     ],
     "websiteURL": "https://github.com/liyanqing90/rootloom",
     "brandColor": "#8A78FF",
@@ -41,7 +42,7 @@
     "defaultPrompt": [
       "Classify and execute a task with the right Rootloom workflow tier.",
       "Seed and refine AGENTS.md guidance for this repository.",
-      "Run a controlled high-assurance coding change."
+      "Run a personal engineering change and produce a compact verified summary."
     ]
   }
 }

@@ -19,11 +19,9 @@ HOOK_COMMANDS = {
         "skills/seed-project-guidance/scripts/seed_project_guidance.py",
         "hook",
     ),
-    "subagent-audit-hook": ("hooks/subagent_budget.py",),
 }
 HOOK_TIMEOUTS = {
     "project-guidance-hook": 12,
-    "subagent-audit-hook": 3,
 }
 
 

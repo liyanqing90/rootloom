@@ -1,0 +1,4 @@
+interface:
+  display_name: "Engineering Change"
+  short_description: "Run Rootloom's personal engineering quality loop"
+  default_prompt: "Use $engineering-change to classify, implement, verify, and summarize this repository change."

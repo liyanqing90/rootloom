@@ -1,46 +1,21 @@
-# Rootloom brand system
+# Brand system
 
-Rootloom is a product name, not a category label. It describes how the project works without reducing it to one feature:
+Rootloom combines two ideas:
 
-- **Root** — repository truth, project guidance, and root-cause evidence.
-- **Loom** — the structure that composes Skills, Hooks, Rules, Agents, and verification into selectable capability layers.
+- **Root** — repository truth: source, schemas, tests, guidance, and root-cause evidence.
+- **Loom** — the personal engineering structure that turns that truth into a scoped, verified change.
 
-The English tagline is **“Reliable Codex engineering, woven from the roots up.”** The supporting description may be used when more context is needed: **“From project truth to verified delivery.”**
-
-## Identity layers
-
-The square icon is deliberately distilled: an iris ribbon forms the stem and bowl of an `R`, while a mint ribbon crosses above it to form the leg. The overlap is the loom; the monogram is the root. It remains legible at favicon and plugin-composer sizes and does not attempt to explain the architecture.
-
-The extended brand hero carries the larger product narrative:
-
-1. a small evidence network establishes the roots;
-2. five frames represent the five supported capability levels;
-3. controlled branches represent optional agent delegation;
-4. one amber check represents executable verification.
-
-This is deliberately not a literal tree, generic shield, robot, brain, or OpenAI-derived symbol. Rootloom is an independent open-source project and must never be presented as an official OpenAI product.
-
-## Palette
-
-| Token | Hex | Use |
-| --- | --- | --- |
-| Ink | `#12101F` | Dark canvas and primary contrast |
-| Iris | `#8A78FF` | Capability fiber and primary brand accent |
-| Mint | `#58D8B1` | Evidence roots and healthy state |
-| Amber | `#FFB45D` | Verified outcome only |
-| Paper | `#FAF9FF` | Light surfaces and dark-mode text |
-
-Amber is intentionally scarce. Do not use it for ordinary decoration; it signals a passed gate or a completed result.
+The violet woven-root mark is the canonical symbol. It should communicate one coherent quality loop, not product tiers or mandatory agent orchestration.
 
 ## Assets
 
-| Asset | Purpose |
+| Asset | Use |
 | --- | --- |
-| `assets/rootloom-brand.webp` | README/social brand hero |
-| `plugins/rootloom/assets/icon.svg` | Square plugin and repository avatar |
-| `plugins/rootloom/assets/logo.svg` | Wordmark for light surfaces |
-| `plugins/rootloom/assets/logo-dark.svg` | Wordmark for dark surfaces |
-| `assets/hero.svg` | Capability-level explainer |
-| `docs/diagram/architecture.svg` | Mechanism and enforcement architecture |
+| `plugins/rootloom/assets/icon.svg` | Marketplace and compact icon |
+| `plugins/rootloom/assets/logo.svg` | Light-background product logo |
+| `plugins/rootloom/assets/logo-dark.svg` | Dark-background product logo |
+| `assets/rootloom-brand.webp` | README hero artwork for the personal quality loop |
+| `docs/diagram/architecture.svg` | Canonical product-split architecture diagram |
+| `docs/diagram/architecture@2x.png` | Rendered 2× fallback and visual-review artifact |
 
-Keep clear space around the icon equal to the ribbon width. Do not add nodes, text, checks, model/vendor logos, or architecture details to the square mark. Do not recolor either ribbon or place the icon on a similarly bright violet–mint gradient.
+Keep the name `Rootloom`, violet brand color `#8A78FF`, and the root/loom geometry consistent. Do not add “enterprise”, “agent swarm”, compliance, or audit language to Personal Core branding; the Assurance branch owns that product narrative.

@@ -25,14 +25,13 @@ class ComponentHookTests(unittest.TestCase):
         self.codex_home = Path(self.temp_dir.name) / ".codex"
         self.policy = self.codex_home / ".rootloom" / "components.json"
 
-    def write_policy(self, project: bool, subagent: bool) -> None:
+    def write_policy(self, project: bool) -> None:
         self.policy.parent.mkdir(parents=True)
         self.policy.write_text(
             json.dumps(
                 {
                     "hooks": {
                         "project-guidance-hook": project,
-                        "subagent-audit-hook": subagent,
                     },
                     "managed_by": component_hook.MANAGED_BY,
                     "schema_version": 1,
@@ -49,15 +48,11 @@ class ComponentHookTests(unittest.TestCase):
             self.assertFalse(enabled)
             self.assertIsNone(error)
 
-    def test_managed_policy_controls_each_hook_independently(self) -> None:
-        self.write_policy(project=True, subagent=False)
+    def test_managed_policy_controls_project_hook(self) -> None:
+        self.write_policy(project=True)
         self.assertEqual(
             component_hook.hook_enabled("project-guidance-hook", self.policy),
             (True, None),
-        )
-        self.assertEqual(
-            component_hook.hook_enabled("subagent-audit-hook", self.policy),
-            (False, None),
         )
 
     def test_invalid_or_symlinked_policy_fails_closed(self) -> None:
@@ -85,7 +80,7 @@ class ComponentHookTests(unittest.TestCase):
         self.assertIn("symbolic link", error or "")
 
     def test_disabled_hook_exits_without_invoking_handler(self) -> None:
-        self.write_policy(project=False, subagent=False)
+        self.write_policy(project=False)
         env = os.environ.copy()
         env["CODEX_HOME"] = str(self.codex_home)
         completed = subprocess.run(

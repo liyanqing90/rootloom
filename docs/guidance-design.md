@@ -49,7 +49,7 @@ Those patterns create prompt weight, stale duplication, noisy diffs, and false c
 
 ## The refined global result
 
-The global working agreement has seven compact concerns:
+The global working agreement has eight compact concerns:
 
 - authority and source-of-truth precedence;
 - autonomy boundaries for answer/review versus implementation requests;
@@ -57,7 +57,8 @@ The global working agreement has seven compact concerns:
 - evidence and completion standards;
 - workflow routing to installed Skills;
 - automatic project-guidance behavior;
-- delegation and communication limits.
+- personal risk analysis and verification intelligence;
+- explicit-only delegation and concise communication.
 
 It intentionally contains no repository commands, framework preferences, project architecture, personality prose, or duplicated tool manuals.
 
@@ -71,7 +72,7 @@ The deterministic managed block owns facts that can be regenerated safely:
 - package manager and canonical commands;
 - verification contract.
 
-The user-owned section below it may contain only durable, evidence-cited invariants such as ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture or migration documents.
+The user-owned section below it may contain only durable, evidence-cited invariants such as ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture or migration documents. Optional `.project-memory/` complements guidance with reviewable risks and failure lessons; it never replaces `AGENTS.md` authority or current repository evidence.
 
 Nested guidance is created lazily. A folder deserves its own `AGENTS.md` only when it has a distinct manifest, commands, ownership, contracts, or operational rules. Ordinary directories and individual files do not.
 

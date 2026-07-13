@@ -1,0 +1,4 @@
+interface:
+  display_name: "Project Memory"
+  short_description: "Keep project risks and failure lessons reusable"
+  default_prompt: "Use $project-memory to inspect or record durable project knowledge."

@@ -18,7 +18,7 @@ from typing import Any, Iterator
 PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 
-from rootloom_lock import LockBusyError, LockFileError, hardened_lock
+from rootloom_lock import LockBusyError, LockFileError, simple_lock
 
 try:
     import tomllib
@@ -217,7 +217,7 @@ def guidance_lock(project_root: Path) -> Iterator[Path]:
 
     lock_path = _git_common_dir(project_root) / "rootloom-guidance.lock"
     try:
-        with hardened_lock(lock_path):
+        with simple_lock(lock_path):
             yield lock_path
     except LockBusyError as exc:
         raise RuntimeError("guidance lock is busy") from exc

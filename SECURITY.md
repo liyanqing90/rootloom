@@ -32,15 +32,15 @@ The automatic project-guidance path:
 The explicit global setup path:
 
 - previews all targets before writing;
-- maps coherent capability selections to documented Codex-home files and at most three `[agents]` config keys;
-- gates the two lifecycle Hooks independently through a managed, fail-closed component policy;
+- maps the Personal Core capability selection to documented Codex-home files;
+- gates the project-guidance Hook through a managed, fail-closed component policy;
 - refuses unmanaged conflicts and symlinks;
 - backs up replacements and records pre/post hashes;
-- serializes setup/rollback, prepares recovery state before mutation, compensates failed state commits, writes atomically, refuses rollback over later managed edits, restores recorded modes, and preserves unrelated `config.toml` additions during semantic rollback;
+- serializes setup/rollback with an ordinary local lock, writes each target atomically, refuses rollback over later managed edits, and restores recorded content and modes;
 - serializes project-guidance writes, rejects symlinked/out-of-repository evidence, and rechecks the exact guidance snapshot before replacement;
 - does not change credentials, providers, MCP servers, plugins, apps, or remote systems.
 
-When `delegation-control` is selected, the SubagentStart budget Hook is advisory. It records opaque session hashes and child IDs under the plugin's private data directory, but the current Hook API cannot cancel a newly starting child. The deterministic runner provides stronger local stage gates; neither path replaces external OS/container, credential, network, branch, review, or CI controls.
+Personal setup is not cross-file crash-atomic and does not defend against a hostile same-user process. Its review bundle is mutable local evidence, not an immutable audit record. Enterprise approval, protected deletion, signed/attributable decisions, hardened Artifact binding, and recovery journals belong to the separately retained Assurance product and are not security claims of `main`.
 
 It does not replace Codex trust decisions, hook review, sandboxing, command Rules, operating-system permissions, code review, or CI. A report that demonstrates bypass of one of the plugin's documented safety gates is in scope.
 

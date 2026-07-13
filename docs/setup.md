@@ -1,114 +1,71 @@
 # Setup, update, and rollback
 
-Installing the plugin exposes Skills and reviewed lifecycle Hooks. Applying the global engineering baseline is a separate explicit operation so a plugin update cannot silently replace personal policy.
+Installing the plugin exposes Skills and the reviewed `SessionStart` Hook definition. Applying global Personal Core assets is a separate explicit operation.
 
-## Install the plugin
+## Install
 
 ```bash
 codex plugin marketplace add liyanqing90/rootloom
 codex plugin add rootloom@rootloom
 ```
 
-Start a new task, open `/hooks`, and review both bundled commands:
+Start a new task and inspect `/hooks`. The only Hook is local project-guidance seeding. It does nothing until a valid managed component policy enables it.
 
-- `SessionStart` runs the local project-guidance scanner.
-- `SubagentStart` records an advisory cumulative child count and audits named role/model routing.
+## Presets
 
-Plugin Hooks do not run until their current definition is trusted.
+| Preset | Capabilities |
+| --- | --- |
+| `skills-only` | Skills only; Hook disabled |
+| `guidance` | `global-policy`, `project-context` |
+| `personal` | Guidance plus `command-safety`; default |
+| `engineering` | Compatibility alias for `personal` |
 
-An absent component policy disables both bundled Hooks. Choose and apply a capability preset before trusting the Hook definition. Once setup writes `components.json`, each Hook follows its explicit boolean; malformed or symlinked policy also fails closed and emits a warning.
+The empty capability selection used by `skills-only` is persisted as an intentional installed state. `status`, `plan`, and `apply` without a new explicit selection preserve it.
 
-## Choose a capability level
-
-The installer exposes stable capability layers instead of asking users to understand individual files:
-
-| Preset | Capabilities | Subagent control |
-| --- | --- | --- |
-| `skills-only` | Bundled Skills only; no global assets; lifecycle Hooks disabled | No |
-| `guidance` | Global policy + automatic project context | No |
-| `engineering` | Guidance + command safety | No; recommended for normal coding |
-| `delegated` | Engineering + four-role configuration and advisory audit | Configured; native routing not attested |
-| `full` | Delegated + strict sequential-runner profile | Configured; runner provides attested routing |
-
-`delegation-control` is deliberately one unit: four role TOMLs, the concurrent/depth limits, and the advisory audit Hook. Installing only one role or only the counter would create a misleading half-control, so the supported installer does not expose those files as separate user-facing levels.
-
-Inspect the catalog:
+Inspect and apply:
 
 ```bash
-python3 <skill-dir>/scripts/setup_rootloom.py list-components
+python3 <setup-skill>/scripts/setup_rootloom.py list-components
+python3 <setup-skill>/scripts/setup_rootloom.py plan --preset personal
+python3 <setup-skill>/scripts/setup_rootloom.py apply --preset personal
+python3 <setup-skill>/scripts/setup_rootloom.py status
 ```
 
-The default remains `full` for an explicit “install the complete system” request. The recommended normal-development preset is `engineering`, which does not install subagent control.
-
-## Install a level without hand-editing files
-
-Invoke:
-
-```text
-$setup-rootloom
-Show the capability levels, then plan and apply the engineering preset.
-```
-
-The Skill resolves its own script. For diagnostics, the equivalent direct commands are:
+Exact capability selection is also available:
 
 ```bash
-python3 <skill-dir>/scripts/setup_rootloom.py plan --preset engineering
-python3 <skill-dir>/scripts/setup_rootloom.py apply --preset engineering
-python3 <skill-dir>/scripts/setup_rootloom.py status
-```
-
-For the entire system, replace `engineering` with `full`. For a custom capability combination:
-
-```bash
-python3 <skill-dir>/scripts/setup_rootloom.py plan \
+python3 <setup-skill>/scripts/setup_rootloom.py plan \
   --capabilities global-policy,project-context,command-safety
 ```
 
-Available dimensions are `global-policy`, `project-context`, `command-safety`, `delegation-control`, and `high-assurance`. Selecting `high-assurance` automatically closes its `delegation-control` dependency.
+## Managed targets
 
-The setup transaction writes only:
-
-| Target | Ownership |
+| Path | Purpose |
 | --- | --- |
-| `~/.codex/AGENTS.md` | Complete managed global working agreement |
-| `~/.codex/config.toml` | Only the three `[agents]` limit keys; every other key is preserved |
-| `~/.codex/high-assurance.config.toml` | Managed quality-first profile |
-| `~/.codex/agents/*.toml` | Four managed custom-agent roles |
-| `~/.codex/rules/rootloom.rules` | Managed command policy |
-| `~/.codex/.rootloom/components.json` | Selected capability record and independent Hook enablement |
-| `~/.codex/.rootloom/` | Private state and rollback backups |
+| `~/.codex/AGENTS.md` | Personal engineering working agreement |
+| `~/.codex/rules/rootloom.rules` | Command safety policy |
+| `~/.codex/.rootloom/components.json` | Hook enablement |
+| `~/.codex/.rootloom/state.json` | Installed selection and target hashes |
+| `~/.codex/.rootloom/backups/` | Pre-mutation file copies and manifest |
 
-It does not change the default model, reasoning effort, approval policy, sandbox, providers, MCP servers, plugins, or apps.
+Rootloom does not modify ordinary model, reasoning, sandbox, approval, provider, MCP, plugin, or app configuration.
 
-Setup and rollback take a non-blocking cross-process lock under `~/.codex/.rootloom/`; a competing operation fails without touching managed targets. The same hardened opener is shared with project guidance and the Strict Runner: POSIX opens relative to a stable no-follow parent descriptor, Windows uses reparse-point-aware handles, and both reject indirect, non-regular, multi-linked, or replaced lock paths before writing owner data. Apply prepares all backups and the transaction manifest before its first target mutation. Apply target writes, rollback target writes, and their final state commits each share a compensation boundary, so a failure restores the previous files and state. Manifests record original file modes, and rollback restores those modes instead of inheriting a temporary-file default.
+## Safety contract
 
-Failures that return control to Python are compensated immediately. Apply and rollback also journal a Manifest-bound recovery contract before their first mutation; after an abrupt process interruption, run `setup_rootloom.py recover` before apply/rollback. Recovery preflights the complete plan, backups, hashes, modes, current before/after state, and historically versioned target schema before writing. New Manifests record producer version and target type, while the reader retains the implicit 1.2.12 target catalog so a future target rename/removal does not orphan that transaction. This is still not storage-level crash consistency: host failure, power loss, corruption, and parent-directory durability below atomic replacement remain external boundaries.
+Setup:
 
-## Conflicts
+- shows a plan before the Skill applies it;
+- uses an ordinary create-exclusive local lock;
+- refuses symlinked targets and unmarked user-owned conflicts;
+- requires exact authorization before `--replace-conflicts`;
+- copies every replaced file before the first managed target write;
+- writes each target atomically;
+- records post-apply hashes for drift detection;
+- restores original content and POSIX mode during rollback.
 
-The default apply is atomic and refuses:
+This personal contract does not promise whole-transaction crash compensation. If the process stops between file replacements, run `status`, inspect `.rootloom/backups/`, and reconcile the visible mismatch. It also does not defend against a hostile same-user process replacing lock or target paths concurrently.
 
-- user-owned files without the system's managed marker;
-- managed files edited since the previous apply;
-- symlink targets;
-- invalid `config.toml`;
-- any plan containing an unresolved conflict.
-
-An unmarked file that exactly matches the template is adopted safely by adding ownership markers. `--replace-conflicts` exists only for an explicitly reviewed replacement request; the Skill must show the affected paths before using it.
-
-## Command policy
-
-When `command-safety` is selected, the installed Rules intentionally separate local history from publication:
-
-- `git commit` → `allow`;
-- `git push` and release/package publication → `prompt`;
-- destructive reset/forced clean/bulk discard → `forbidden` or `prompt`, depending on recoverability.
-
-Rules use the most restrictive matching decision. A separate broad `git` prompt rule will therefore override the narrower allow. Inspect every active `.rules` file when commits still ask for approval. In a non-interactive run with `approval_policy = "never"`, a `prompt` action cannot be approved and fails; use an allow rule for safe local operations or an interactive profile for genuinely approval-gated actions.
-
-Rules match command argv prefixes, not the contents of nested shell strings. For example, `bash -c 'git push'` is governed first as `bash`, not as a direct `git push`; it can fall through to a broader policy. Treat Rules as defense in depth, not a shell security boundary, and keep dangerous external effects behind sandbox, credentials, branch protection, CI, and human authorization.
-
-Verify the installed policy:
+## Command Rules check
 
 ```bash
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git commit -m test
@@ -116,13 +73,25 @@ codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git pus
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git reset --hard
 ```
 
-## Subagent limits
+Expected decisions are `allow`, `prompt`, and `forbidden`. Rules are argv-prefix policy, not a complete shell security boundary.
 
-When `delegation-control` is selected, `agents.max_threads = 4` is a hard cap on concurrently open agent threads. It is not a lifetime count, so a task may close four children and later create more.
+## Change preset or roll back
 
-The `SubagentStart` Hook keeps an advisory cumulative count per parent session only when `delegation-control` is selected. After four unique children it injects a stop-and-report instruction, but the current Hook API cannot cancel the child. The global working agreement and controlled Skills provide the behavioral total limit. Use the deterministic high-assurance runner when stage order and agent count must be enforced by code.
+Changing capability selection requires rollback first:
 
-The strict high-assurance runner supports Linux, macOS, and WSL, not native Windows. Setup and project seeding have separate Windows code paths, but current public CI validates Linux only.
+```bash
+python3 <setup-skill>/scripts/setup_rootloom.py rollback
+python3 <setup-skill>/scripts/setup_rootloom.py plan --preset guidance
+python3 <setup-skill>/scripts/setup_rootloom.py apply --preset guidance
+```
+
+Rollback preflights every managed file. If a target changed after setup, it stops rather than overwriting the edit. A normal rollback returns to the previous simple backup; `rollback --all` follows that backup chain to the pre-install state.
+
+To remove plugin Skills after global rollback:
+
+```bash
+codex plugin remove rootloom@rootloom
+```
 
 ## Update
 
@@ -131,20 +100,8 @@ codex plugin marketplace upgrade rootloom
 codex plugin add rootloom@rootloom
 ```
 
-Review the changed Hook definition, start a new task, then run `$setup-rootloom` again. The plan will show only changed managed assets.
+Start a new task, inspect the Hook definition again, plan the same preset, and apply.
 
-Changing from one installed capability set to another is intentionally two-step: run `rollback --all`, then plan and apply the new preset. A normal rollback restores the latest update; `--all` follows the transaction chain to the original pre-install baseline instead of guessing whether deselected files should be deleted or preserved.
+## Migrate from Enterprise Assurance 1.2.19
 
-## Roll back
-
-```bash
-python3 <skill-dir>/scripts/setup_rootloom.py rollback
-```
-
-Use `rollback --all` when removing the global setup or changing capability levels. Applying `skills-only` afterward keeps the workflow Skills while installing a policy that disables both Hooks. To remove Skills and Hook definitions too, then run:
-
-```bash
-codex plugin remove rootloom@rootloom
-```
-
-Rollback requires each fully managed file to retain its recorded post-apply hash. `config.toml` is handled semantically: the installer verifies that its three managed `[agents]` values are intact, restores their previous values, and preserves unrelated settings added later—including Codex project-trust entries. Restored files recover their recorded pre-apply mode. If a managed file or managed config value changed, rollback stops instead of deleting that work.
+The setup contracts are intentionally incompatible. Use the 1.2.19 code on `codex/enterprise-assurance` to roll back its setup before installing Personal Core. Do not ask the Personal Core setup to infer or remove custom agents, the high-assurance profile, configuration limits, Human Review state, or recovery journals.

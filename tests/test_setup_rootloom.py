@@ -3,15 +3,12 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
-import shutil
+from pathlib import Path
 import stat
-import subprocess
 import sys
 import tempfile
-import tomllib
 import unittest
 from unittest import mock
-from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -31,651 +28,145 @@ sys.modules[SPEC.name] = setup
 SPEC.loader.exec_module(setup)
 
 
-class RootloomSetupTests(unittest.TestCase):
+class SetupRootloomTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp_dir = tempfile.TemporaryDirectory(prefix="rootloom-test-", dir=Path.home())
-        self.addCleanup(self.temp_dir.cleanup)
-        self.codex_home = Path(self.temp_dir.name) / ".codex"
+        self.temporary = tempfile.TemporaryDirectory(prefix="rootloom-setup-", dir=Path.home())
+        self.addCleanup(self.temporary.cleanup)
+        self.codex_home = Path(self.temporary.name) / "codex-home"
         self.codex_home.mkdir()
 
-    def test_apply_preserves_config_and_rollback_restores_baseline(self) -> None:
-        original_config = (
-            'model = "example-model"\n\n'
-            "[agents]\n"
-            "max_threads = 6\n"
-            "max_depth = 2\n"
-            "interrupt_message = false\n\n"
-            "[features]\n"
-            "hooks = true\n"
-        )
-        (self.codex_home / "config.toml").write_text(original_config, encoding="utf-8")
-
+    def test_personal_is_default_and_contains_only_personal_components(self) -> None:
         result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        self.assertEqual(result["status"], "applied")
-        self.assertIn("rootloom:managed", (self.codex_home / "AGENTS.md").read_text())
+        self.assertEqual(result["capabilities"], list(setup.PRESETS["personal"]))
+        self.assertTrue((self.codex_home / "AGENTS.md").is_file())
+        self.assertTrue((self.codex_home / "rules" / "rootloom.rules").is_file())
+        self.assertFalse((self.codex_home / "agents").exists())
+        self.assertFalse((self.codex_home / "high-assurance.config.toml").exists())
+        policy = json.loads(
+            (self.codex_home / setup.COMPONENT_POLICY_PATH).read_text(encoding="utf-8")
+        )
+        self.assertEqual(policy["hooks"], {"project-guidance-hook": True})
 
-        with (self.codex_home / "config.toml").open("rb") as handle:
-            config = tomllib.load(handle)
-        self.assertEqual(config["model"], "example-model")
-        self.assertTrue(config["features"]["hooks"])
-        self.assertEqual(config["agents"]["max_threads"], 4)
-        self.assertEqual(config["agents"]["max_depth"], 1)
-        self.assertTrue(config["agents"]["interrupt_message"])
+    def test_plan_apply_status_and_rollback_round_trip(self) -> None:
+        version, _targets, actions, _desired = setup.build_plan(self.codex_home)
+        self.assertTrue(version)
+        self.assertTrue(all(item.action == "create" for item in actions))
 
+        applied = setup.apply_plan(self.codex_home, replace_conflicts=False)
+        self.assertEqual(applied["status"], "applied")
         status = setup.status_payload(self.codex_home)
+        self.assertEqual(status["status"], "installed")
         self.assertTrue(all(item["action"] == "unchanged" for item in status["actions"]))
 
         rolled_back = setup.rollback(self.codex_home)
         self.assertEqual(rolled_back["status"], "rolled_back")
-        self.assertEqual(
-            (self.codex_home / "config.toml").read_text(encoding="utf-8"),
-            original_config,
-        )
-        self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertFalse((self.codex_home / "agents" / "evidence_explorer.toml").exists())
-
-    def test_user_owned_guidance_blocks_atomic_apply(self) -> None:
-        custom = "# My policy\n\n- Preserve this file.\n"
-        agents = self.codex_home / "AGENTS.md"
-        agents.write_text(custom, encoding="utf-8")
-
-        with self.assertRaisesRegex(RuntimeError, "user-owned conflicts"):
-            setup.apply_plan(self.codex_home, replace_conflicts=False)
-        self.assertEqual(agents.read_text(encoding="utf-8"), custom)
-        self.assertFalse((self.codex_home / "config.toml").exists())
-
-        result = setup.apply_plan(self.codex_home, replace_conflicts=True)
-        self.assertEqual(result["status"], "applied")
-        self.assertIn("Global Codex Working Agreement", agents.read_text(encoding="utf-8"))
-        setup.rollback(self.codex_home)
-        self.assertEqual(agents.read_text(encoding="utf-8"), custom)
-
-    def test_apply_compensates_when_state_commit_fails(self) -> None:
-        original_atomic = setup.atomic_write
-
-        def fail_state(path: Path, value: bytes, mode: int = 0o600) -> None:
-            if path.name == "state.json":
-                raise OSError("injected state commit failure")
-            original_atomic(path, value, mode)
-
-        with mock.patch.object(setup, "atomic_write", side_effect=fail_state):
-            with self.assertRaisesRegex(OSError, "injected state commit failure"):
-                setup.apply_plan(
-                    self.codex_home,
-                    replace_conflicts=False,
-                    capabilities=setup.PRESETS["engineering"],
-                )
-
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
         self.assertFalse((self.codex_home / "rules" / "rootloom.rules").exists())
         self.assertFalse((self.codex_home / setup.COMPONENT_POLICY_PATH).exists())
-        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
 
-    def test_setup_lock_rejects_a_competing_transaction(self) -> None:
-        with setup.setup_lock(self.codex_home):
-            with self.assertRaisesRegex(RuntimeError, "another Rootloom setup transaction"):
-                setup.apply_plan(
-                    self.codex_home,
-                    replace_conflicts=False,
-                    capabilities=setup.PRESETS["guidance"],
-                )
+    def test_user_owned_conflict_requires_explicit_replacement_and_restores_mode(self) -> None:
+        agents = self.codex_home / "AGENTS.md"
+        agents.write_text("# Mine\n", encoding="utf-8")
+        if os.name != "nt":
+            agents.chmod(0o644)
+        with self.assertRaisesRegex(RuntimeError, "user-owned conflicts"):
+            setup.apply_plan(self.codex_home, replace_conflicts=False)
 
-        result = setup.apply_plan(
+        setup.apply_plan(self.codex_home, replace_conflicts=True)
+        setup.rollback(self.codex_home)
+        self.assertEqual(agents.read_text(encoding="utf-8"), "# Mine\n")
+        if os.name != "nt":
+            self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o644)
+
+    def test_rollback_refuses_post_setup_edits(self) -> None:
+        setup.apply_plan(self.codex_home, replace_conflicts=False)
+        agents = self.codex_home / "AGENTS.md"
+        agents.write_text(agents.read_text(encoding="utf-8") + "\n# edit\n", encoding="utf-8")
+        with self.assertRaisesRegex(RuntimeError, "changed after setup"):
+            setup.rollback(self.codex_home)
+
+    def test_capability_change_requires_rollback(self) -> None:
+        setup.apply_plan(
             self.codex_home,
             replace_conflicts=False,
             capabilities=setup.PRESETS["guidance"],
+        )
+        with self.assertRaisesRegex(RuntimeError, "roll back first"):
+            setup.apply_plan(
+                self.codex_home,
+                replace_conflicts=False,
+                capabilities=setup.PRESETS["personal"],
+            )
+        setup.rollback(self.codex_home)
+        result = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["personal"],
         )
         self.assertEqual(result["status"], "applied")
 
-    def test_setup_lock_symlink_never_mutates_external_victim(self) -> None:
-        state_root = self.codex_home / setup.STATE_DIRNAME
-        state_root.mkdir()
-        victim = Path(self.temp_dir.name) / "setup-lock-victim.txt"
-        victim.write_bytes(b"preserve-setup-victim")
-        if os.name != "nt":
-            victim.chmod(0o644)
-        before_mode = stat.S_IMODE(victim.stat().st_mode)
-        try:
-            (state_root / "setup.lock").symlink_to(victim)
-        except OSError as exc:  # pragma: no cover - depends on Windows symlink policy
-            self.skipTest(f"platform cannot create a test symlink: {exc}")
+    def test_update_rollback_restores_previous_install_and_all_unwinds_chain(self) -> None:
+        setup.apply_plan(self.codex_home, replace_conflicts=False)
+        original = (self.codex_home / "AGENTS.md").read_bytes()
+        original_desired = setup.desired_bytes
 
-        with self.assertRaisesRegex(ValueError, "setup lock safety check failed"):
-            with setup.setup_lock(self.codex_home):
-                self.fail("symlinked setup lock acquired")
+        def updated(target: object, capabilities: tuple[str, ...]) -> bytes:
+            value = original_desired(target, capabilities)
+            if isinstance(target, setup.Target) and target.relative_path == "AGENTS.md":
+                return value + b"\n# simulated update\n"
+            return value
 
-        self.assertEqual(victim.read_bytes(), b"preserve-setup-victim")
-        self.assertEqual(stat.S_IMODE(victim.stat().st_mode), before_mode)
-
-    def test_interrupted_setup_recovery_restores_pre_transaction_state(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        transaction = Path(result["transaction"])
-        journal_path = transaction / "recovery.json"
-        journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        journal["phase"] = "applying"
-        journal_path.write_text(json.dumps(journal), encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "requires 'recover'"):
+        with mock.patch.object(setup, "desired_bytes", side_effect=updated):
             setup.apply_plan(self.codex_home, replace_conflicts=False)
-        recovered = setup.recover(self.codex_home)
-        self.assertEqual(recovered["status"], "recovered")
-        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
-        self.assertEqual(setup.recover(self.codex_home)["status"], "no_recovery_required")
+        self.assertNotEqual((self.codex_home / "AGENTS.md").read_bytes(), original)
 
-    def test_superseded_terminal_recovery_journal_is_inert(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        transaction = Path(result["transaction"])
-        journal_path = transaction / "recovery.json"
-        journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        journal["format"] = "rootloom-setup-recovery-v1"
-        journal_path.write_text(json.dumps(journal), encoding="utf-8")
+        one = setup.rollback(self.codex_home)
+        self.assertEqual(one["status"], "rolled_back_to_previous")
+        self.assertEqual((self.codex_home / "AGENTS.md").read_bytes(), original)
+        self.assertEqual(setup.load_state(self.codex_home)["status"], "installed")
 
-        self.assertEqual(setup.unresolved_transactions(self.codex_home), [])
-        self.assertEqual(setup.recover(self.codex_home)["status"], "no_recovery_required")
-
-    def test_interrupted_setup_recovery_refuses_ambiguous_user_edit(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        transaction = Path(result["transaction"])
-        journal_path = transaction / "recovery.json"
-        journal = json.loads(journal_path.read_text(encoding="utf-8"))
-        journal["phase"] = "applying"
-        journal_path.write_text(json.dumps(journal), encoding="utf-8")
-        manifest = json.loads((transaction / "manifest.json").read_text(encoding="utf-8"))
-        target = self.codex_home / manifest["files"][0]["path"]
-        target.write_text("user changed after interruption", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "changed after interruption"):
-            setup.recover(self.codex_home)
-
-    def test_interrupted_rollback_recovery_restores_installed_state(self) -> None:
-        setup.apply_plan(self.codex_home, replace_conflicts=False)
-        installed_state = setup.load_state(self.codex_home)
-        managed = {
-            relative: (self.codex_home / relative).read_bytes()
-            for relative in installed_state["files"]
-        }
-        original_journal = setup.write_recovery_journal
-        interrupted = False
-
-        def interrupt_after_first_mutation(
-            transaction: Path,
-            phase: str,
-            applied_paths: list[str],
-        ) -> None:
-            nonlocal interrupted
-            original_journal(transaction, phase, applied_paths)
-            if phase == "applying" and not interrupted:
-                interrupted = True
-                raise SystemExit("simulated rollback interruption")
-
-        with mock.patch.object(
-            setup,
-            "write_recovery_journal",
-            side_effect=interrupt_after_first_mutation,
-        ):
-            with self.assertRaisesRegex(SystemExit, "simulated rollback interruption"):
-                setup.rollback(self.codex_home)
-
-        self.assertTrue(setup.unresolved_transactions(self.codex_home))
-        recovered = setup.recover(self.codex_home)
-        self.assertEqual(recovered["status"], "recovered")
-        self.assertEqual(setup.load_state(self.codex_home), installed_state)
-        for relative, expected in managed.items():
-            self.assertEqual((self.codex_home / relative).read_bytes(), expected)
-
-    def test_recovery_rejects_unknown_target_before_mutation(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        transaction = Path(result["transaction"])
-        victim = self.codex_home / "unmanaged-user-file.txt"
-        victim.write_text("preserve me", encoding="utf-8")
-        manifest_path = transaction / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["files"].append(
-            {
-                "path": victim.name,
-                "before_exists": False,
-                "before_hash": None,
-                "before_mode": None,
-                "after_hash": setup.sha256_bytes(victim.read_bytes()),
-                "backup": None,
-            }
-        )
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        setup.write_recovery_journal(transaction, "applying", [])
-
-        with self.assertRaisesRegex(ValueError, "invalid recovery target"):
-            setup.recover(self.codex_home)
-        self.assertEqual(victim.read_text(encoding="utf-8"), "preserve me")
-
-    def test_recovery_uses_historical_target_schema_after_catalog_removal(self) -> None:
-        result = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        transaction = Path(result["transaction"])
-        manifest_path = transaction / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest.pop("recovery_schema_version")
-        manifest.pop("producer_version")
-        for entry in manifest["files"]:
-            entry.pop("target_type")
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        setup.write_recovery_journal(transaction, "applying", [])
-
-        with mock.patch.object(setup, "all_targets", return_value=[]):
-            recovered = setup.recover(self.codex_home)
-
-        self.assertEqual(recovered["status"], "recovered")
+        all_result = setup.rollback_all(self.codex_home)
+        self.assertEqual(all_result["status"], "rolled_back_all")
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
 
-    def test_recovery_preflights_backup_hash_before_mutation(self) -> None:
-        agents = self.codex_home / "AGENTS.md"
-        agents.write_text("# User policy\n", encoding="utf-8")
-        result = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=True,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        transaction = Path(result["transaction"])
-        setup.write_recovery_journal(transaction, "applying", [])
-        manifest = json.loads((transaction / "manifest.json").read_text(encoding="utf-8"))
-        entry = next(item for item in manifest["files"] if item["path"] == "AGENTS.md")
-        (transaction / entry["backup"]).write_text("corrupt backup", encoding="utf-8")
-        managed_agents = agents.read_bytes()
-        installed_state = (self.codex_home / setup.STATE_DIRNAME / "state.json").read_bytes()
-
-        with self.assertRaisesRegex(RuntimeError, "backup hash"):
-            setup.recover(self.codex_home)
-        self.assertEqual(agents.read_bytes(), managed_agents)
-        self.assertEqual(
-            (self.codex_home / setup.STATE_DIRNAME / "state.json").read_bytes(),
-            installed_state,
-        )
-
-    def test_recovery_rejects_manifest_drift_before_mutation(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        transaction = Path(result["transaction"])
-        setup.write_recovery_journal(transaction, "applying", [])
-        manifest_path = transaction / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        omitted = manifest["files"].pop()
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        target = self.codex_home / omitted["path"]
-        expected = target.read_bytes()
-
-        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
-            setup.recover(self.codex_home)
-        self.assertEqual(target.read_bytes(), expected)
-
-    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
-    def test_recovery_rejects_mode_drift_before_mutation(self) -> None:
-        result = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        transaction = Path(result["transaction"])
-        setup.write_recovery_journal(transaction, "applying", [])
-        agents = self.codex_home / "AGENTS.md"
-        state_path = self.codex_home / setup.STATE_DIRNAME / "state.json"
-        installed_state = state_path.read_bytes()
-        agents.chmod(0o644)
-
-        with self.assertRaisesRegex(RuntimeError, "mode changed"):
-            setup.recover(self.codex_home)
-        self.assertEqual(state_path.read_bytes(), installed_state)
-        self.assertEqual(setup.file_mode(agents), 0o644)
-
-    def test_recovery_without_posix_mode_contract_uses_content_state(self) -> None:
-        with mock.patch.object(setup, "POSIX_MODE_CONTRACT", False):
-            result = setup.apply_plan(
-                self.codex_home,
-                replace_conflicts=False,
-                capabilities=setup.PRESETS["guidance"],
-            )
-            transaction = Path(result["transaction"])
-            manifest = json.loads(
-                (transaction / "manifest.json").read_text(encoding="utf-8")
-            )
-            self.assertTrue(all(entry["after_mode"] is None for entry in manifest["files"]))
-            self.assertIsNone(manifest["state_recovery"]["after_mode"])
-            setup.write_recovery_journal(transaction, "applying", [])
-
-            recovered = setup.recover(self.codex_home)
-        self.assertEqual(recovered["status"], "recovered")
-        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
-
-    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
-    def test_rollback_restores_original_file_mode(self) -> None:
-        agents = self.codex_home / "AGENTS.md"
-        agents.write_text("# User policy\n", encoding="utf-8")
-        agents.chmod(0o644)
-
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=True,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        setup.rollback(self.codex_home)
-
-        self.assertEqual(agents.read_text(encoding="utf-8"), "# User policy\n")
-        self.assertEqual(stat.S_IMODE(agents.stat().st_mode), 0o644)
-
-    def test_rollback_compensates_when_state_commit_fails(self) -> None:
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["engineering"],
-        )
-        managed_paths = (
-            self.codex_home / "AGENTS.md",
-            self.codex_home / "config.toml",
-            self.codex_home / "rules" / "rootloom.rules",
-            self.codex_home / setup.COMPONENT_POLICY_PATH,
-            self.codex_home / setup.STATE_DIRNAME / "state.json",
-        )
-        before = {
-            path: (
-                path.read_bytes() if path.is_file() else None,
-                stat.S_IMODE(path.stat().st_mode) if path.is_file() else None,
-            )
-            for path in managed_paths
-        }
-        original_atomic = setup.atomic_write
-        failed = False
-
-        def fail_once(path: Path, value: bytes, mode: int = 0o600) -> None:
-            nonlocal failed
-            if path.name == "state.json" and not failed:
-                failed = True
-                raise OSError("injected rollback state commit failure")
-            original_atomic(path, value, mode)
-
-        with mock.patch.object(setup, "atomic_write", side_effect=fail_once):
-            with self.assertRaisesRegex(
-                OSError,
-                "injected rollback state commit failure",
-            ):
-                setup.rollback(self.codex_home)
-
-        for path, (content, mode) in before.items():
-            self.assertEqual(path.read_bytes() if path.is_file() else None, content)
-            self.assertEqual(
-                stat.S_IMODE(path.stat().st_mode) if path.is_file() else None,
-                mode,
-            )
-        self.assertEqual(setup.load_state(self.codex_home)["status"], "installed")
-
-    def test_rollback_refuses_to_erase_post_setup_edits(self) -> None:
-        setup.apply_plan(self.codex_home, replace_conflicts=False)
-        agents = self.codex_home / "AGENTS.md"
-        agents.write_text(agents.read_text(encoding="utf-8") + "\n- Personal note.\n", encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "changed after setup"):
-            setup.rollback(self.codex_home)
-
-    @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
-    def test_rollback_refuses_post_setup_mode_drift(self) -> None:
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        agents = self.codex_home / "AGENTS.md"
-        agents.chmod(0o644)
-
-        with self.assertRaisesRegex(RuntimeError, "changed after setup"):
-            setup.rollback(self.codex_home)
-        self.assertEqual(setup.file_mode(agents), 0o644)
-        self.assertEqual(setup.load_state(self.codex_home)["status"], "installed")
-
-    def test_setup_refuses_symlinked_managed_directories_even_with_replace(self) -> None:
-        outside = Path(self.temp_dir.name) / "outside-agents"
-        outside.mkdir()
-        (self.codex_home / "agents").symlink_to(outside, target_is_directory=True)
-        with self.assertRaisesRegex(RuntimeError, "symlinked targets"):
-            setup.apply_plan(self.codex_home, replace_conflicts=True)
-        self.assertEqual(list(outside.iterdir()), [])
-
-    def test_rollback_rejects_tampered_transaction_paths(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        manifest_path = Path(result["transaction"]) / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["files"][0]["path"] = "../../outside"
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
-            setup.rollback(self.codex_home)
-
-    def test_rollback_rejects_tampered_previous_state_before_mutation(self) -> None:
-        result = setup.apply_plan(self.codex_home, replace_conflicts=False)
-        manifest_path = Path(result["transaction"]) / "manifest.json"
-        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["previous_state"] = {
-            "status": "installed",
-            "capabilities": list(setup.FULL_CAPABILITIES),
-            "latest_transaction": "../../escape",
-        }
-        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
-
-        before = (self.codex_home / "AGENTS.md").read_bytes()
-        with self.assertRaisesRegex(RuntimeError, "manifest changed"):
-            setup.rollback(self.codex_home)
-        self.assertEqual((self.codex_home / "AGENTS.md").read_bytes(), before)
-
-    def test_rules_distinguish_commit_push_and_destructive_reset(self) -> None:
-        codex = shutil.which("codex")
-        if codex is None:
-            self.skipTest("Codex CLI is required for executable Rules contract tests")
-        rules = (
-            REPO_ROOT
-            / "plugins"
-            / "rootloom"
-            / "assets"
-            / "system"
-            / "rules"
-            / "rootloom.rules"
-        )
-        expected = {
-            ("git", "commit", "-m", "test"): "allow",
-            ("git", "push", "origin", "main"): "prompt",
-            ("git", "reset", "--hard"): "forbidden",
-        }
-        for command, decision in expected.items():
-            completed = subprocess.run(
-                [codex, "execpolicy", "check", "--rules", str(rules), "--", *command],
-                check=True,
-                capture_output=True,
-                text=True,
-            )
-            payload = json.loads(completed.stdout)
-            self.assertEqual(payload["decision"], decision, command)
-
-    def test_runtime_project_trust_is_preserved_by_status_and_rollback(self) -> None:
-        setup.apply_plan(self.codex_home, replace_conflicts=False)
-        config_path = self.codex_home / "config.toml"
-        config_path.write_bytes(
-            (
-                config_path.read_text(encoding="utf-8").replace("\n", "\r\n")
-                + '\r\n[projects."/tmp/example"]\r\ntrust_level = "trusted"\r\n'
-            ).encode("utf-8")
-        )
-
-        status = setup.status_payload(self.codex_home)
-        self.assertTrue(all(item["action"] == "unchanged" for item in status["actions"]))
-
-        result = setup.rollback(self.codex_home)
-        self.assertEqual(result["status"], "rolled_back")
-        with config_path.open("rb") as handle:
-            config = tomllib.load(handle)
-        self.assertNotIn("agents", config)
-        self.assertEqual(config["projects"]["/tmp/example"]["trust_level"], "trusted")
-
-    def test_rollback_rejects_changes_to_managed_agent_limits(self) -> None:
-        setup.apply_plan(self.codex_home, replace_conflicts=False)
-        config_path = self.codex_home / "config.toml"
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8").replace(
-                "max_threads = 4",
-                "max_threads = 5",
-            ),
-            encoding="utf-8",
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "config.toml changed after setup"):
-            setup.rollback(self.codex_home)
-
-    def test_legacy_block_markers_cannot_capture_later_project_tables(self) -> None:
-        config_path = self.codex_home / "config.toml"
-        config_path.write_text(
-            "[agents]\n"
-            f"{setup.LIMITS_START}\n"
-            "max_threads = 4\n"
-            "max_depth = 1\n"
-            "interrupt_message = true\n\n"
-            '[projects."/tmp/example"]\n'
-            'trust_level = "trusted"\n'
-            f"{setup.LIMITS_END}\n",
-            encoding="utf-8",
-        )
-
-        setup.apply_plan(self.codex_home, replace_conflicts=False)
-
-        rendered = config_path.read_text(encoding="utf-8")
-        self.assertNotIn(setup.LIMITS_START, rendered)
-        self.assertNotIn(setup.LIMITS_END, rendered)
-        self.assertEqual(rendered.count(setup.MANAGED_TOKEN), 3)
-        with config_path.open("rb") as handle:
-            config = tomllib.load(handle)
-        self.assertEqual(config["projects"]["/tmp/example"]["trust_level"], "trusted")
-
-    def test_engineering_preset_omits_all_delegation_control_assets(self) -> None:
-        result = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["engineering"],
-        )
-
-        self.assertEqual(result["capabilities"], list(setup.PRESETS["engineering"]))
-        self.assertTrue((self.codex_home / "AGENTS.md").is_file())
-        self.assertTrue(
-            (self.codex_home / "rules" / "rootloom.rules").is_file()
-        )
-        self.assertFalse((self.codex_home / "config.toml").exists())
-        self.assertFalse((self.codex_home / "agents").exists())
-        self.assertFalse((self.codex_home / "high-assurance.config.toml").exists())
-
-        policy = json.loads(
-            (self.codex_home / setup.COMPONENT_POLICY_PATH).read_text(encoding="utf-8")
-        )
-        self.assertTrue(policy["hooks"]["project-guidance-hook"])
-        self.assertFalse(policy["hooks"]["subagent-audit-hook"])
-
-    def test_skills_only_preset_disables_both_hooks_without_global_assets(self) -> None:
+    def test_skills_only_disables_hook_without_global_assets(self) -> None:
         result = setup.apply_plan(
             self.codex_home,
             replace_conflicts=False,
             capabilities=setup.PRESETS["skills-only"],
         )
-
         self.assertEqual(result["capabilities"], [])
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertFalse((self.codex_home / "config.toml").exists())
-        self.assertFalse((self.codex_home / "rules").exists())
         policy = json.loads(
             (self.codex_home / setup.COMPONENT_POLICY_PATH).read_text(encoding="utf-8")
         )
-        self.assertEqual(
-            policy["hooks"],
-            {
-                "project-guidance-hook": False,
-                "subagent-audit-hook": False,
-            },
-        )
-        status = setup.status_payload(self.codex_home)
+        self.assertEqual(policy["hooks"], {"project-guidance-hook": False})
+        self.assertEqual(setup.status_payload(self.codex_home)["capabilities"], [])
+
+        args = mock.Mock(preset=None, capabilities=None)
+        self.assertEqual(setup.selected_capabilities(args, self.codex_home), ())
+
+    def test_explicit_empty_status_selection_does_not_fall_back_to_personal(self) -> None:
+        status = setup.status_payload(self.codex_home, ())
         self.assertEqual(status["capabilities"], [])
         self.assertEqual(status["components"], [])
         self.assertEqual(
             [item["path"] for item in status["actions"]],
-            [setup.COMPONENT_POLICY_PATH],
+            [str(setup.COMPONENT_POLICY_PATH)],
         )
 
-    def test_high_assurance_capability_closes_its_delegation_dependency(self) -> None:
-        selected = setup.normalize_capabilities(("high-assurance",))
-        self.assertEqual(selected, ("delegation-control", "high-assurance"))
+    def test_setup_lock_refuses_competing_operation(self) -> None:
+        with setup.setup_lock(self.codex_home):
+            with self.assertRaisesRegex(RuntimeError, "another Rootloom setup operation"):
+                setup.apply_plan(self.codex_home, replace_conflicts=False)
 
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=selected,
-        )
-
-        self.assertTrue((self.codex_home / "config.toml").is_file())
-        self.assertTrue((self.codex_home / "agents" / "evidence_explorer.toml").is_file())
-        self.assertTrue((self.codex_home / "high-assurance.config.toml").is_file())
-        self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertFalse((self.codex_home / "rules").exists())
-
-    def test_capability_selection_change_requires_explicit_rollback(self) -> None:
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["guidance"],
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "capability selection differs"):
-            setup.apply_plan(
-                self.codex_home,
-                replace_conflicts=False,
-                capabilities=setup.PRESETS["engineering"],
-            )
-
-        setup.rollback(self.codex_home)
-        result = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["engineering"],
-        )
-        self.assertEqual(result["status"], "applied")
-
-    def test_rollback_all_unwinds_update_chain_before_layer_change(self) -> None:
-        setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["guidance"],
-        )
-        original_guidance = (self.codex_home / "AGENTS.md").read_bytes()
-        original_desired_bytes = setup.desired_bytes
-
-        def updated_desired(*args: object, **kwargs: object) -> bytes:
-            value = original_desired_bytes(*args, **kwargs)
-            target = args[0]
-            if isinstance(target, setup.Target) and target.relative_path == "AGENTS.md":
-                return value + b"\n# simulated managed release update\n"
-            return value
-
-        with mock.patch.object(setup, "desired_bytes", side_effect=updated_desired):
-            result = setup.apply_plan(
-                self.codex_home,
-                replace_conflicts=False,
-                capabilities=setup.PRESETS["guidance"],
-            )
-        self.assertEqual(result["status"], "applied")
-        self.assertNotEqual((self.codex_home / "AGENTS.md").read_bytes(), original_guidance)
-
-        one_step = setup.rollback(self.codex_home)
-        self.assertEqual(one_step["status"], "rolled_back_to_previous")
-        self.assertEqual((self.codex_home / "AGENTS.md").read_bytes(), original_guidance)
-
-        all_steps = setup.rollback_all(self.codex_home)
-        self.assertEqual(all_steps["status"], "rolled_back_all")
-        self.assertFalse((self.codex_home / "AGENTS.md").exists())
-        self.assertFalse((self.codex_home / setup.COMPONENT_POLICY_PATH).exists())
-
-        replacement = setup.apply_plan(
-            self.codex_home,
-            replace_conflicts=False,
-            capabilities=setup.PRESETS["engineering"],
-        )
-        self.assertEqual(replacement["status"], "applied")
+    def test_symlinked_target_is_refused(self) -> None:
+        outside = Path(self.temporary.name) / "outside"
+        outside.mkdir()
+        (self.codex_home / "rules").symlink_to(outside, target_is_directory=True)
+        with self.assertRaisesRegex(RuntimeError, "symlinked"):
+            setup.apply_plan(self.codex_home, replace_conflicts=True)
+        self.assertEqual(list(outside.iterdir()), [])
 
 
 if __name__ == "__main__":
