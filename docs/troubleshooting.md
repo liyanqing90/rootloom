@@ -97,7 +97,7 @@ This is the intended result after an explicitly authorized `--allow-protected-pa
 
 ## Decision Pair verification reports `INVALID` or `STALE`
 
-Run `review_decision.py verify --repo ... --run-dir ...` without reviewer or decision flags. `VALID`/0 means the canonical Result, Terminal, Summary, repository/protected-deletion commitment, and Run Directory identity still agree. `INVALID`/9 means the persisted pair is malformed, inconsistent, non-canonical, or no longer a regular single-link private pair. `STALE`/12 means the pair is structurally valid but the current repository commitment no longer matches; rerun the high-assurance workflow rather than editing the evidence. Verification is read-only and does not refresh, repair, or sign evidence.
+Run `review_decision.py verify --repo ... --run-dir ...` without reviewer or decision flags. `VALID`/0 means the canonical Result, Terminal, Summary, repository/protected-deletion commitment, and Run Directory identity still agree. `INVALID`/9 means persisted Binding/Pair schema is malformed, inconsistent, noncanonical, over budget, path-unsafe, or no longer a regular single-link private pair. `STALE`/12 is emitted only after that structure is valid and the current repository, reviewed Artifact, or protected-deletion state no longer matches. Stdout remains the one-word status; stderr contains one bounded diagnostic reason without Artifact contents. Rerun the high-assurance workflow rather than editing evidence. Verification is read-only and does not refresh, repair, or sign it.
 
 ## The strict runner rejects a verification entrypoint change
 

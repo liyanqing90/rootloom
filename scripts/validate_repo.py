@@ -444,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.22"',
+            'RUNNER_VERSION = "2.23"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -577,6 +577,40 @@ def validate_system_assets(errors: list[str]) -> None:
                 "executable_identity",
                 "O_NOFOLLOW",
             ),
+            runner.parent / "human_review" / "constants.py": (
+                "MAX_HUMAN_REVIEW_DECISION_BYTES",
+                "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
+                "VERIFY_INVALID_EXIT = 9",
+                "VERIFY_STALE_EXIT = 12",
+            ),
+            runner.parent / "human_review" / "schema.py": (
+                "validate_human_review_binding_v4_schema",
+                "validate_repository_state_commitment",
+                "validate_run_directory_identity",
+                "validate_protected_deletion_commitment",
+                "validate_artifact_map",
+                "result-core hash does not match Result",
+            ),
+            runner.parent / "human_review" / "binding.py": (
+                "recompute_human_review_binding",
+                "expected_repository_state_commitment",
+            ),
+            runner.parent / "human_review" / "pinned_io.py": (
+                "read_decision_pair_payloads",
+                "read_pinned_private_artifact",
+            ),
+            runner.parent / "human_review" / "decision.py": (
+                "def decide",
+                "validate_decision_payload_budget",
+                "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
+                "rootloom-human-review-decision-v4",
+                "human review decision commit failed",
+            ),
+            runner.parent / "human_review" / "verify.py": (
+                "StaleDecisionPair",
+                "verify_decision_pair",
+                "binding no longer matches current reviewed state",
+            ),
         }.items():
             if not module.is_file():
                 errors.append(f"runner ownership module is missing: {module}")
@@ -591,25 +625,13 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         review_text = review_decision.read_text(encoding="utf-8")
         for contract in (
-            "rootloom-human-review-decision-v4",
-            "repository_lock",
-            "pinned_empty_private_artifact",
-            "append_pinned_private_artifact",
-            "truncate_pinned_private_artifact",
-            "expected_repository_state_commitment",
-            "read_human_review_result",
-            "human_review_full_result_sha256",
-            "Result run_dir does not match",
-            "unsupported human review binding version",
-            "human review metadata-only floor is missing or invalid",
-            "human review repository commitment is missing or invalid",
-            "human review binding drifted",
-            "human review decision commit failed",
-            "human review summary already exists",
             "verify_decision_pair",
-            "read_decision_pair",
-            "decision_record_sha256",
+            "validate_human_review_binding_v4_schema",
+            "validate_decision_payload_budget",
+            "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
+            "VERIFY_INVALID_EXIT",
             "VERIFY_STALE_EXIT",
+            "bounded_diagnostic",
             'print("VALID")',
             'print("INVALID")',
             'print("STALE")',

@@ -72,6 +72,44 @@ class RunnerGateTests(unittest.TestCase):
         )
         return review_dir
 
+    def run_human_review_verify(self, review_dir: Path) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [
+                sys.executable,
+                str(REVIEW_PATH),
+                "verify",
+                "--repo",
+                str(self.repo),
+                "--run-dir",
+                str(review_dir),
+            ],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+
+    def accepted_human_review_result(self, name: str) -> Path:
+        review_dir = self.make_human_review_result(name)
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        return review_dir
+
+    def mutate_human_review_result(
+        self,
+        review_dir: Path,
+        mutate: object,
+    ) -> None:
+        result_path = review_dir / "result.json"
+        result = json.loads(result_path.read_text(encoding="utf-8"))
+        assert callable(mutate)
+        mutate(result)
+        runner.write_json(result_path, result)
+
     def assert_equal_length_decision_mutation_rejected(
         self,
         name: str,
@@ -2084,6 +2122,190 @@ class RunnerGateTests(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
+    def test_human_review_verify_invalid_schema_always_exits_nine(self) -> None:
+        cases = {
+            "metadata-floor": lambda result: result["human_review_binding"].update(
+                {"final_metadata_only_floor_paths": ["../outside"]}
+            ),
+            "sensitive-path": lambda result: result["human_review_binding"][
+                "state_policy"
+            ].update({"sensitive_paths": ["../outside"]}),
+            "protected-deletion": lambda result: result.update(
+                {"protected_deletions": ["../outside"]}
+            ),
+            "run-directory": lambda result: result["human_review_binding"].update(
+                {
+                    "run_directory": {
+                        "path": str(self.root / "wrong-run"),
+                        "device": "invalid",
+                        "inode": 1,
+                        "mode": 0,
+                    }
+                }
+            ),
+            "repository-commitment": lambda result: result["human_review_binding"].update(
+                {"repository_state": {"format": "invalid"}}
+            ),
+            "artifact-map": lambda result: result["human_review_binding"].update(
+                {"artifacts": {"../outside": {"size": 0, "sha256": "0" * 64}}}
+            ),
+            "protected-commitment": lambda result: result[
+                "human_review_binding"
+            ].update(
+                {
+                    "protected_deletions": {
+                        "unexpected.env": {"state": "exact-missing", "parents": []}
+                    }
+                }
+            ),
+            "result-core-hash": lambda result: result["human_review_binding"].update(
+                {"result_core_sha256": "invalid"}
+            ),
+            "exact-fields": lambda result: result["human_review_binding"].update(
+                {"unexpected": True}
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                review_dir = self.accepted_human_review_result(
+                    f"human-review-verify-invalid-{label}"
+                )
+                self.mutate_human_review_result(review_dir, mutate)
+                verified = self.run_human_review_verify(review_dir)
+                self.assertEqual(verified.returncode, 9, verified.stderr)
+                self.assertEqual(verified.stdout.strip(), "INVALID")
+                self.assertTrue(verified.stderr.strip())
+
+    def test_human_review_verify_invalid_binding_never_recaptures_state(self) -> None:
+        review_dir = self.accepted_human_review_result(
+            "human-review-verify-invalid-before-recapture"
+        )
+        self.mutate_human_review_result(
+            review_dir,
+            lambda result: result["human_review_binding"].update(
+                {"git_head": "not-a-git-object"}
+            ),
+        )
+        with mock.patch.object(
+            runner,
+            "compute_human_review_binding",
+            side_effect=AssertionError("repository recapture must not start"),
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "git_head"):
+                review_decision.verify_decision_pair(self.repo, review_dir)
+
+    def test_human_review_verify_rejects_malformed_protected_commitment(self) -> None:
+        (self.repo / "secrets").mkdir()
+        review_dir = self.root / "human-review-invalid-protected-commitment"
+        review_dir.mkdir()
+        core = {
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "protected_deletions": ["secrets/deleted.env"],
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
+        )
+        binding["protected_deletions"]["secrets/deleted.env"]["parents"][0][
+            "fingerprint"
+        ]["mode"] = 0
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": binding},
+        )
+        verified = self.run_human_review_verify(review_dir)
+        self.assertEqual(verified.returncode, 9, verified.stderr)
+        self.assertEqual(verified.stdout.strip(), "INVALID")
+        self.assertIn("parent mode", verified.stderr)
+
+    def test_human_review_decision_payload_budget_is_exact(self) -> None:
+        payload = b"x" * runner.MAX_HUMAN_REVIEW_DECISION_BYTES
+        review_decision.validate_decision_payload_budget(payload, "Terminal")
+        with self.assertRaisesRegex(runner.PipelineError, "Terminal byte budget"):
+            review_decision.validate_decision_payload_budget(
+                payload + b"x",
+                "Terminal",
+            )
+
+    def test_human_review_verify_diagnostic_is_single_line_and_bounded(self) -> None:
+        diagnostic = review_decision.bounded_diagnostic(
+            runner.PipelineError("reason\n" + "x" * 5000, 8)
+        )
+        self.assertNotIn("\n", diagnostic)
+        self.assertLessEqual(
+            len(diagnostic.encode("utf-8")),
+            review_decision.MAX_HUMAN_REVIEW_DIAGNOSTIC_BYTES,
+        )
+
+    def test_human_review_overlong_reviewer_fails_before_pair_creation(self) -> None:
+        review_dir = self.make_human_review_result("human-review-overlong-reviewer")
+        with self.assertRaisesRegex(runner.PipelineError, "reviewer identity byte budget"):
+            review_decision.decide(
+                self.repo,
+                review_dir,
+                "r" * (review_decision.MAX_HUMAN_REVIEW_IDENTITY_BYTES + 1),
+                "accept",
+            )
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
+
+    def test_human_review_summary_budget_fails_before_pair_creation(self) -> None:
+        review_dir = self.make_human_review_result("human-review-summary-budget")
+        with mock.patch.object(
+            review_decision.decision_module,
+            "decision_summary_payload",
+            return_value=b"s" * (runner.MAX_HUMAN_REVIEW_DECISION_BYTES + 1),
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "Summary byte budget"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
+
+    def test_human_review_terminal_budget_fails_before_pair_creation(self) -> None:
+        review_dir = self.make_human_review_result("human-review-terminal-budget")
+        with mock.patch.object(
+            runner,
+            "encode_ndjson_value",
+            return_value=b"t" * (runner.MAX_HUMAN_REVIEW_DECISION_BYTES + 1),
+        ):
+            with self.assertRaisesRegex(runner.PipelineError, "Terminal byte budget"):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
+
+    def test_human_review_overlong_local_account_fails_before_pair_creation(self) -> None:
+        review_dir = self.make_human_review_result("human-review-overlong-local-account")
+        with mock.patch.object(
+            review_decision.decision_module.getpass,
+            "getuser",
+            return_value="u" * (review_decision.MAX_HUMAN_REVIEW_IDENTITY_BYTES + 1),
+        ):
+            with self.assertRaisesRegex(
+                runner.PipelineError,
+                "local_account identity byte budget",
+            ):
+                review_decision.decide(
+                    self.repo,
+                    review_dir,
+                    "reviewer@example.test",
+                    "accept",
+                )
+        self.assertFalse((review_dir / "human-review.ndjson").exists())
+        self.assertFalse((review_dir / "human-review-summary.json").exists())
+
     def test_human_review_verify_reports_invalid_for_tampered_pair(self) -> None:
         review_dir = self.make_human_review_result("human-review-verify-invalid")
         review_decision.decide(
@@ -2112,7 +2334,7 @@ class RunnerGateTests(unittest.TestCase):
         )
         self.assertEqual(verified.returncode, 9)
         self.assertEqual(verified.stdout.strip(), "INVALID")
-        self.assertEqual(verified.stderr, "")
+        self.assertIn("Summary", verified.stderr)
 
     def test_human_review_verify_rejects_consistent_pair_with_wrong_binding(self) -> None:
         review_dir = self.make_human_review_result("human-review-verify-wrong-binding")
@@ -2148,7 +2370,7 @@ class RunnerGateTests(unittest.TestCase):
         )
         self.assertEqual(verified.returncode, 9)
         self.assertEqual(verified.stdout.strip(), "INVALID")
-        self.assertEqual(verified.stderr, "")
+        self.assertIn("binding", verified.stderr)
 
     def test_human_review_verify_rejects_multi_link_terminal(self) -> None:
         review_dir = self.make_human_review_result("human-review-verify-hardlink")
@@ -2179,7 +2401,7 @@ class RunnerGateTests(unittest.TestCase):
         )
         self.assertEqual(verified.returncode, 9)
         self.assertEqual(verified.stdout.strip(), "INVALID")
-        self.assertEqual(verified.stderr, "")
+        self.assertIn("multi-linked", verified.stderr)
 
     def test_human_review_verify_reports_stale_for_repository_drift(self) -> None:
         review_dir = self.make_human_review_result("human-review-verify-stale")
@@ -2207,7 +2429,7 @@ class RunnerGateTests(unittest.TestCase):
         )
         self.assertEqual(verified.returncode, review_decision.VERIFY_STALE_EXIT)
         self.assertEqual(verified.stdout.strip(), "STALE")
-        self.assertEqual(verified.stderr, "")
+        self.assertIn("stale", verified.stderr)
 
     def test_human_review_summary_failure_compensates_both_outputs(self) -> None:
         review_dir = self.make_human_review_result("human-review-summary-failure")

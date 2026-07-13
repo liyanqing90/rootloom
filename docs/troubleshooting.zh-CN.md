@@ -97,7 +97,7 @@ codex execpolicy check --pretty \
 
 ## Decision Pair 验证报告 `INVALID` 或 `STALE`
 
-运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Pair 格式错误、内部不一致、非规范，或不再是普通单链接私有文件。`STALE`/12 表示 Pair 结构有效，但当前仓库承诺已经漂移；应重新运行高保障流程，不要编辑证据。验证命令完全只读，不刷新、修复或签名证据。
+运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Binding/Pair Schema 格式错误、内部冲突、非规范、超预算、路径不安全，或不再是普通单链接私有文件。只有结构已确认有效、但当前仓库、已审 Artifact 或 protected deletion 状态不再匹配时才输出 `STALE`/12。stdout 仍只有一个状态词；stderr 包含一条不带 Artifact 内容的有界诊断原因。应重新运行高保障流程，不要编辑证据。验证命令完全只读，不刷新、修复或签名证据。
 
 ## 严格 Runner 拒绝 verification entrypoint 变化
 

@@ -6,6 +6,26 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.18] - 2026-07-13
+
+### Security
+
+- Validate the complete Human Review v4 Binding schema before any repository or reviewed-Artifact recapture: exact fields, repository/run identity, Git and Result hashes, canonical state policy and path sets, repository commitment hashes, bounded Artifact fingerprints, and protected-deletion parent commitments must be internally valid and agree with Result.
+- Reserve `STALE` exclusively for structurally valid Decision Pairs whose current repository, Artifact, or protected-deletion state no longer matches. Malformed, unsafe, noncanonical, or internally inconsistent evidence is always `INVALID` with public exit 9; internal Pipeline stage exit codes no longer escape the verifier protocol.
+- Preflight Terminal and Summary against their shared 1 MiB producer/consumer budget before either file is created. Reviewer and local-account identities are nonempty and limited to 4096 UTF-8 bytes.
+
+### Changed
+
+- Rootloom is now version 1.2.18 and the strict high-assurance runner is version 2.23.
+- Keep verify stdout machine-stable as exactly `VALID`, `INVALID`, or `STALE`, while emitting one bounded reason on stderr for invalid or stale evidence. Diagnostics never serialize Artifact bytes.
+- Canonicalize Human Review sensitive-path policy as a unique sorted list. Persisted v4 fields and meanings remain unchanged; manually edited or noncanonical v4 evidence fails closed and must be rerun.
+- Split Human Review composition into `human_review/schema.py`, `binding.py`, `pinned_io.py`, `decision.py`, and `verify.py`; `review_decision.py` is now the thin public CLI and compatibility export surface.
+
+### Tests
+
+- Add `INVALID`/9 regressions for malformed metadata floors, sensitive paths, protected deletions, Run Directory identity, repository commitments, Artifact maps, protected commitments, Result hashes, and Binding field sets, including proof that invalid schema never starts repository recapture.
+- Add exact/over-limit Decision Pair byte tests, overlong reviewer/local-account refusal before file creation, Summary preflight, immediate successful-pair verification, diagnostic stderr, and retained real-drift `STALE`/12 coverage.
+
 ## [1.2.17] - 2026-07-13
 
 ### Security

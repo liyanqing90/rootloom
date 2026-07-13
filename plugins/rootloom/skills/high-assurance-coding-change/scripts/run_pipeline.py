@@ -32,6 +32,10 @@ PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 
 from rootloom_lock import LockBusyError, LockFileError, hardened_lock
+from human_review.constants import (
+    MAX_HUMAN_REVIEW_ARTIFACTS,
+    MAX_HUMAN_REVIEW_DECISION_BYTES,
+)
 from runner.process import executable_identity as _stable_executable_identity
 from runner.state import repository_state_commitment
 
@@ -82,14 +86,12 @@ DEFAULT_MAX_UNTRACKED_PATCH_BYTES = 8 * 1024 * 1024
 DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES = 64 * 1024 * 1024
 DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES = 512 * 1024 * 1024
 DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS = 120
-MAX_HUMAN_REVIEW_ARTIFACTS = 256
 MAX_HUMAN_REVIEW_RESULT_BYTES = 32 * 1024 * 1024
-MAX_HUMAN_REVIEW_DECISION_BYTES = 1024 * 1024
 MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.22"
+RUNNER_VERSION = "2.23"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -3900,6 +3902,16 @@ def normalize_human_review_state_policy(
     if not isinstance(policy["redact_untracked_dotfiles"], bool):
         raise PipelineError("human review redact_untracked_dotfiles must be boolean", 9)
     sensitive_rules = normalize_sensitive_paths(policy["sensitive_paths"])
+    canonical_sensitive_paths = sorted(
+        {
+            path + "/**" if recursive else path
+            for path, recursive in sensitive_rules
+        }
+    )
+    if len(canonical_sensitive_paths) != len(sensitive_rules):
+        raise PipelineError("human review sensitive_paths must be unique", 9)
+    policy["sensitive_paths"] = canonical_sensitive_paths
+    sensitive_rules = normalize_sensitive_paths(canonical_sensitive_paths)
     return policy, sensitive_rules
 
 
