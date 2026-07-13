@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security and persisted audit-contract repair
@@ -78,7 +78,7 @@ Success requires fail-before/pass-after regressions for all three symlink lock p
 2. Completed — added Human Review v4 floor/run identity and byte/time budgets; Artifact hashing is complete-or-fail under those limits.
 3. Completed — safely re-read and canonically compare Result after decision append and after state validation; compensate on mismatch/error; reject copied Run Directories.
 4. Completed — updated contract validation, version metadata, bilingual public docs, Changelog, and the existing decision records.
-5. In progress — local focused/full/compatibility verification is green; commit, push, exact-sha CI, annotated `v1.2.14`, and formal Release remain.
+5. Completed — local focused/full/compatibility verification, commit/push, exact-sha CI, annotated `v1.2.14`, and formal Release are complete.
 
 ## Rollout, failure, and rollback
 
@@ -134,3 +134,6 @@ Success requires fail-before/pass-after regressions for all three symlink lock p
 - Focused Human Review v4 tests — 11 passed, including pre-capture v2/v3/malformed-v4 refusal, copied Run, Result reread compensation, complete metadata floor, and resource limits.
 - Shared lock/Setup/Guidance focused suite — 49 passed; direct shared-lock suite covers symlink, hardlink, symlinked parent, non-inheritable descriptor, and contention.
 - `git diff --check` and Python compilation — passed.
+- Exact-sha CI run `29220934659` — all eight jobs passed against `7cc3bb9f5de69b13c77f1c06e499a8328e095204`, including native Windows portable locks and macOS Strict Runner.
+- Annotated tag `v1.2.14` — tag object `01b947c2eff6ddd14d4644bf4081053899e77f48`, peeled commit `7cc3bb9f5de69b13c77f1c06e499a8328e095204`.
+- Formal non-draft, non-prerelease GitHub Release published at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.14` on 2026-07-13.
