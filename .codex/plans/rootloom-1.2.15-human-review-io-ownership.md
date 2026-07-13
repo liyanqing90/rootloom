@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security, persisted audit-contract repair, and release
@@ -78,7 +78,7 @@ Success requires victim-preservation regressions for an initial hardlink, create
 2. Completed — replaced terminal path reopen composition with one pinned descriptor transaction and routed all decision mutations through it.
 3. Completed — carried the final validated state into initial Binding, enforced its repository commitment, and bounded the hash loop by observed bytes and remaining aggregate allowance.
 4. Completed — updated contract validation, version metadata, bilingual public docs, Changelog, and existing durable decision records.
-5. In progress — local focused/full/compatibility/challenge checks passed; commit, push, exact-sha CI, tag, Release, and post-publication evidence remain.
+5. Completed — local focused/full/compatibility/challenge checks passed; exact-sha CI passed; annotated tag and formal Release were published and post-publication state was verified.
 
 ## Rollout, failure, and rollback
 
@@ -134,3 +134,6 @@ Success requires victim-preservation regressions for an initial hardlink, create
 - `make compatibility-smoke` — passed with pre-existing configuration restored and no managed leftovers.
 - Python compilation and `git diff --check` — passed.
 - Exact-sha CI run `29226745172` — seven jobs passed; macOS failed only because the outer untracked-Delta diagnostic omitted the preserved fail-closed invariant. No tag or Release was created.
+- Exact-sha CI run `29227221911` — all eight jobs passed against `2fdffb6f9b6814ca945182c35abbcec4c6d9c2a6`, including Linux Python 3.11–3.14, macOS Strict Runner, macOS/Windows Portable Contracts, and pinned Codex CLI compatibility.
+- Annotated tag `v1.2.15` — tag object `2cc4206586fadc81cd41ec09fc3d750bd3cfe24a`, peeled commit `2fdffb6f9b6814ca945182c35abbcec4c6d9c2a6`.
+- Formal non-draft, non-prerelease GitHub Release — published 2026-07-13 at `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.15`.
