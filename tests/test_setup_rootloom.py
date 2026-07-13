@@ -283,6 +283,25 @@ class RootloomSetupTests(unittest.TestCase):
         self.assertEqual(state_path.read_bytes(), installed_state)
         self.assertEqual(setup.file_mode(agents), 0o644)
 
+    def test_recovery_without_posix_mode_contract_uses_content_state(self) -> None:
+        with mock.patch.object(setup, "POSIX_MODE_CONTRACT", False):
+            result = setup.apply_plan(
+                self.codex_home,
+                replace_conflicts=False,
+                capabilities=setup.PRESETS["guidance"],
+            )
+            transaction = Path(result["transaction"])
+            manifest = json.loads(
+                (transaction / "manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(all(entry["after_mode"] is None for entry in manifest["files"]))
+            self.assertIsNone(manifest["state_recovery"]["after_mode"])
+            setup.write_recovery_journal(transaction, "applying", [])
+
+            recovered = setup.recover(self.codex_home)
+        self.assertEqual(recovered["status"], "recovered")
+        self.assertFalse((self.codex_home / setup.STATE_DIRNAME / "state.json").exists())
+
     @unittest.skipIf(os.name == "nt", "Windows has no exact POSIX mode semantics")
     def test_rollback_restores_original_file_mode(self) -> None:
         agents = self.codex_home / "AGENTS.md"
@@ -430,10 +449,11 @@ class RootloomSetupTests(unittest.TestCase):
     def test_runtime_project_trust_is_preserved_by_status_and_rollback(self) -> None:
         setup.apply_plan(self.codex_home, replace_conflicts=False)
         config_path = self.codex_home / "config.toml"
-        config_path.write_text(
-            config_path.read_text(encoding="utf-8")
-            + '\n[projects."/tmp/example"]\ntrust_level = "trusted"\n',
-            encoding="utf-8",
+        config_path.write_bytes(
+            (
+                config_path.read_text(encoding="utf-8").replace("\n", "\r\n")
+                + '\r\n[projects."/tmp/example"]\r\ntrust_level = "trusted"\r\n'
+            ).encode("utf-8")
         )
 
         status = setup.status_payload(self.codex_home)

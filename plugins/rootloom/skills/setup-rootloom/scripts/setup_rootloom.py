@@ -25,6 +25,7 @@ LIMITS_START = "# rootloom:agent-limits-start version=1"
 LIMITS_END = "# rootloom:agent-limits-end"
 STATE_DIRNAME = ".rootloom"
 COMPONENT_POLICY_PATH = f"{STATE_DIRNAME}/components.json"
+POSIX_MODE_CONTRACT = os.name != "nt" and hasattr(os, "fchmod")
 MANAGED_AGENT_LIMITS: tuple[tuple[str, str], ...] = (
     ("max_threads", "4"),
     ("max_depth", "1"),
@@ -313,6 +314,8 @@ def render_agent_limits(existing: str) -> str:
     if existing.strip():
         validate_toml(existing, "config.toml before setup")
 
+    newline = "\r\n" if "\r\n" in existing else "\n"
+    existing = existing.replace("\r\n", "\n").replace("\r", "\n")
     lines = remove_legacy_limit_markers(existing.splitlines())
     bounds = table_bounds(lines, "agents")
     managed_lines = [
@@ -340,7 +343,7 @@ def render_agent_limits(existing: str) -> str:
         ).rstrip() + "\n"
 
     validate_toml(rendered, "config.toml after setup")
-    return rendered
+    return rendered if newline == "\n" else rendered.replace("\n", newline)
 
 
 def managed_agent_limits_intact(text: str) -> bool:
@@ -369,6 +372,7 @@ def restore_agent_limits(current: str, previous: str) -> str:
     if not managed_agent_limits_intact(current):
         raise RuntimeError("managed [agents] limits changed after setup")
 
+    newline = "\r\n" if "\r\n" in current else "\n"
     current_lines = remove_legacy_limit_markers(current.splitlines())
     current_bounds = table_bounds(current_lines, "agents")
     if current_bounds is None:
@@ -414,7 +418,7 @@ def restore_agent_limits(current: str, previous: str) -> str:
     if rendered:
         rendered += "\n"
         validate_toml(rendered, "config.toml after rollback")
-    return rendered
+    return rendered if newline == "\n" else rendered.replace("\n", newline)
 
 
 def has_symlink_component(path: Path, root: Path) -> bool:
@@ -765,10 +769,10 @@ def build_recovery_plan(
             raise ValueError(f"invalid before hash for recovery target {relative}")
         if not _valid_recovery_hash(after_hash, allow_missing=True):
             raise ValueError(f"invalid after hash for recovery target {relative}")
-        if after_hash is not None:
+        if after_hash is not None and POSIX_MODE_CONTRACT:
             after_mode = _recovery_mode(raw_entry.get("after_mode"), relative)
         else:
-            if raw_entry.get("after_mode") is not None:
+            if after_hash is None and raw_entry.get("after_mode") is not None:
                 raise ValueError(f"inconsistent deleted-file recovery contract: {relative}")
             after_mode = None
         if before_exists:
@@ -793,7 +797,7 @@ def build_recovery_plan(
         current_hash = sha256_bytes(current) if current is not None else None
         if current_hash not in {before_hash, after_hash}:
             raise RuntimeError(f"recovery refused because {relative} changed after interruption")
-        if current is not None:
+        if POSIX_MODE_CONTRACT and current is not None:
             current_mode = file_mode(destination)
             allowed_modes: set[int] = set()
             if current_hash == before_hash and before_exists:
@@ -818,13 +822,13 @@ def build_recovery_plan(
         allow_missing=not state_before_exists,
     ) or not _valid_recovery_hash(state_after_hash, allow_missing=True):
         raise ValueError("invalid setup-state recovery hash contract")
-    if state_after_hash is not None:
+    if state_after_hash is not None and POSIX_MODE_CONTRACT:
         state_after_mode = _recovery_mode(
             state_contract.get("after_mode"),
             "setup state",
         )
     else:
-        if state_contract.get("after_mode") is not None:
+        if state_after_hash is None and state_contract.get("after_mode") is not None:
             raise ValueError("inconsistent deleted setup-state recovery contract")
         state_after_mode = None
     if state_before_exists:
@@ -845,7 +849,7 @@ def build_recovery_plan(
     state_hash = sha256_bytes(state_current) if state_current is not None else None
     if state_hash not in {state_before_hash, state_after_hash}:
         raise RuntimeError("recovery refused because setup state changed after interruption")
-    if state_current is not None:
+    if POSIX_MODE_CONTRACT and state_current is not None:
         current_state_mode = file_mode(state_path)
         allowed_state_modes: set[int] = set()
         if state_hash == state_before_hash and state_before_exists:
@@ -962,7 +966,7 @@ def _apply_plan_locked(
                 "before_hash": sha256_bytes(before) if before is not None else None,
                 "before_mode": before_mode,
                 "after_hash": sha256_bytes(desired[action.path]),
-                "after_mode": 0o600,
+                "after_mode": 0o600 if POSIX_MODE_CONTRACT else None,
                 "backup": backup_relative,
             }
         )
@@ -1002,7 +1006,7 @@ def _apply_plan_locked(
         "before_hash": sha256_bytes(state_before) if state_before is not None else None,
         "before_mode": state_before_mode,
         "after_hash": sha256_bytes(state_payload),
-        "after_mode": 0o600,
+        "after_mode": 0o600 if POSIX_MODE_CONTRACT else None,
     }
     atomic_write(
         transaction / "manifest.json",
@@ -1267,7 +1271,7 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
                 "before_hash": sha256_bytes(before) if before is not None else None,
                 "before_mode": before_mode,
                 "after_hash": sha256_bytes(desired) if desired is not None else None,
-                "after_mode": _desired_mode,
+                "after_mode": _desired_mode if POSIX_MODE_CONTRACT else None,
                 "backup": backup_relative,
             }
         )
@@ -1287,7 +1291,7 @@ def _rollback_locked(codex_home: Path) -> dict[str, Any]:
             "before_hash": sha256_bytes(state_before),
             "before_mode": state_before_mode,
             "after_hash": sha256_bytes(next_state_payload),
-            "after_mode": 0o600,
+            "after_mode": 0o600 if POSIX_MODE_CONTRACT else None,
         },
     }
     atomic_write(

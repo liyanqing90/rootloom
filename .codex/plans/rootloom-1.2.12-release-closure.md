@@ -106,6 +106,8 @@ Success requires:
 - 2026-07-13 — Local release verification passed: repository contract validation, 50 repository tests, 82 Runner tests with `ResourceWarning` promoted to error, Codex CLI `0.144.0-alpha.4` compatibility smoke, Python compilation, workflow YAML parse, and diff check.
 - 2026-07-13 — First remote run `29213020462` correctly blocked publication: Windows portable tests exposed unconditional POSIX-only `os.fchmod` calls in the pre-existing setup and guidance lock paths. Tagging remained paused; both locks now retain descriptor chmod on POSIX and enter their existing `msvcrt` branch on Windows.
 - 2026-07-13 — Post-fix local gates passed again: 50 repository tests, 82 Runner tests, compatibility smoke, repository validator, and diff check. Exact POSIX-mode assertions are explicitly scoped away from Windows rather than pretending ACL semantics equal `fchmod`.
+- 2026-07-13 — Second remote run `29214414883` passed the lock boundary and exposed two deeper portability assumptions: hard-coded POSIX post-write modes and LF-only config rendering. Mode drift is now a POSIX-only contract and config management preserves the active LF/CRLF style; the existing runtime-config regression now exercises CRLF on every platform.
+- 2026-07-13 — Post-portability-fix local gates passed: 51 repository tests, 82 Runner tests, compatibility smoke, repository validator, and diff check; a platform-contract-disabled recovery regression exercises the Windows content-state path locally.
 
 ## Durable decision records
 
