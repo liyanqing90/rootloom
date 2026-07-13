@@ -8,7 +8,7 @@ import re
 import stat
 from typing import Any
 
-import run_pipeline as runner
+from runner.errors import EvidenceInvalidError, PipelineError
 from runner.state import commitment_sha256
 
 from .constants import MAX_HUMAN_REVIEW_ARTIFACTS
@@ -47,10 +47,40 @@ STATE_POLICY_FIELDS = {
     "max_human_review_total_bytes",
     "max_human_review_binding_seconds",
 }
+RESULT_FIELDS = {
+    "format",
+    "runner_version",
+    "run_id",
+    "metadata_artifact",
+    "result",
+    "run_dir",
+    "repair_cycles",
+    "changed_paths",
+    "allowed_paths",
+    "git_index_unchanged",
+    "git_status",
+    "git_diff_stat",
+    "untracked",
+    "ignored_metadata",
+    "redacted_untracked_metadata",
+    "protected_deletions",
+    "delta_artifacts",
+    "human_review_binding",
+}
+DELTA_ARTIFACT_FIELDS = {
+    "status",
+    "staged_patch",
+    "unstaged_patch",
+    "head_to_worktree_patch",
+    "untracked_patch",
+    "untracked_manifest",
+    "ignored_metadata",
+    "redacted_untracked_metadata",
+}
 
 
 def _invalid(message: str) -> None:
-    raise runner.PipelineError(message, 9)
+    raise EvidenceInvalidError(message)
 
 
 def normalize_review_scope(repo: Path, run_dir: Path) -> tuple[Path, Path]:
@@ -60,7 +90,7 @@ def normalize_review_scope(repo: Path, run_dir: Path) -> tuple[Path, Path]:
         unsafe_run_dir = supplied_run_dir.is_symlink() or not supplied_run_dir.is_dir()
         normalized_run_dir = supplied_run_dir.resolve()
     except (OSError, RuntimeError) as exc:
-        raise runner.PipelineError("review scope path is invalid", 9) from exc
+        raise EvidenceInvalidError("review scope path is invalid") from exc
     if unsafe_run_dir:
         _invalid("review run directory is missing or symlinked")
     return normalized_repo, normalized_run_dir
@@ -87,16 +117,16 @@ def _require_nonnegative_int(value: Any, label: str) -> int:
     return value
 
 
-def _canonical_repo_paths(value: Any, label: str) -> list[str]:
+def _canonical_repo_paths(runtime: Any, value: Any, label: str) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         _invalid(f"{label} must be a string list")
     assert isinstance(value, list)
     normalized: list[str] = []
     for raw in value:
         try:
-            path = runner.normalize_repo_path(raw, contract=True)
-        except runner.PipelineError as exc:
-            raise runner.PipelineError(f"{label} contains an invalid path", 9) from exc
+            path = runtime.normalize_repo_path(raw, contract=True)
+        except PipelineError as exc:
+            raise EvidenceInvalidError(f"{label} contains an invalid path") from exc
         if path != raw:
             _invalid(f"{label} paths must be canonical")
         normalized.append(path)
@@ -105,16 +135,15 @@ def _canonical_repo_paths(value: Any, label: str) -> list[str]:
     return normalized
 
 
-def _canonical_sensitive_paths(value: Any) -> list[str]:
+def _canonical_sensitive_paths(runtime: Any, value: Any) -> list[str]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         _invalid("human review sensitive_paths must be a string list")
     assert isinstance(value, list)
     try:
-        rules = runner.normalize_sensitive_paths(value)
-    except runner.PipelineError as exc:
-        raise runner.PipelineError(
-            "human review sensitive_paths contains an invalid path",
-            9,
+        rules = runtime.normalize_sensitive_paths(value)
+    except PipelineError as exc:
+        raise EvidenceInvalidError(
+            "human review sensitive_paths contains an invalid path"
         ) from exc
     canonical = [path + "/**" if recursive else path for path, recursive in rules]
     if canonical != value or canonical != sorted(set(canonical)):
@@ -122,19 +151,23 @@ def _canonical_sensitive_paths(value: Any) -> list[str]:
     return canonical
 
 
-def validate_state_policy(value: Any) -> dict[str, Any]:
+def validate_state_policy(runtime: Any, value: Any) -> dict[str, Any]:
     policy = _require_exact_fields(value, STATE_POLICY_FIELDS, "human review state policy")
     try:
-        normalized, _ = runner.normalize_human_review_state_policy(policy)
-    except runner.PipelineError as exc:
-        raise runner.PipelineError("human review state policy is invalid", 9) from exc
-    _canonical_sensitive_paths(policy["sensitive_paths"])
+        normalized, _ = runtime.normalize_human_review_state_policy(policy)
+    except PipelineError as exc:
+        raise EvidenceInvalidError("human review state policy is invalid") from exc
+    _canonical_sensitive_paths(runtime, policy["sensitive_paths"])
     if normalized != policy:
         _invalid("human review state policy is not canonical")
     return policy
 
 
-def validate_repository_state_commitment(value: Any) -> dict[str, Any]:
+def validate_repository_state_commitment(
+    value: Any,
+    *,
+    state_policy: dict[str, Any],
+) -> dict[str, Any]:
     commitment = _require_exact_fields(
         value,
         {
@@ -148,11 +181,17 @@ def validate_repository_state_commitment(value: Any) -> dict[str, Any]:
     )
     if commitment["format"] != "rootloom-repository-state-commitment-v1":
         _invalid("human review repository commitment format is invalid")
-    _require_nonnegative_int(commitment["path_count"], "repository path_count")
-    _require_nonnegative_int(
+    path_count = _require_nonnegative_int(
+        commitment["path_count"], "repository path_count"
+    )
+    worktree_entry_count = _require_nonnegative_int(
         commitment["worktree_entry_count"],
         "repository worktree_entry_count",
     )
+    if worktree_entry_count > path_count:
+        _invalid("repository worktree_entry_count exceeds path_count")
+    if path_count > state_policy["max_state_paths"]:
+        _invalid("repository path_count exceeds the persisted state-path budget")
     component_hashes = _require_exact_fields(
         commitment["component_sha256"],
         REPOSITORY_COMPONENTS,
@@ -193,6 +232,8 @@ def validate_run_directory_identity(
     mode = _require_nonnegative_int(identity["mode"], "Run Directory mode")
     if not stat.S_ISDIR(mode):
         _invalid("human review Run Directory mode is not a directory")
+    if stat.S_IMODE(mode) != 0o700:
+        _invalid("human review Run Directory mode must be 0700")
     return identity
 
 
@@ -293,6 +334,7 @@ def validate_artifact_map(
 
 
 def validate_human_review_binding_v4_schema(
+    runtime: Any,
     binding: Any,
     *,
     repo: Path,
@@ -324,27 +366,30 @@ def validate_human_review_binding_v4_schema(
     if not isinstance(git_head, str) or re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", git_head) is None:
         _invalid("human review Binding git_head is invalid")
     _require_sha256(value["result_core_sha256"], "human review result-core hash")
-    policy = validate_state_policy(value["state_policy"])
+    policy = validate_state_policy(runtime, value["state_policy"])
     floor = _canonical_repo_paths(
+        runtime,
         value["final_metadata_only_floor_paths"],
         "human review metadata-only floor",
     )
     try:
-        normalized_floor = runner.normalize_human_review_metadata_floor(
+        normalized_floor = runtime.normalize_human_review_metadata_floor(
             floor,
             max_paths=policy["max_state_paths"],
             max_path_bytes=policy["max_state_bytes"],
         )
-    except runner.PipelineError as exc:
-        raise runner.PipelineError(
-            "human review metadata-only floor exceeds its persisted budget",
-            9,
+    except PipelineError as exc:
+        raise EvidenceInvalidError(
+            "human review metadata-only floor exceeds its persisted budget"
         ) from exc
     if normalized_floor != set(floor):
         _invalid("human review metadata-only floor is not canonical")
     if not set(protected_deletions).issubset(floor):
         _invalid("human review metadata-only floor omits a protected deletion")
-    validate_repository_state_commitment(value["repository_state"])
+    validate_repository_state_commitment(
+        value["repository_state"],
+        state_policy=policy,
+    )
     validate_run_directory_identity(value["run_directory"], expected_run_dir=run_dir)
     validate_protected_deletion_commitment(
         value["protected_deletions"],
@@ -354,13 +399,56 @@ def validate_human_review_binding_v4_schema(
     return value
 
 
+def _canonical_artifact_name(value: Any, label: str) -> str:
+    if (
+        not isinstance(value, str)
+        or not value
+        or value in {".", ".."}
+        or "/" in value
+        or "\\" in value
+        or "\x00" in value
+        or len(value.encode("utf-8", errors="surrogatepass")) > 4096
+    ):
+        _invalid(f"{label} is invalid")
+    return value
+
+
+def _canonical_metadata_records(value: Any, label: str) -> list[dict[str, Any]]:
+    if not isinstance(value, list) or not all(isinstance(item, dict) for item in value):
+        _invalid(f"{label} must be an object list")
+    paths: list[str] = []
+    for item in value:
+        if set(item) != {"path", "kind"} or item.get("kind") != "missing":
+            _invalid(f"{label} entries must be exact missing-path records")
+        path = item.get("path")
+        if not isinstance(path, str):
+            _invalid(f"{label} path is invalid")
+        paths.append(path)
+    if paths != sorted(set(paths)):
+        _invalid(f"{label} paths must be unique and sorted")
+    return value
+
+
 def validate_review_result(
+    runtime: Any,
     repo: Path,
     run_dir: Path,
     value: dict[str, Any],
 ) -> tuple[dict[str, Any], list[str]]:
+    result = _require_exact_fields(value, RESULT_FIELDS, "Human Review Result Envelope")
+    if result.get("format") != "rootloom-human-review-result-v1":
+        _invalid("unsupported Human Review Result Envelope; rerun with Result v1")
     if value.get("result") != "HUMAN_REVIEW_REQUIRED":
         _invalid("run is not awaiting human review")
+    runner_version = result.get("runner_version")
+    if not isinstance(runner_version, str) or re.fullmatch(r"[0-9]+\.[0-9]+", runner_version) is None:
+        _invalid("Human Review Result runner_version is invalid")
+    if result.get("run_id") != run_dir.name:
+        _invalid("Human Review Result run_id does not match the Run Directory")
+    metadata_artifact = _canonical_artifact_name(
+        result.get("metadata_artifact"),
+        "Human Review metadata Artifact",
+    )
     declared_run_dir = value.get("run_dir")
     try:
         normalized_declared_run_dir = (
@@ -374,15 +462,73 @@ def validate_review_result(
     if normalized_declared_run_dir != run_dir:
         _invalid("Result run_dir does not match the supplied review directory")
     protected = _canonical_repo_paths(
+        runtime,
         value.get("protected_deletions"),
         "protected_deletions",
     )
+    if not protected:
+        _invalid("Human Review Result protected_deletions must be nonempty")
+    if result.get("repair_cycles") != 0:
+        _invalid("Human Review Result repair_cycles must be zero")
+    changed_paths = _canonical_repo_paths(
+        runtime,
+        result.get("changed_paths"),
+        "changed_paths",
+    )
+    if changed_paths != protected:
+        _invalid("Human Review Result changed_paths must equal protected_deletions")
+    if result.get("git_index_unchanged") is not True:
+        _invalid("Human Review Result must prove an unchanged Git index")
+    for field in ("git_status", "git_diff_stat"):
+        if not isinstance(result.get(field), str):
+            _invalid(f"Human Review Result {field} must be text")
+    if result.get("untracked") != []:
+        _invalid("Human Review deletion-only Result cannot contain untracked entries")
+    allowed_paths = result.get("allowed_paths")
+    try:
+        allowed_rules = runtime.normalize_allowed_paths(allowed_paths)
+    except PipelineError as exc:
+        raise EvidenceInvalidError("Human Review Result allowed_paths is invalid") from exc
+    if not isinstance(allowed_paths, list) or allowed_paths != sorted(set(allowed_paths)):
+        _invalid("Human Review Result allowed_paths must be unique and sorted")
+    if any(not runtime.path_is_allowed(path, allowed_rules) for path in protected):
+        _invalid("Human Review Result allowed_paths omits a protected deletion")
+    ignored = _canonical_metadata_records(
+        result.get("ignored_metadata"),
+        "Human Review ignored_metadata",
+    )
+    redacted = _canonical_metadata_records(
+        result.get("redacted_untracked_metadata"),
+        "Human Review redacted_untracked_metadata",
+    )
+    metadata_paths = [item["path"] for item in ignored + redacted]
+    if sorted(metadata_paths) != protected or len(metadata_paths) != len(set(metadata_paths)):
+        _invalid("Human Review metadata records must exactly cover protected deletions")
+    artifacts = _require_exact_fields(
+        result.get("delta_artifacts"),
+        DELTA_ARTIFACT_FIELDS,
+        "Human Review delta_artifacts",
+    )
+    artifact_names = [
+        _canonical_artifact_name(name, "Human Review delta Artifact")
+        for name in artifacts.values()
+    ]
+    if len(artifact_names) != len(set(artifact_names)):
+        _invalid("Human Review delta Artifact names must be unique")
     expected = validate_human_review_binding_v4_schema(
+        runtime,
         value.get("human_review_binding"),
         repo=repo,
         run_dir=run_dir,
         protected_deletions=protected,
     )
-    if expected["result_core_sha256"] != runner.human_review_result_core_sha256(value):
+    bound_artifacts = expected["artifacts"]
+    if metadata_artifact not in bound_artifacts or any(
+        name not in bound_artifacts for name in artifact_names
+    ):
+        _invalid("Human Review Result references an unbound Artifact")
+    if len(expected["protected_deletions"]) != len(protected):
+        _invalid("Human Review protected-deletion count is inconsistent")
+    if expected["result_core_sha256"] != runtime.human_review_result_core_sha256(value):
         _invalid("human review Binding result-core hash does not match Result")
     return expected, protected

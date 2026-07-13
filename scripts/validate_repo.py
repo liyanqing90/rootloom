@@ -444,7 +444,7 @@ def validate_system_assets(errors: list[str]) -> None:
     else:
         runner_text = runner.read_text(encoding="utf-8")
         for contract in (
-            'RUNNER_VERSION = "2.23"',
+            'RUNNER_VERSION = "2.24"',
             "DEFAULT_MAX_STATE_PATHS",
             "DEFAULT_MAX_STATE_BYTES",
             "DEFAULT_MAX_COMMAND_OUTPUT_BYTES",
@@ -577,14 +577,28 @@ def validate_system_assets(errors: list[str]) -> None:
                 "executable_identity",
                 "O_NOFOLLOW",
             ),
-            runner.parent / "human_review" / "constants.py": (
+            runner.parent / "runner" / "contracts.py": (
                 "MAX_HUMAN_REVIEW_DECISION_BYTES",
                 "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
                 "VERIFY_INVALID_EXIT = 9",
                 "VERIFY_STALE_EXIT = 12",
+                "VERIFY_UNVERIFIED_EXIT = 13",
+                "class VerificationLimits",
+                "constrain_policy",
+            ),
+            runner.parent / "runner" / "errors.py": (
+                "class EvidenceInvalidError",
+                "class BindingDriftError",
+                "class VerificationError",
+            ),
+            runner.parent / "runner" / "git_capture.py": (
+                "GIT_OPTIONAL_LOCKS",
+                "core.fsmonitor",
+                "core.untrackedCache",
             ),
             runner.parent / "human_review" / "schema.py": (
                 "validate_human_review_binding_v4_schema",
+                "rootloom-human-review-result-v1",
                 "validate_repository_state_commitment",
                 "validate_run_directory_identity",
                 "validate_protected_deletion_commitment",
@@ -593,7 +607,9 @@ def validate_system_assets(errors: list[str]) -> None:
             ),
             runner.parent / "human_review" / "binding.py": (
                 "recompute_human_review_binding",
-                "expected_repository_state_commitment",
+                "_preflight_current_artifacts",
+                "_preflight_protected_deletions",
+                "read_only_git_environment",
             ),
             runner.parent / "human_review" / "pinned_io.py": (
                 "read_decision_pair_payloads",
@@ -609,7 +625,8 @@ def validate_system_assets(errors: list[str]) -> None:
             runner.parent / "human_review" / "verify.py": (
                 "StaleDecisionPair",
                 "verify_decision_pair",
-                "binding no longer matches current reviewed state",
+                "BindingDriftError",
+                "VerificationError",
             ),
         }.items():
             if not module.is_file():
@@ -631,10 +648,13 @@ def validate_system_assets(errors: list[str]) -> None:
             "MAX_HUMAN_REVIEW_IDENTITY_BYTES",
             "VERIFY_INVALID_EXIT",
             "VERIFY_STALE_EXIT",
+            "VERIFY_UNVERIFIED_EXIT",
+            "VerificationLimits",
             "bounded_diagnostic",
             'print("VALID")',
             'print("INVALID")',
             'print("STALE")',
+            'print("UNVERIFIED")',
         ):
             if contract not in review_text:
                 errors.append(f"human review command is missing contract: {contract}")

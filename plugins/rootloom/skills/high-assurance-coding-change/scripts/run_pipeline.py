@@ -32,10 +32,11 @@ PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 
 from rootloom_lock import LockBusyError, LockFileError, hardened_lock
-from human_review.constants import (
+from runner.contracts import (
     MAX_HUMAN_REVIEW_ARTIFACTS,
     MAX_HUMAN_REVIEW_DECISION_BYTES,
 )
+from runner.errors import PipelineError
 from runner.process import executable_identity as _stable_executable_identity
 from runner.state import repository_state_commitment
 
@@ -91,7 +92,7 @@ MAX_DELTA_PATCH_EXCERPT_BYTES = 24_000
 MAX_VERIFICATION_COMMANDS = 64
 MAX_VERIFICATION_PROMPT_CHARS = 120_000
 OUTPUT_READ_CHUNK_BYTES = 64 * 1024
-RUNNER_VERSION = "2.23"
+RUNNER_VERSION = "2.24"
 PROCESS_OUTPUT_DRAIN_TIMEOUT_SECONDS = 1.0
 VERIFICATION_ENV_ALLOWLIST = (
     "CI",
@@ -379,14 +380,6 @@ REVIEW_SCHEMA: dict[str, Any] = {
         "challenge",
     ],
 }
-
-
-class PipelineError(RuntimeError):
-    """A controlled pipeline failure with a stable exit code."""
-
-    def __init__(self, message: str, exit_code: int = 1) -> None:
-        super().__init__(message)
-        self.exit_code = exit_code
 
 
 def require_nonempty_text(value: Any, field: str) -> None:
@@ -5525,7 +5518,9 @@ def run_pipeline_locked(
                 "run_dir": str(run_dir),
                 "repair_cycles": attempt,
                 "changed_paths": delta["introduced_paths"],
-                "allowed_paths": diagnosis["change_contract"]["allowed_paths"],
+                "allowed_paths": sorted(
+                    set(diagnosis["change_contract"]["allowed_paths"])
+                ),
                 "git_index_unchanged": True,
                 "git_status": delta["status"],
                 "git_diff_stat": run_checked(
@@ -5540,6 +5535,14 @@ def run_pipeline_locked(
                 "delta_artifacts": delta["artifacts"],
             }
             if result_status == "HUMAN_REVIEW_REQUIRED":
+                summary.update(
+                    {
+                        "format": "rootloom-human-review-result-v1",
+                        "runner_version": RUNNER_VERSION,
+                        "run_id": run_dir.name,
+                        "metadata_artifact": "00-metadata.json",
+                    }
+                )
                 summary["human_review_binding"] = compute_human_review_binding(
                     repo,
                     run_dir,

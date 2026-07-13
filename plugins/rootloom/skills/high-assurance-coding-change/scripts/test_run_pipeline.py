@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -55,22 +56,63 @@ class RunnerGateTests(unittest.TestCase):
 
     def make_human_review_result(self, name: str) -> Path:
         review_dir = self.root / name
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(
             review_dir / "result.json",
             {**core, "human_review_binding": binding},
         )
         return review_dir
+
+    def human_review_core(
+        self,
+        review_dir: Path,
+        protected_deletions: list[str] | None = None,
+    ) -> dict[str, object]:
+        review_dir.chmod(0o700)
+        protected = sorted(protected_deletions or ["protected.txt"])
+        delta_artifacts = {
+            "status": "final-status.txt",
+            "staged_patch": "final-staged.patch",
+            "unstaged_patch": "final-unstaged.patch",
+            "head_to_worktree_patch": "final-head-to-worktree.patch",
+            "untracked_patch": "final-untracked.patch",
+            "untracked_manifest": "final-untracked.json",
+            "ignored_metadata": "final-ignored-metadata.json",
+            "redacted_untracked_metadata": "final-redacted-untracked-metadata.json",
+        }
+        metadata_artifact = "00-metadata.json"
+        for artifact in [metadata_artifact, *delta_artifacts.values()]:
+            path = review_dir / artifact
+            if not path.exists():
+                path.write_text("{}\n", encoding="utf-8")
+        return {
+            "format": "rootloom-human-review-result-v1",
+            "runner_version": runner.RUNNER_VERSION,
+            "run_id": review_dir.name,
+            "metadata_artifact": metadata_artifact,
+            "result": "HUMAN_REVIEW_REQUIRED",
+            "run_dir": str(review_dir),
+            "repair_cycles": 0,
+            "changed_paths": protected,
+            "allowed_paths": protected,
+            "git_index_unchanged": True,
+            "git_status": "",
+            "git_diff_stat": "",
+            "untracked": [],
+            "ignored_metadata": [
+                {"path": path, "kind": "missing"} for path in protected
+            ],
+            "redacted_untracked_metadata": [],
+            "protected_deletions": protected,
+            "delta_artifacts": delta_artifacts,
+        }
 
     def run_human_review_verify(self, review_dir: Path) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
@@ -109,6 +151,37 @@ class RunnerGateTests(unittest.TestCase):
         assert callable(mutate)
         mutate(result)
         runner.write_json(result_path, result)
+
+    def rewrite_decision_pair(
+        self,
+        review_dir: Path,
+        mutate: object,
+    ) -> None:
+        terminal_path = review_dir / "human-review.ndjson"
+        record = json.loads(terminal_path.read_text(encoding="utf-8"))
+        assert callable(mutate)
+        mutate(record)
+        terminal_payload = runner.encode_ndjson_value(record)
+        terminal_path.write_bytes(terminal_payload)
+        summary = review_decision.decision_summary(record, terminal_payload)
+        (review_dir / "human-review-summary.json").write_bytes(
+            review_decision.decision_summary_payload(summary)
+        )
+
+    def filesystem_snapshot(self, root: Path) -> dict[str, tuple[object, ...]]:
+        snapshot: dict[str, tuple[object, ...]] = {}
+        for path in sorted([root, *root.rglob("*")]):
+            relative = "." if path == root else path.relative_to(root).as_posix()
+            info = path.lstat()
+            payload = path.read_bytes() if path.is_file() and not path.is_symlink() else b""
+            snapshot[relative] = (
+                info.st_mode,
+                info.st_size,
+                info.st_mtime_ns,
+                info.st_ctime_ns,
+                payload,
+            )
+        return snapshot
 
     def assert_equal_length_decision_mutation_rejected(
         self,
@@ -1209,13 +1282,9 @@ class RunnerGateTests(unittest.TestCase):
     def test_human_review_decision_binds_artifacts_and_refuses_drift(self) -> None:
         script = MODULE_PATH.with_name("review_decision.py")
         first = self.root / "human-review-accept"
-        first.mkdir()
+        first.mkdir(mode=0o700)
         (first / "evidence.json").write_text("{}\n", encoding="utf-8")
-        first_core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(first),
-            "protected_deletions": ["protected.txt"],
-        }
+        first_core = self.human_review_core(first, ["protected.txt"])
         binding = runner.compute_human_review_binding(
             self.repo,
             first,
@@ -1249,7 +1318,7 @@ class RunnerGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertNotEqual(tampered.returncode, 0)
-        self.assertIn("binding drifted", tampered.stderr)
+        self.assertIn("protected_deletions", tampered.stderr)
         runner.write_json(first / "result.json", first_result)
         with runner.repository_lock(self.repo):
             locked = subprocess.run(
@@ -1316,13 +1385,9 @@ class RunnerGateTests(unittest.TestCase):
         self.assertIn("terminal decision", duplicate.stderr)
 
         second = self.root / "human-review-drift"
-        second.mkdir()
+        second.mkdir(mode=0o700)
         (second / "evidence.json").write_text("{}\n", encoding="utf-8")
-        second_core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(second),
-            "protected_deletions": [],
-        }
+        second_core = self.human_review_core(second)
         binding = runner.compute_human_review_binding(
             self.repo,
             second,
@@ -1393,12 +1458,8 @@ class RunnerGateTests(unittest.TestCase):
         git(self.repo, "add", ".gitignore")
         git(self.repo, "commit", "-qm", "ignore env")
         review_dir = self.root / "human-review-recreated-ignored"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [".env"],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir, [".env"])
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
@@ -1429,7 +1490,7 @@ class RunnerGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("must remain exactly missing", refused.stderr)
+        self.assertIn("protected deletion state is stale", refused.stderr)
         self.assertFalse((review_dir / "human-review.ndjson").exists())
 
     def test_human_review_v2_result_fails_closed_instead_of_upgrading(self) -> None:
@@ -1472,7 +1533,7 @@ class RunnerGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("unsupported human review binding version", refused.stderr)
+        self.assertIn("Result Envelope", refused.stderr)
         self.assertFalse((review_dir / "human-review.ndjson").exists())
 
     def test_human_review_v3_result_fails_closed_instead_of_upgrading(self) -> None:
@@ -1515,16 +1576,14 @@ class RunnerGateTests(unittest.TestCase):
             stderr=subprocess.PIPE,
         )
         self.assertNotEqual(refused.returncode, 0)
-        self.assertIn("unsupported human review binding version", refused.stderr)
+        self.assertIn("Result Envelope", refused.stderr)
         self.assertFalse((review_dir / "human-review.ndjson").exists())
 
     def test_human_review_malformed_v4_floor_fails_before_state_capture(self) -> None:
         review_dir = self.root / "human-review-v4-missing-floor"
-        review_dir.mkdir()
+        review_dir.mkdir(mode=0o700)
         result = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
+            **self.human_review_core(review_dir),
             "human_review_binding": {
                 "format": "rootloom-human-review-binding-v4",
                 "state_policy": {},
@@ -1547,11 +1606,9 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_missing_v4_commitment_fails_before_state_capture(self) -> None:
         review_dir = self.root / "human-review-v4-missing-commitment"
-        review_dir.mkdir()
+        review_dir.mkdir(mode=0o700)
         result = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
+            **self.human_review_core(review_dir),
             "human_review_binding": {
                 "format": "rootloom-human-review-binding-v4",
                 "state_policy": {},
@@ -1575,16 +1632,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_post_write_drift_compensates_terminal_record(self) -> None:
         review_dir = self.root / "human-review-post-write-drift"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(
             review_dir / "result.json",
@@ -1607,16 +1661,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_terminal_hardlink_preserves_external_victim(self) -> None:
         review_dir = self.root / "human-review-terminal-hardlink"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(
             review_dir / "result.json",
@@ -1642,16 +1693,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_terminal_replacement_before_append_preserves_victim(self) -> None:
         review_dir = self.root / "human-review-terminal-replaced-before-append"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(
             review_dir / "result.json",
@@ -1700,16 +1748,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_terminal_compensation_uses_pinned_descriptor(self) -> None:
         review_dir = self.root / "human-review-terminal-pinned-compensation"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(
             review_dir / "result.json",
@@ -1752,16 +1797,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_v4_rejects_copied_run_directory(self) -> None:
         source = self.root / "human-review-source"
-        source.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(source),
-            "protected_deletions": [],
-        }
+        source.mkdir(mode=0o700)
+        core = self.human_review_core(source)
         binding = runner.compute_human_review_binding(
             self.repo,
             source,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         runner.write_json(source / "result.json", {**core, "human_review_binding": binding})
         copied = self.root / "human-review-copy"
@@ -1777,16 +1819,13 @@ class RunnerGateTests(unittest.TestCase):
 
     def test_human_review_result_reread_mismatch_compensates_decision(self) -> None:
         review_dir = self.root / "human-review-result-reread"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": [],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
             runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
         )
         result = {**core, "human_review_binding": binding}
         runner.write_json(review_dir / "result.json", result)
@@ -2122,6 +2161,228 @@ class RunnerGateTests(unittest.TestCase):
         }
         self.assertEqual(after, before)
 
+    def test_human_review_verify_unverified_for_execution_failures(self) -> None:
+        review_dir = self.accepted_human_review_result(
+            "human-review-verify-unverified-errors"
+        )
+        failures = (
+            "could not start git status",
+            "permission denied while reading Artifact",
+            "human review binding deadline exceeded",
+            "temporary Artifact I/O failure",
+            "repository topology scan failed",
+        )
+        for message in failures:
+            with self.subTest(message=message), mock.patch.object(
+                runner,
+                "compute_human_review_binding",
+                side_effect=runner.PipelineError(message, 9),
+            ):
+                with self.assertRaisesRegex(
+                    review_decision.VerificationError,
+                    "could not be verified",
+                ):
+                    review_decision.verify_decision_pair(self.repo, review_dir)
+
+    def test_human_review_verify_cli_reports_unverified_thirteen(self) -> None:
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch.object(
+            review_decision,
+            "verify_decision_pair",
+            side_effect=review_decision.VerificationError("temporary Git failure"),
+        ), mock.patch.object(sys, "stdout", stdout), mock.patch.object(
+            sys,
+            "stderr",
+            stderr,
+        ):
+            exit_code = review_decision.main(
+                [
+                    "verify",
+                    "--repo",
+                    str(self.repo),
+                    "--run-dir",
+                    str(self.run_dir),
+                ]
+            )
+        self.assertEqual(exit_code, review_decision.VERIFY_UNVERIFIED_EXIT)
+        self.assertEqual(stdout.getvalue().strip(), "UNVERIFIED")
+        self.assertIn("temporary Git failure", stderr.getvalue())
+
+    def test_human_review_verify_refuses_recorded_budget_above_local_ceiling(self) -> None:
+        review_dir = self.root / "human-review-verify-local-ceiling"
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir)
+        state_policy = {
+            "max_ignored_paths": runner.DEFAULT_MAX_IGNORED_PATHS,
+            "max_state_paths": runner.DEFAULT_MAX_STATE_PATHS,
+            "max_state_bytes": runner.DEFAULT_MAX_STATE_BYTES,
+            "sensitive_paths": [],
+            "redact_untracked_dotfiles": False,
+            "max_human_review_artifact_bytes": (
+                runner.DEFAULT_MAX_HUMAN_REVIEW_ARTIFACT_BYTES
+            ),
+            "max_human_review_total_bytes": (
+                runner.DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES + 1
+            ),
+            "max_human_review_binding_seconds": (
+                runner.DEFAULT_MAX_HUMAN_REVIEW_BINDING_SECONDS
+            ),
+        }
+        binding = runner.compute_human_review_binding(
+            self.repo,
+            review_dir,
+            runner.human_review_result_core_sha256(core),
+            core["protected_deletions"],
+            state_policy=state_policy,
+        )
+        runner.write_json(
+            review_dir / "result.json",
+            {**core, "human_review_binding": binding},
+        )
+        review_decision.decide(
+            self.repo,
+            review_dir,
+            "reviewer@example.test",
+            "accept",
+        )
+        verified = self.run_human_review_verify(review_dir)
+        self.assertEqual(verified.returncode, review_decision.VERIFY_UNVERIFIED_EXIT)
+        self.assertEqual(verified.stdout.strip(), "UNVERIFIED")
+        self.assertIn("local ceiling", verified.stderr)
+        raised_limits = review_decision.VerificationLimits(
+            max_total_bytes=runner.DEFAULT_MAX_HUMAN_REVIEW_TOTAL_BYTES + 1
+        )
+        self.assertEqual(
+            review_decision.verify_decision_pair(
+                self.repo,
+                review_dir,
+                raised_limits,
+            )["status"],
+            "VALID",
+        )
+
+    def test_human_review_result_envelope_rejects_incomplete_or_conflicting_state(self) -> None:
+        cases = {
+            "minimal": lambda result: result.clear(),
+            "empty-deletions": lambda result: result.update(
+                {
+                    "protected_deletions": [],
+                    "changed_paths": [],
+                    "ignored_metadata": [],
+                }
+            ),
+            "repair-cycle": lambda result: result.update({"repair_cycles": 1}),
+            "change-set": lambda result: result.update({"changed_paths": []}),
+            "git-index": lambda result: result.update({"git_index_unchanged": False}),
+            "allowed-paths": lambda result: result.update({"allowed_paths": []}),
+            "delta-artifact": lambda result: result["delta_artifacts"].update(
+                {"status": "not-bound.txt"}
+            ),
+            "metadata": lambda result: result.update({"ignored_metadata": []}),
+            "runner-version": lambda result: result.update({"runner_version": "bad"}),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                review_dir = self.accepted_human_review_result(
+                    f"human-review-result-envelope-{label}"
+                )
+                self.mutate_human_review_result(review_dir, mutate)
+                with mock.patch.object(
+                    runner,
+                    "compute_human_review_binding",
+                    side_effect=AssertionError("invalid Result must not recapture"),
+                ):
+                    with self.assertRaises(review_decision.EvidenceInvalidError):
+                        review_decision.verify_decision_pair(self.repo, review_dir)
+
+    def test_human_review_decision_record_requires_canonical_fields(self) -> None:
+        cases = {
+            "reviewer-whitespace": lambda record: record.update(
+                {"reviewer": " reviewer@example.test "}
+            ),
+            "account-control": lambda record: record.update(
+                {"local_account": "user\n"}
+            ),
+            "negative-uid": lambda record: record.update({"local_uid": -1}),
+            "noncanonical-time": lambda record: record.update(
+                {"decided_at": "2026-01-01T00:00:00+00:00"}
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                review_dir = self.accepted_human_review_result(
+                    f"human-review-decision-schema-{label}"
+                )
+                self.rewrite_decision_pair(review_dir, mutate)
+                verified = self.run_human_review_verify(review_dir)
+                self.assertEqual(verified.returncode, 9, verified.stderr)
+                self.assertEqual(verified.stdout.strip(), "INVALID")
+
+    def test_human_review_binding_cross_fields_fail_before_recapture(self) -> None:
+        cases = {
+            "worktree-count": lambda binding: binding["repository_state"].update(
+                {"worktree_entry_count": binding["repository_state"]["path_count"] + 1}
+            ),
+            "path-budget": lambda binding: binding["repository_state"].update(
+                {"path_count": binding["state_policy"]["max_state_paths"] + 1}
+            ),
+            "run-mode": lambda binding: binding["run_directory"].update(
+                {"mode": stat.S_IFDIR | 0o755}
+            ),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(label=label):
+                review_dir = self.accepted_human_review_result(
+                    f"human-review-binding-cross-field-{label}"
+                )
+                self.mutate_human_review_result(
+                    review_dir,
+                    lambda result, mutate=mutate: mutate(
+                        result["human_review_binding"]
+                    ),
+                )
+                with mock.patch.object(
+                    runner,
+                    "compute_human_review_binding",
+                    side_effect=AssertionError("invalid Binding must not recapture"),
+                ):
+                    with self.assertRaises(review_decision.EvidenceInvalidError):
+                        review_decision.verify_decision_pair(self.repo, review_dir)
+
+    def test_human_review_verify_git_capture_is_read_only_and_explicit(self) -> None:
+        review_dir = self.accepted_human_review_result(
+            "human-review-verify-read-only-git"
+        )
+        before_repo = self.filesystem_snapshot(self.repo)
+        before_run = self.filesystem_snapshot(review_dir)
+        original_compute = runner.compute_human_review_binding
+
+        def assert_read_only_git(*args: object, **kwargs: object) -> dict[str, object]:
+            self.assertEqual(os.environ.get("GIT_OPTIONAL_LOCKS"), "0")
+            self.assertEqual(os.environ.get("GIT_CONFIG_KEY_0"), "core.fsmonitor")
+            self.assertEqual(os.environ.get("GIT_CONFIG_VALUE_0"), "false")
+            self.assertEqual(os.environ.get("GIT_CONFIG_KEY_1"), "core.untrackedCache")
+            self.assertEqual(os.environ.get("GIT_CONFIG_VALUE_1"), "false")
+            return original_compute(*args, **kwargs)
+
+        with mock.patch.object(
+            runner,
+            "compute_human_review_binding",
+            side_effect=assert_read_only_git,
+        ):
+            verified = review_decision.verify_decision_pair(self.repo, review_dir)
+        self.assertEqual(verified["status"], "VALID")
+        self.assertEqual(self.filesystem_snapshot(self.repo), before_repo)
+        self.assertEqual(self.filesystem_snapshot(review_dir), before_run)
+        self.assertFalse((self.repo / ".git" / "index.lock").exists())
+
+    def test_human_review_package_does_not_import_run_pipeline(self) -> None:
+        package = MODULE_PATH.with_name("human_review")
+        for path in package.glob("*.py"):
+            with self.subTest(path=path.name):
+                self.assertNotIn("import run_pipeline", path.read_text(encoding="utf-8"))
+
     def test_human_review_verify_invalid_schema_always_exits_nine(self) -> None:
         cases = {
             "metadata-floor": lambda result: result["human_review_binding"].update(
@@ -2197,12 +2458,8 @@ class RunnerGateTests(unittest.TestCase):
     def test_human_review_verify_rejects_malformed_protected_commitment(self) -> None:
         (self.repo / "secrets").mkdir()
         review_dir = self.root / "human-review-invalid-protected-commitment"
-        review_dir.mkdir()
-        core = {
-            "result": "HUMAN_REVIEW_REQUIRED",
-            "run_dir": str(review_dir),
-            "protected_deletions": ["secrets/deleted.env"],
-        }
+        review_dir.mkdir(mode=0o700)
+        core = self.human_review_core(review_dir, ["secrets/deleted.env"])
         binding = runner.compute_human_review_binding(
             self.repo,
             review_dir,
@@ -2430,6 +2687,26 @@ class RunnerGateTests(unittest.TestCase):
         self.assertEqual(verified.returncode, review_decision.VERIFY_STALE_EXIT)
         self.assertEqual(verified.stdout.strip(), "STALE")
         self.assertIn("stale", verified.stderr)
+
+    def test_human_review_verify_reports_stale_for_protected_target_restoration(self) -> None:
+        review_dir = self.accepted_human_review_result(
+            "human-review-verify-protected-stale"
+        )
+        (self.repo / "protected.txt").write_text("restored\n", encoding="utf-8")
+        verified = self.run_human_review_verify(review_dir)
+        self.assertEqual(verified.returncode, review_decision.VERIFY_STALE_EXIT)
+        self.assertEqual(verified.stdout.strip(), "STALE")
+        self.assertIn("protected deletion", verified.stderr)
+
+    def test_human_review_verify_reports_stale_for_artifact_removal(self) -> None:
+        review_dir = self.accepted_human_review_result(
+            "human-review-verify-artifact-stale"
+        )
+        (review_dir / "final-status.txt").unlink()
+        verified = self.run_human_review_verify(review_dir)
+        self.assertEqual(verified.returncode, review_decision.VERIFY_STALE_EXIT)
+        self.assertEqual(verified.stdout.strip(), "STALE")
+        self.assertIn("Artifact", verified.stderr)
 
     def test_human_review_summary_failure_compensates_both_outputs(self) -> None:
         review_dir = self.make_human_review_result("human-review-summary-failure")

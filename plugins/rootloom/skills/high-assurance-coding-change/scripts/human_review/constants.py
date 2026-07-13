@@ -1,9 +1,3 @@
-"""Dependency-free Human Review resource and public status constants."""
+"""Compatibility exports for neutral Runner-owned Human Review contracts."""
 
-MAX_HUMAN_REVIEW_ARTIFACTS = 256
-MAX_HUMAN_REVIEW_DECISION_BYTES = 1024 * 1024
-MAX_HUMAN_REVIEW_IDENTITY_BYTES = 4096
-MAX_HUMAN_REVIEW_DIAGNOSTIC_BYTES = 4096
-
-VERIFY_INVALID_EXIT = 9
-VERIFY_STALE_EXIT = 12
+from runner.contracts import *  # noqa: F403

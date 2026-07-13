@@ -6,6 +6,31 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [1.2.19] - 2026-07-13
+
+### Security
+
+- Add typed Human Review verification outcomes: malformed or unsafe evidence is `INVALID`/9, completed current-state mismatch is `STALE`/12, and Git, permission, I/O, deadline, topology, or local resource-ceiling failures are `UNVERIFIED`/13. The verifier no longer claims staleness when observation did not complete.
+- Require the exact `rootloom-human-review-result-v1` Envelope before any Decision Pair or current-state validation. Protected deletions must be nonempty, deletion-only, canonical, authorized, zero-repair, index-preserving, exactly represented by metadata records, and backed by bound metadata/Delta Artifacts plus Runner/run identity.
+- Treat persisted Binding policy as production evidence only. Verification applies independent local ceilings for ignored/state paths, state bytes, per/total Artifact bytes, and time; a recorded limit above the local ceiling returns `UNVERIFIED` before recapture.
+- Run verifier repository recapture with `GIT_OPTIONAL_LOCKS=0` and command-scoped `core.fsmonitor=false` / `core.untrackedCache=false`, and regression-test the complete repository, Git-control, Run Directory, index, index-lock, and repository-lock filesystem snapshot.
+
+### Changed
+
+- Rootloom is now version 1.2.19 and the strict high-assurance runner is version 2.24.
+- Add verifier flags `--max-artifact-bytes`, `--max-total-bytes`, `--max-state-paths`, `--max-state-bytes`, `--max-ignored-paths`, and `--timeout` without allowing persisted evidence to raise them implicitly.
+- Require canonical control-free reviewer/local-account fields, a null or nonnegative local UID, and canonical microsecond UTC decision timestamps from the shared producer/consumer field validator.
+- Add Binding cross-field checks for repository counts and budgets, Run Directory mode 0700, exact protected-deletion cardinality, and bound Result Artifact references.
+- Move shared errors, public status/resource contracts, and verifier Git environment into neutral `runner/` modules. Human Review modules no longer import `run_pipeline.py`; the public CLI injects the Runner runtime explicitly.
+
+### Compatibility
+
+- Binding v4 and Decision v4 remain unchanged. Older Human Review Results without Result Envelope v1 fail closed as `INVALID` and must be regenerated; they are never inferred, rewritten, or silently upgraded.
+
+### Tests
+
+- Add Git-unavailable, permission, deadline, temporary-I/O, topology, consumer-ceiling, real repository/protected/Artifact drift, incomplete Result, canonical Decision, schema cross-field, read-only filesystem, and dependency-direction regressions.
+
 ## [1.2.18] - 2026-07-13
 
 ### Security

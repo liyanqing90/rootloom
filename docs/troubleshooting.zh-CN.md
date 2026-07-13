@@ -95,9 +95,9 @@ codex execpolicy check --pretty \
 
 这是显式授权 `--allow-protected-path-delete` 操作后的预期结果。授权会在 Writer 前检查，并使该任务成为 deletion-only，因此普通修改、rename、move 和 visible 文件创建必须拆到另一次任务。Protected deletion 模式还要求干净基线和 `--max-repair-cycles 0`。验证和模型 Review 已通过，但旧的 protected 内容被刻意保持为从未读取，因此 Runner 不能给出自动 PASS。请使用内置决定命令；Human Review v4 会在 supplied Run 是副本、Result 变化、任一 protected 目标重新出现（包括 ignored 文件）、父边界变化、完整 metadata-only 下限无法保持、规范化仓库承诺漂移或已审证据变化时拒绝 accept。版本 2/3 审核结果必须重跑，或通过显式外部流程处理。自动化不得把退出码 10 转成成功。
 
-## Decision Pair 验证报告 `INVALID` 或 `STALE`
+## Decision Pair 验证报告 `INVALID`、`STALE` 或 `UNVERIFIED`
 
-运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Binding/Pair Schema 格式错误、内部冲突、非规范、超预算、路径不安全，或不再是普通单链接私有文件。只有结构已确认有效、但当前仓库、已审 Artifact 或 protected deletion 状态不再匹配时才输出 `STALE`/12。stdout 仍只有一个状态词；stderr 包含一条不带 Artifact 内容的有界诊断原因。应重新运行高保障流程，不要编辑证据。验证命令完全只读，不刷新、修复或签名证据。
+运行 `review_decision.py verify --repo ... --run-dir ...`，不要提供 reviewer 或 decision 参数。`VALID`/0 表示规范 Result Envelope、Terminal、Summary、仓库/protected deletion 承诺与 Run Directory 身份仍一致。`INVALID`/9 表示持久化 Result/Binding/Pair 格式、安全、规范性或内部一致性无效。`STALE`/12 表示结构有效且完整重捕获后当前仓库、已审 Artifact 或 protected deletion 状态不同。`UNVERIFIED`/13 表示 Git 启动、权限/I/O、拓扑扫描、Deadline 或独立本地资源上限阻止了结论；只有修复环境或明确调整 verifier 上限后才应重试，记录中的 Policy 不能自动抬高本地上限。stdout 仍只有一个状态词，stderr 包含一条不带 Artifact 内容的有界原因。验证子进程禁用 Git Optional Lock、fsmonitor 与 untracked cache 行为，不会刷新、修复、签名或改写证据。
 
 ## 严格 Runner 拒绝 verification entrypoint 变化
 
