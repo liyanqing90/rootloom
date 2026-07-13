@@ -45,7 +45,7 @@ The challenge contract improves default search behavior but cannot prove that a 
 
 Rootloom is Codex-specific by design. Skills, Hooks, Rules, profiles, and custom-agent configuration follow Codex interfaces and may need maintenance as those interfaces change. Portable project truth should live in source, tests, schemas, ordinary documentation, and decision records—not only in Codex configuration.
 
-The strict high-assurance runner supports Linux, macOS, and WSL and rejects native Windows. The candidate CI matrix runs full Linux checks, macOS Strict Runner tests, and portable setup/guidance/hook tests on macOS and Windows; exact POSIX permission-mode assertions remain Linux/macOS-only because Windows exposes ACL/read-only semantics rather than `fchmod`. Those new jobs become certification evidence only after the exact candidate is pushed and observed passing. Native custom-role/model routing is still not attested on the currently verified spawn surface, so the sequential runner is the supported route when model assignment must be evidenced.
+The strict high-assurance runner supports Linux, macOS, and WSL and rejects native Windows. The v1.2.12 CI matrix runs full Linux checks, macOS Strict Runner tests, and portable setup/guidance/hook tests on macOS and Windows; exact POSIX permission-mode assertions remain Linux/macOS-only because Windows exposes ACL/read-only semantics rather than `fchmod`. Release run `29214569463` passed those scopes against the exact tagged commit. Native custom-role/model routing is still not attested on the currently verified spawn surface, so the sequential runner is the supported route when model assignment must be evidenced.
 
 The compatibility policy has two tracks:
 

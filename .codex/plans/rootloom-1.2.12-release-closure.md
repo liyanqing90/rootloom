@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-13
 - Task type: security, persisted recovery contract, release
@@ -108,6 +108,15 @@ Success requires:
 - 2026-07-13 — Post-fix local gates passed again: 50 repository tests, 82 Runner tests, compatibility smoke, repository validator, and diff check. Exact POSIX-mode assertions are explicitly scoped away from Windows rather than pretending ACL semantics equal `fchmod`.
 - 2026-07-13 — Second remote run `29214414883` passed the lock boundary and exposed two deeper portability assumptions: hard-coded POSIX post-write modes and LF-only config rendering. Mode drift is now a POSIX-only contract and config management preserves the active LF/CRLF style; the existing runtime-config regression now exercises CRLF on every platform.
 - 2026-07-13 — Post-portability-fix local gates passed: 51 repository tests, 82 Runner tests, compatibility smoke, repository validator, and diff check; a platform-contract-disabled recovery regression exercises the Windows content-state path locally.
+- 2026-07-13 — Final candidate `eb2052edfd791d07fe25bb7d765bda43aebb23e1` (tree `59e43d904e28bba62cd0a9954527eb29e3685011`) passed CI run `29214569463` across Linux 3.11–3.14, macOS portable/Strict Runner, Windows portable, and pinned Codex CLI compatibility.
+- 2026-07-13 — Published annotated tag object `ed97ddff4aab28bef819210398a843d2a216e799` as `v1.2.12`; its peeled target and remote `main` both matched the final candidate.
+- 2026-07-13 — Published GitHub Release `https://github.com/liyanqing90/rootloom/releases/tag/v1.2.12` at `2026-07-13T00:11:37Z`; Latest API confirmed non-draft, non-prerelease state and the exact target commit.
+
+## Outcome
+
+- Rootloom 1.2.12 is published from the exact locally and remotely verified code tree.
+- The two failed Windows candidate runs remain visible evidence of the portability defects found before tagging; no failed candidate was tagged or released.
+- Release verification is reproducible from commit, tree, CI run, annotated-tag object/peel, and GitHub Release metadata recorded above.
 
 ## Durable decision records
 
