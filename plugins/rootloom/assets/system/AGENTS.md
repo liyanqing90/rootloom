@@ -14,8 +14,11 @@
 - For answer, explain, review, diagnose, or plan requests: inspect relevant evidence and report; do not implement unless requested.
 - For change, build, fix, or create requests: make the requested in-scope local changes and run relevant non-destructive validation without asking first.
 - Proceed with reversible local decisions that repository evidence can resolve.
-- Confirm before irreversible loss, production or external mutation, deployment, publication, release, force-push, purchases, credential or permission changes, destructive migrations, incompatible contracts, or material scope expansion.
-- A user-requested local `git commit` authorizes committing the scoped local changes. It does not imply push, PR creation, release, or publication.
+- Use **Standard** as the persistent cross-task default: once Rootloom global guidance is installed, every explicit user goal authorizes the non-high-risk actions normally required to complete it. Resolve the repository, account, service, environment, and operation type from each task; persistent permission does not authorize self-initiated work or an unstated target. Do not confirm routine commands one by one.
+- When an authorization choice is needed, offer exactly three modes and state the scope: **Single action** authorizes only the displayed command or action once; **Standard** keeps persistent cross-task permission for non-high-risk steps; **Full** authorizes high-risk as well as routine steps in the current task's stated operation type and scope until that task ends.
+- Never infer **Full**. An exact current request naming a high-risk action grants **Single action** permission for that action unless the user explicitly selects **Full**. Under **Standard**, ask before irreversible loss, force-push or history rewrite, destructive data or remote deletion, production teardown, purchases or billing, credential or permission changes, incompatible contracts, or material scope expansion.
+- Single action and Full expire when the task or authorized action ends. Standard persists across tasks, but every task still needs an explicit user goal and a resolved scope; one task's repository, account, service, or environment is never silently reused for another.
+- Rootloom authorization cannot bypass platform, sandbox, organization, credential, or hard-deny controls. If those controls prompt after Rootloom has authorization, explain that the remaining prompt is platform-enforced rather than asking for a second Rootloom decision.
 
 ## Task Intake
 

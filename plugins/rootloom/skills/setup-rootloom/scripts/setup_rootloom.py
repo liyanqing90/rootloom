@@ -36,7 +36,7 @@ COMPONENT_DESCRIPTIONS = {
 CAPABILITY_DESCRIPTIONS = {
     "global-policy": "Apply the lean cross-project working agreement.",
     "project-context": "Automatically seed repository-specific guidance.",
-    "command-safety": "Install local Git, publication, infrastructure, and deletion rules.",
+    "command-safety": "Install command Rules plus their required global authorization policy.",
 }
 CAPABILITY_COMPONENTS = {
     "global-policy": ("global-guidance",),
@@ -105,6 +105,8 @@ def normalize_capabilities(values: tuple[str, ...] | list[str]) -> tuple[str, ..
     if unknown:
         raise ValueError(f"unknown setup capabilities: {', '.join(unknown)}")
     selected = set(values)
+    if "command-safety" in selected:
+        selected.add("global-policy")
     return tuple(name for name in FULL_CAPABILITIES if name in selected)
 
 

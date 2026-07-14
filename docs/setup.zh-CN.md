@@ -42,6 +42,8 @@ python3 <setup-skill>/scripts/setup_rootloom.py plan \
   --capabilities global-policy,project-context,command-safety
 ```
 
+选择 `command-safety` 时会自动包含 `global-policy`；负责避免重复弹窗的命令规则不能脱离管理普通权限、本条命令和所有权限的全局指导单独安装。
+
 ## 托管目标
 
 | 路径 | 用途 |
@@ -75,10 +77,18 @@ Setup：
 ```bash
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git commit -m test
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git push origin main
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh pr merge 123 --merge
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh release create v1.0.0
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- npm publish
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- kubectl apply -f deployment.yaml
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git push --force-with-lease origin main
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh release delete v1.0.0
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- terraform destroy
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git reset --hard
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- rm -rf /
 ```
 
-预期分别为 `allow`、`prompt` 和 `forbidden`。Rules 是 argv 前缀策略，不是完整 shell 安全边界。
+预期依次是十个 `allow`，最后一个 `forbidden`。授权状态由安装后的全局指导管理，而不是由参数规则管理：本条命令只生效一次；普通权限跨任务持久，覆盖每个明确目标的全部非高危步骤；所有权限只在当前任务与范围内覆盖高危步骤。命令规则负责避免语义授权后再次弹窗，只保留灾难性递归删除的硬拒绝。其他更严格的有效规则或平台策略仍可能要求审批。
 
 ## 修改 preset 或回滚
 

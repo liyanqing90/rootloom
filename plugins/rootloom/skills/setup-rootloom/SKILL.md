@@ -21,6 +21,7 @@ python3 <skill-dir>/scripts/setup_rootloom.py list-components
 | `engineering` | Compatibility alias for `personal` |
 
 Exact capabilities are `global-policy`, `project-context`, and `command-safety`.
+`command-safety` always includes `global-policy` because the Rules intentionally defer authorization mode and scope to that guidance.
 
 ## Optional global layer
 
@@ -51,9 +52,10 @@ If the plan contains `conflict`, show the exact paths. Use `--replace-conflicts`
 
 When `command-safety` is selected, run `codex execpolicy check` for at least:
 
-- `git commit` → allow;
-- `git push` → prompt;
-- `git reset --hard` → forbidden.
+- routine and high-risk commands represented in the Rules → allow, because static argv Rules cannot carry authorization-mode state;
+- catastrophic recursive deletion of root, home, the current directory, or its parent → forbidden.
+
+The installed global guidance owns three authorization modes. Single action covers one displayed command/action. Standard is the persistent cross-task default for all non-high-risk steps required by each explicit goal; every task still resolves its own operation type and scope. Full covers high-risk steps only in the current task and scope and is never inferred. When a Standard task reaches a high-risk boundary, offer all three modes once. Rules avoid duplicating that semantic decision; they do not grant authority themselves. Other active Rules and Codex platform policy remain authoritative and may still require approval.
 
 Start a new Codex task after setup or plugin update so assets and Hooks are rediscovered.
 

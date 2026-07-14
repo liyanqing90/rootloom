@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-07-14
+
+### Added
+
+- Add three explicit authorization modes: a one-time Single action, persistent cross-task Standard permission for non-high-risk work, and task-scoped Full permission that can include high-risk steps.
+- Add independent English and Chinese architecture diagrams with no release-number binding, plus rendered review fallbacks and validator-enforced language isolation.
+
+### Changed
+
+- Make Standard permission the reusable ordinary default across tasks while resolving each new goal's operation type and scope; keep Full permission bounded to the current task and never infer it.
+- Let static command Rules classify represented routine and high-risk commands without duplicating conversational authorization prompts; catastrophic recursive deletion remains forbidden and platform controls remain authoritative.
+- Make command-safety automatically include global policy so installed Rules always have the guidance that owns authorization mode and scope.
+- Make README product labels and architecture surfaces evergreen instead of embedding current Personal Core or retained Assurance release numbers.
+
+### Fixed
+
+- Replace the stale shared architecture image that still described the former product version and local-versus-external action boundary, and stop reusing an English-only diagram in Chinese documentation.
+
 ## [2.2.2] - 2026-07-14
 
 ### Added

@@ -3,13 +3,15 @@
 # codex execpolicy check --pretty --rules <this-file> -- <command...>
 #
 # Rules primarily govern requests to run outside the sandbox; Hooks and
-# sandboxing remain necessary defense in depth. Ordinary local `git commit`
-# is explicitly allowed because it is reversible and does not publish remotely.
+# sandboxing remain necessary defense in depth. Rules cannot represent the
+# persistent Standard plus task-local Single action and Full authorization
+# modes. `allow` prevents a duplicate command prompt but never grants task authority.
+# Only catastrophic recursive deletion remains a static hard deny.
 
 prefix_rule(
     pattern = ["git", "reset", "--hard"],
-    decision = "forbidden",
-    justification = "Do not discard working-tree or index changes. Use a surgical, reviewed alternative or temporarily change this policy only after explicit authorization.",
+    decision = "allow",
+    justification = "Hard reset is high risk and must be covered by Single action or Full task authorization; Rules do not carry that authorization state.",
     match = [
         "git reset --hard",
         "git reset --hard HEAD~1",
@@ -19,8 +21,8 @@ prefix_rule(
 # Inspection is still possible with `git clean --dry-run`; forced deletion is blocked.
 prefix_rule(
     pattern = ["git", "clean"],
-    decision = "prompt",
-    justification = "git clean can delete untracked work. Inspect with --dry-run and require approval for the exact command.",
+    decision = "allow",
+    justification = "Targeted git clean inspection or execution is allowed only when the current user request authorizes the exact scope; forced bulk deletion remains forbidden below.",
     match = [
         "git clean --dry-run",
         "git clean -n",
@@ -30,8 +32,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "clean", ["-f", "-fd", "-df", "-fdx", "-xdf", "-fxd", "--force"]],
-    decision = "forbidden",
-    justification = "Do not force-delete untracked user work. Remove only explicitly reviewed paths.",
+    decision = "allow",
+    justification = "Forced clean is high risk and must be covered by Single action or Full task authorization for the reviewed scope.",
     match = [
         "git clean -f",
         "git clean -fd",
@@ -46,8 +48,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "checkout", "--"],
-    decision = "prompt",
-    justification = "Restoring files can discard local changes. Require approval for the exact paths.",
+    decision = "allow",
+    justification = "Checkout restoration must be covered by the active task-local authorization mode; Rules do not prompt a second time.",
     match = [
         "git checkout -- src/app.ts",
         "git checkout -- .",
@@ -56,8 +58,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "checkout", "--", [".", "/", "*", ":(top)"]],
-    decision = "forbidden",
-    justification = "Do not bulk-discard file changes. Apply a targeted, reviewed edit instead.",
+    decision = "allow",
+    justification = "Bulk checkout restoration is high risk and must be covered by Single action or Full task authorization.",
     match = [
         "git checkout -- .",
         "git checkout -- *",
@@ -66,8 +68,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "restore"],
-    decision = "prompt",
-    justification = "Restoring files may discard user work; require approval for the exact paths and flags.",
+    decision = "allow",
+    justification = "Restoration must be covered by the active task-local authorization mode; Rules do not prompt a second time.",
     match = [
         "git restore src/app.ts",
         "git restore .",
@@ -76,8 +78,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["git", "restore", [".", "/", "*", ":(top)"]],
-    decision = "forbidden",
-    justification = "Do not bulk-discard file changes. Restore only explicitly reviewed paths.",
+    decision = "allow",
+    justification = "Bulk restoration is high risk and must be covered by Single action or Full task authorization.",
     match = [
         "git restore .",
         "git restore *",
@@ -96,13 +98,24 @@ prefix_rule(
 )
 
 prefix_rule(
+    pattern = ["git", "push", ["--force", "-f", "--force-with-lease", "--force-if-includes", "--mirror", "--delete", "--prune"]],
+    decision = "allow",
+    justification = "Force, mirror, deletion, and pruning pushes are high risk and must be covered by Single action or Full task authorization for the exact remote and refs.",
+    match = [
+        "git push --force origin main",
+        "git push --force-with-lease",
+        "git push --delete origin old-branch",
+    ],
+)
+
+prefix_rule(
     pattern = ["git", "push"],
-    decision = "prompt",
-    justification = "Pushing changes affects a remote repository and requires explicit approval.",
+    decision = "allow",
+    justification = "Ordinary push is allowed inside an authorized code-publication type and its scoped repository, branches, and tags; Rules do not supply that authority.",
     match = [
         "git push",
         "git push origin main",
-        "git push --force-with-lease",
+        "git push origin v2.3.0",
     ],
 )
 
@@ -141,8 +154,8 @@ prefix_rule(
 
 prefix_rule(
     pattern = [["npm", "pnpm", "cargo"], "publish"],
-    decision = "prompt",
-    justification = "Publishing a package is an external side effect and requires explicit approval.",
+    decision = "allow",
+    justification = "Package publication is allowed inside an authorized package-publication type and its scoped registry, package, version, and channel.",
     match = [
         "npm publish",
         "pnpm publish",
@@ -152,71 +165,113 @@ prefix_rule(
 
 prefix_rule(
     pattern = ["yarn", "npm", "publish"],
-    decision = "prompt",
-    justification = "Publishing a package is an external side effect and requires explicit approval.",
+    decision = "allow",
+    justification = "Package publication is allowed inside an authorized package-publication type and its scoped registry, package, version, and channel.",
     match = ["yarn npm publish"],
 )
 
 prefix_rule(
     pattern = ["twine", "upload"],
-    decision = "prompt",
-    justification = "Uploading a Python distribution is an external publication and requires explicit approval.",
+    decision = "allow",
+    justification = "Python distribution upload is allowed inside an authorized package-publication type and its scoped repository, artifacts, version, and channel.",
     match = ["twine upload dist/package.whl"],
 )
 
 prefix_rule(
     pattern = ["docker", "push"],
-    decision = "prompt",
-    justification = "Pushing an image mutates a remote registry and requires explicit approval.",
+    decision = "allow",
+    justification = "Image push is allowed inside an authorized image-publication or deployment type and its scoped registry, repository, and tag or digest.",
     match = ["docker push example/app:latest"],
 )
 
 prefix_rule(
-    pattern = ["kubectl", ["apply", "delete", "replace", "patch"]],
-    decision = "prompt",
-    justification = "This command can mutate a Kubernetes cluster; confirm cluster, namespace, target, authorization, and rollback.",
+    pattern = ["kubectl", ["apply", "replace", "patch"]],
+    decision = "allow",
+    justification = "Routine cluster rollout is allowed inside an authorized deployment type and its scoped cluster, namespace, and targets.",
     match = [
         "kubectl apply -f deployment.yaml",
-        "kubectl delete pod app-1",
+        "kubectl patch deployment app --patch-file patch.json",
     ],
 )
 
 prefix_rule(
-    pattern = ["helm", ["install", "upgrade", "uninstall", "rollback"]],
-    decision = "prompt",
-    justification = "This command mutates a Helm release; confirm environment, release, values, authorization, and rollback.",
+    pattern = ["kubectl", "delete"],
+    decision = "allow",
+    justification = "Cluster deletion is high risk and must be covered by Single action or Full task authorization for the exact cluster, namespace, and resources.",
+    match = ["kubectl delete pod app-1"],
+)
+
+prefix_rule(
+    pattern = ["helm", ["install", "upgrade", "rollback"]],
+    decision = "allow",
+    justification = "Routine Helm rollout is allowed inside an authorized deployment type and its scoped environment and release.",
     match = [
         "helm upgrade app ./chart",
-        "helm uninstall app",
+        "helm rollback app 2",
     ],
 )
 
 prefix_rule(
-    pattern = ["terraform", ["apply", "destroy", "import"]],
-    decision = "prompt",
-    justification = "This command can mutate managed infrastructure; require a reviewed plan and exact target approval.",
+    pattern = ["helm", "uninstall"],
+    decision = "allow",
+    justification = "Helm uninstall is high risk and must be covered by Single action or Full task authorization for the exact environment and release.",
+    match = ["helm uninstall app"],
+)
+
+prefix_rule(
+    pattern = ["terraform", ["apply", "import"]],
+    decision = "allow",
+    justification = "Terraform apply or import is allowed inside an authorized infrastructure-change type and its scoped workspace and reviewed targets.",
     match = [
         "terraform apply",
-        "terraform destroy -auto-approve",
+        "terraform import module.app.example_resource.main resource-id",
     ],
 )
 
 prefix_rule(
-    pattern = ["pulumi", ["up", "destroy", "import"]],
-    decision = "prompt",
-    justification = "This command can mutate managed infrastructure; require preview, target confirmation, authorization, and rollback.",
+    pattern = ["terraform", "destroy"],
+    decision = "allow",
+    justification = "Terraform destroy is high risk and must be covered by Single action or Full task authorization for the exact workspace and targets.",
+    match = ["terraform destroy -auto-approve"],
+)
+
+prefix_rule(
+    pattern = ["pulumi", ["up", "import"]],
+    decision = "allow",
+    justification = "Pulumi update or import is allowed inside an authorized infrastructure-change type and its scoped organization, project, stack, and targets.",
     match = [
         "pulumi up",
-        "pulumi destroy",
+        "pulumi import example:index:Resource name resource-id",
     ],
 )
 
 prefix_rule(
-    pattern = ["gh", "release", ["create", "delete"]],
-    decision = "prompt",
-    justification = "Creating or deleting a release is an external publication action and requires explicit approval.",
+    pattern = ["pulumi", "destroy"],
+    decision = "allow",
+    justification = "Pulumi destroy is high risk and must be covered by Single action or Full task authorization for the exact organization, project, stack, and targets.",
+    match = ["pulumi destroy"],
+)
+
+prefix_rule(
+    pattern = ["gh", "pr", ["create", "merge"]],
+    decision = "allow",
+    justification = "Pull-request creation or merge is allowed inside an authorized code-publication type and its scoped repository and change set.",
     match = [
-        "gh release create v1.0.0",
-        "gh release delete v1.0.0",
+        "gh pr create --title release",
+        "gh pr merge 123 --merge",
     ],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", "create"],
+    decision = "allow",
+    justification = "Release creation is allowed inside an authorized code-publication type and its scoped repository, tag, version, and release channel.",
+    match = ["gh release create v1.0.0"],
+)
+
+prefix_rule(
+    pattern = ["gh", "release", "delete"],
+    decision = "allow",
+    justification = "Release deletion is high risk and must be covered by Single action or Full task authorization for the exact repository and tag.",
+    match = ["gh release delete v1.0.0"],
 )

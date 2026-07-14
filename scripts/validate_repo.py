@@ -85,6 +85,20 @@ def validate_manifest(errors: list[str]) -> None:
         errors.append("plugin version must be strict semver")
     elif f"## [{version}]" not in (ROOT / "CHANGELOG.md").read_text(encoding="utf-8"):
         errors.append("plugin version must have a CHANGELOG section")
+    else:
+        producer_contracts = {
+            SKILLS / "engineering-change" / "scripts" / "runner" / "baseline.py": (
+                f'PRODUCER_VERSION = "{version}"'
+            ),
+            SKILLS / "engineering-change" / "scripts" / "finalize_change.py": (
+                f'"producer_version": "{version}"'
+            ),
+        }
+        for path, marker in producer_contracts.items():
+            if marker not in path.read_text(encoding="utf-8"):
+                errors.append(
+                    f"plugin and evidence producer versions differ: {path.relative_to(ROOT)}"
+                )
     for field in ("description", "author", "homepage", "repository", "license", "skills"):
         if not payload.get(field):
             errors.append(f"plugin manifest is missing {field}")
@@ -327,6 +341,13 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "refusing rollback because",
             'operation="upgrade"',
             "drifted_paths",
+            'selected.add("global-policy")',
+        ),
+        SKILLS / "setup-rootloom" / "SKILL.md": (
+            "three authorization modes",
+            "persistent cross-task default",
+            "Full covers high-risk steps only in the current task",
+            "Rules avoid duplicating that semantic decision",
         ),
         SYSTEM / "AGENTS.md": (
             "Personal risk analyzer",
@@ -335,6 +356,19 @@ def validate_personal_contracts(errors: list[str]) -> None:
             ".project-memory/",
             "Installing or upgrading Rootloom does not authorize automatic",
             "Do not turn optional assurance into a universal precondition",
+            "persistent cross-task default",
+            "Single action",
+            "Standard",
+            "Full",
+            "Never infer **Full**",
+        ),
+        SYSTEM / "rules" / "rootloom.rules": (
+            "never grants task authority",
+            "persistent Standard",
+            'pattern = ["git", "push"]',
+            'pattern = ["gh", "pr", ["create", "merge"]]',
+            'pattern = ["gh", "release", "create"]',
+            'pattern = ["gh", "release", "delete"]',
         ),
         ROOT / "README.md": (
             "Rootloom Personal Core",
@@ -352,6 +386,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "newly discovered ignored addition",
             "Git common directory",
             "Installation is complete after those two commands",
+            "Persistent across tasks",
+            "Full is never inferred",
         ),
         ROOT / "README.zh-CN.md": (
             "Rootloom Personal Core",
@@ -369,6 +405,20 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "新发现的 Ignored 敏感新增",
             "Git Common Directory",
             "两条命令完成后插件即安装完毕",
+            "跨任务持久",
+            "所有权限绝不会被自动推断",
+        ),
+        ROOT / "docs" / "setup.md": (
+            "gh pr merge 123 --merge",
+            "gh release create v1.0.0",
+            "Standard persists across tasks",
+            "catastrophic recursive-deletion hard deny",
+        ),
+        ROOT / "docs" / "setup.zh-CN.md": (
+            "gh pr merge 123 --merge",
+            "gh release create v1.0.0",
+            "普通权限跨任务持久",
+            "灾难性递归删除的硬拒绝",
         ),
         ROOT / "docs" / "architecture.md": (
             "intelligence.py",
@@ -379,6 +429,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "strict_json.py",
             "symbolic HEAD ref",
             "Git common directory",
+            "tiered authorization decision",
         ),
         ROOT / "docs" / "architecture.zh-CN.md": (
             "intelligence.py",
@@ -389,6 +440,15 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "strict_json.py",
             "符号 HEAD Ref",
             "Git Common Directory",
+            "分级授权决策",
+        ),
+        ROOT / "docs" / "decisions" / "2026-07-14-tiered-authorization-modes.md": (
+            "Status: accepted",
+            "Single action",
+            "Standard",
+            "Full",
+            "persistent cross-task default",
+            "catastrophic recursive deletion",
         ),
         ROOT / "docs" / "releases" / "2.2.0.md": (
             "Status: published",
@@ -405,10 +465,21 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "a8e3fdf5592781d455683c61b26bc36351213c4d",
             "RE_kwDOTVQo6M4VFYr5",
         ),
-        ROOT / "docs" / "diagram" / "architecture.svg": (
-            "PERSONAL CORE 2.1",
-            "Risk Scanner",
-            "Engineering Memory",
+        ROOT / "docs" / "diagram" / "architecture-en.svg": (
+            "Authorization Modes",
+            "Single Action",
+            "Standard",
+            "Full",
+            "Personal Core",
+            "Enterprise Assurance",
+        ),
+        ROOT / "docs" / "diagram" / "architecture-zh.svg": (
+            "授权模式",
+            "本条命令",
+            "普通权限",
+            "所有权限",
+            "个人核心",
+            "企业保障",
         ),
     }
     for path, needles in contracts.items():
@@ -419,6 +490,9 @@ def validate_personal_contracts(errors: list[str]) -> None:
         for needle in needles:
             if needle not in text:
                 errors.append(f"missing contract {needle!r} in {path.relative_to(ROOT)}")
+    rules_text = (SYSTEM / "rules" / "rootloom.rules").read_text(encoding="utf-8")
+    if 'decision = "prompt"' in rules_text:
+        errors.append("Rootloom Rules must not duplicate semantic authorization with prompt decisions")
     ci = (ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
     for forbidden in ("macos-strict-runner", "high-assurance-coding-change"):
         if forbidden in ci:
@@ -475,10 +549,35 @@ def validate_assets(errors: list[str]) -> None:
             ET.parse(path)
         except ET.ParseError as exc:
             errors.append(f"invalid SVG: {path.relative_to(ROOT)}: {exc}")
+    architecture_diagrams = {
+        ROOT / "docs" / "diagram" / "architecture-en.svg": "en",
+        ROOT / "docs" / "diagram" / "architecture-zh.svg": "zh",
+    }
+    version_label = re.compile(r"(?i)\bv?\d+\.\d+(?:\.\d+)?\b")
+    for path, language in architecture_diagrams.items():
+        try:
+            root = ET.parse(path).getroot()
+        except (FileNotFoundError, ET.ParseError):
+            continue
+        visible_text = " ".join(
+            "".join(element.itertext())
+            for element in root.iter()
+            if element.tag.rsplit("}", 1)[-1] in {"title", "desc", "text"}
+        )
+        if version_label.search(visible_text):
+            errors.append(f"architecture diagram must not bind a version: {path.relative_to(ROOT)}")
+        if language == "en" and re.search(r"[\u3400-\u9fff]", visible_text):
+            errors.append(f"English architecture diagram contains Chinese text: {path.relative_to(ROOT)}")
+        if language == "zh" and re.search(r"[A-Za-z]", visible_text):
+            errors.append(f"Chinese architecture diagram contains English text: {path.relative_to(ROOT)}")
     required_images = {
         ROOT / "assets" / "rootloom-brand.webp": b"RIFF",
-        ROOT / "docs" / "diagram" / "architecture.svg": b"<svg",
-        ROOT / "docs" / "diagram" / "architecture@2x.png": b"\x89PNG\r\n\x1a\n",
+        ROOT / "assets" / "rootloom-xiaohei-loom-en.png": b"\x89PNG\r\n\x1a\n",
+        ROOT / "assets" / "rootloom-xiaohei-loom-zh.png": b"\x89PNG\r\n\x1a\n",
+        ROOT / "docs" / "diagram" / "architecture-en.svg": b"<svg",
+        ROOT / "docs" / "diagram" / "architecture-en@2x.png": b"\x89PNG\r\n\x1a\n",
+        ROOT / "docs" / "diagram" / "architecture-zh.svg": b"<svg",
+        ROOT / "docs" / "diagram" / "architecture-zh@2x.png": b"\x89PNG\r\n\x1a\n",
     }
     for path, signature in required_images.items():
         try:
