@@ -23,6 +23,7 @@ The personal product needs consistent daily decisions without recreating an orch
 | Static rules can distinguish documented auth references from auth product code and can keep stale memory out of active signals | fact | local tests | 2026-07-14 | `tests/test_engineering_change.py`; `tests/test_project_memory.py` | current working tree; no sensitive content |
 | 2.1 path-only capture permits same-path untracked rewrites, ignored sensitive deletion, unrelated passing commands, and out-of-contract paths to escape a verified result | fact | supplied 2.1 review plus local source/tests | 2026-07-14 | `.codex/plans/personal-core-hardening.md`; `engineering-change/scripts/runner/` | current; sensitive values redacted/not read |
 | Making baseline, contract, and finalizer mandatory for every Tier 1/2 task raises installation-time and daily operating cost beyond the Personal Core boundary | fact | explicit maintainer product direction plus installed global-policy/Skill inspection | 2026-07-14 | current task; `plugins/rootloom/assets/system/AGENTS.md`; `plugins/rootloom/skills/engineering-change/SKILL.md` | current; no sensitive data |
+| 2.2 strict evidence could be internally consistent without proving the baseline and contract came from an operator-sealed intake | fact | supplied 2.2 review plus local source/tests | 2026-07-14 | `baseline.py`, `change_contract.py`, `finalize_change.py`, `/tmp/rootloom-2.2.1-prechange-baseline.json` | current; no sensitive content |
 
 ## Decision
 
@@ -33,10 +34,13 @@ Personal Core owns one bounded advisory intelligence layer in `engineering-chang
 - it never authorizes actions and never executes suggested commands;
 - plugin installation never starts analysis, creates evidence files, enables global policy, or makes the deep review loop a default requirement;
 - advisory analysis/finalization remains opt-in and non-blocking; stable passing commands may produce an `UNVERIFIED` summary without turning compatibility `passed` true;
-- explicit `--strict` Tier 1/2 finalization requires a pre-change `rootloom-change-baseline-v1` outside the repository plus `rootloom-change-contract-v1` and blocks incomplete governed evidence;
+- default finalizer exit policy is `bundle`: exit zero means a stable bundle was generated, not that engineering quality was verified;
+- automation that must stop on incomplete quality uses `--exit-policy quality` or `--require-verified`;
+- explicit `--strict` Tier 1/2 finalization requires a pre-change outside-repository baseline plus `rootloom-change-contract-v1`; operator-sealed evidence uses baseline v2 with `run_id`, `nonce`, `task_sha256`, Git/repository identity, and a contract hash chain;
 - ordinary untracked files are content-fingerprinted and may contribute a bounded text patch, while sensitive/ignored/user-declared sensitive paths are metadata-only;
-- finalization keeps suggestions, executed command results, capture preservation, declared verification coverage, and authoritative quality status separate; compatibility `passed` is true only for `VERIFIED_CHANGE`;
-- verification runs inside a bounded process tree and cannot report verified quality after output overflow, timeout, descendant leakage, repository drift, partial coverage, scope violation, or an unapproved protected deletion.
+- finalization keeps suggestions, executed command results, capture preservation, claim binding, semantic coverage, evidence provenance, hash-chain validity, and authoritative quality status separate; compatibility `passed` is true only for operator-sealed `VERIFIED_CHANGE`;
+- verification runs inside a bounded process tree and cannot report verified quality after output overflow, timeout, descendant leakage, repository drift, partial claim binding, scope violation, or an unapproved protected deletion;
+- Personal Core reports `isolation: process-group-only` and is not a sandbox for untrusted commands.
 
 Engineering memory remains a small repository-owned file system managed by `project_memory.py`:
 
@@ -56,6 +60,7 @@ Both owners remain Python-standard-library-only, local, network-free, and single
 - Vector database, embeddings, or background index — rejected because the current memory volume and lexical path/task use case do not justify dependencies, privacy surface, operational state, or daemon lifecycle.
 - Automatically run detected repository commands — rejected because discovery is not execution authorization and a suggested broad command may be unsafe, expensive, or insufficient.
 - New orchestration runner, installation-time validation, or default approval gate — rejected because it would reintroduce Enterprise Assurance cost into the default personal product.
+- Treating all complete claim mappings as `VERIFIED_CHANGE` — rejected because self-declared claims can be backfilled after a diff; the summary must distinguish `MECHANICALLY_VERIFIED` from operator-sealed `VERIFIED_CHANGE`.
 
 ## Consequences
 
@@ -64,13 +69,14 @@ Both owners remain Python-standard-library-only, local, network-free, and single
 - Negative: lexical heuristics can miss domain meaning or over-promote unusual naming; they cannot prove root cause or test sufficiency.
 - Negative: additive JSON keys can affect undocumented consumers that require exact key sets.
 - Positive: existing Tier 1/2 finalizer calls can keep producing a bundle without new setup files or blocking exit codes; incomplete evidence is visible as `UNVERIFIED` and `passed: false`.
-- Negative: callers that treat exit code zero as proof of engineering sufficiency must inspect `quality_status`; only `--strict` makes completeness an execution gate.
+- Positive: CI can use `--require-verified` to make `NO_CHANGE`, `UNVERIFIED`, `COMMANDS_PASSED`, or `MECHANICALLY_VERIFIED` nonzero without changing interactive defaults.
+- Negative: callers that treat exit code zero as proof of engineering sufficiency must inspect `quality_status` or switch to `--exit-policy quality`.
 - Operational: maintain focused positive and counterexample tests for each signal; ordinary Git revert restores 2.0 behavior; no data migration, service rollout, or destructive contraction is required.
 
 ## Verification
 
 - `tests/test_project_memory.py` covers legacy reads, relevance, no-write context, provenance/expiry, deduplication, stale exclusion/history inclusion, lifecycle transition, concurrent writers, descriptor-read drift, and unsafe-path refusal.
-- `tests/test_engineering_change.py` covers advisory non-blocking behavior, strict evidence refusal, documentation/dependency classification, active/stale/oversized memory, baselines, ignored-sensitive deletion, untracked text/binary fingerprints, contract scope, partial coverage, output ownership, no-change, streaming output, descendant cleanup, dangerous deletion, verification drift, unborn Git, invalid `HEAD`, non-UTF-8 paths, and Windows parsing.
+- `tests/test_engineering_change.py` covers advisory non-blocking behavior, strict evidence refusal, begin-review exclusive intake, evidence provenance, baseline/contract hash chains, documentation/dependency classification, active/stale/oversized memory, baselines, ignored-sensitive deletion, untracked text/binary fingerprints, contract scope, partial claim binding, output ownership, no-change, exit policy, streaming output, descendant cleanup, dangerous deletion, verification drift, unborn Git, invalid `HEAD`, non-UTF-8 paths, and Windows parsing.
 - `tests/compatibility_smoke.py` proves plugin installation creates no global AGENTS, command Rules, component policy, setup state, or review-gate side effects before separately exercising optional setup.
 - `scripts/validate_repo.py` requires the analyzer, memory lifecycle, additive summary, synchronized documentation, and 2.1 diagram surfaces.
 - `make check` and `make compatibility-smoke` remain release gates.

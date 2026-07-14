@@ -78,9 +78,11 @@ run/
 └── summary.json
 ```
 
-只有明确要求严格 Tier 1/2 证据时，Analyzer 才会在实现前向仓库外写入 `rootloom-change-baseline-v1`，绑定有界 Git/untracked 状态以及只含元数据的 ignored/secret-like 状态，使 Finalizer 能发现 Git status 看不到的 intake 敏感删除。普通 untracked 文件使用流式 Hash 与有界文本 patch；二进制/大文件记录类型、大小与 Hash；敏感文件、目录和 symlink 永不读取内容。
+只有明确要求严格 Tier 1/2 证据时，`begin_review.py` 会在实现前以独占方式创建仓库外 intake 目录，写入 `rootloom-change-baseline-v2` 与 contract skeleton。Analyzer 生成的 v2 baseline 包含 `run_id`、`nonce`、`task_sha256`、producer version、repository identity、Git identity 与 sensitive-policy hash；v1 baseline 仍可作为 self-declared 兼容输入读取。Baseline 绑定有界 Git/untracked 状态以及只含元数据的 ignored/secret-like 状态，使 Finalizer 能发现 Git status 看不到的 intake 敏感删除。普通 untracked 文件使用流式 Hash 与有界文本 patch；二进制/大文件记录类型、大小与 Hash；敏感文件、目录和 symlink 永不读取内容。
 
-`rootloom-change-contract-v1` 用 allowed/forbidden glob 约束实际路径，要求缺陷工作声明根因对齐，并把主路径/不变量/相邻路径及风险专属 claim 映射到显式执行命令。仅写在契约里的命令不构成执行授权。v1 Summary 保留 `risk_assessment`，并分开表达命令退出成功、捕获保留、验证覆盖与 `quality_status`；兼容字段 `passed` 只会在 `VERIFIED_CHANGE` 时为 true。Advisory 模式可省略 baseline/contract，在命令通过且捕获稳定时退出 0，同时报告 `UNVERIFIED`；显式 `--strict` 才会把 Tier 1/2 证据不足变成非零阻断。
+`rootloom-change-contract-v1` 用 allowed/forbidden glob 约束实际路径，要求缺陷工作声明根因对齐，并把主路径/不变量/相邻路径及风险专属 claim 映射到显式执行命令。Operator-sealed contract 还会引用 baseline 的 hash、`run_id`、`nonce` 与 `task_sha256`；结构化 claim binding 必须声明 command IDs、target、evidence kind 与 expected evidence。仅写在契约里的命令不构成执行授权。Summary 保持 `format: rootloom-engineering-summary-v1`，并增加 `schema_revision: 2`；它保留 `risk_assessment`，同时分开表达命令退出成功、捕获保留、`claim_binding`、兼容字段 `verification_coverage`、`semantic_coverage`、provenance、hash chain 与 `quality_status`；兼容字段 `passed` 只会在 operator-sealed 的 `VERIFIED_CHANGE` 时为 true。Advisory 模式可省略 baseline/contract，默认 `--exit-policy bundle` 会在命令通过且捕获稳定时退出 0，同时报告 `UNVERIFIED`；自动化可使用 `--exit-policy quality` 或 `--require-verified`。
+
+验证运行在受控本地 process group 或 Windows Job Object 中，并记录 `process_convergence` 与 `isolation: process-group-only`。这不是执行不可信命令的沙箱，无法保证控制 detached service、容器或特权后台管理器。
 
 Status 与 Git diff 在保留前即通过字节/路径上限流式捕获。验证输出增量读取；超时、输出超限或残留子进程会终止受控 POSIX process group 或 Windows Job Object。输出目录必须位于仓库外，且不存在、为空或由 Rootloom 标记拥有。完整 patch 默认上限为可配置的 16 MiB。敏感删除要求精确确认。这仍是可变审查包，不是不可篡改审计记录。
 

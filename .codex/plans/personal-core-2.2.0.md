@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: local verification complete; publication pending
+- State: published; external facts recorded in `docs/releases/2.2.0.md`
 - Owner: Codex
 - Last updated: 2026-07-14
 - Risk: Tier 2 (public CLI, installed policy, and release)

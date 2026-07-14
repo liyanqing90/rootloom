@@ -6,6 +6,14 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-07-14
+
+### Fixed
+
+- Require an operator-sealed `begin_review.py` run manifest before strict review output can claim `VERIFIED_CHANGE`; analyzer-created or after-the-fact baselines remain self-declared and produce `MECHANICALLY_VERIFIED`.
+- Read and hash baseline evidence through no-follow descriptor validation before parsing, so symlinked baseline inputs are rejected before content hashing.
+- Report `detached_descendant_possible: true` with `isolation: process-group-only`, avoiding an overclaim about verification process containment.
+
 ## [2.2.0] - 2026-07-14
 
 ### Added
