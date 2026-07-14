@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-14
 - Task type: governed authorization change, public documentation, release, and local upgrade
@@ -112,6 +112,15 @@ Success requires separate English and Chinese architecture images with no versio
 - English and Chinese 3200×1800 rendered artifacts were inspected directly. Both use the final light professional architecture style, are legible and unclipped, share the same geometry, keep visible text language-isolated, and contain no release number.
 - The user-requested local cleanup removed all `baoyu-*` Skills from both `~/.codex/skills` and `~/.agents/skills`; Rootloom diagrams now render through system tooling and have no runtime or repository dependency on those Skills.
 - The first strict release finalizer stopped before executing commands because its sealed contract used exact directory paths instead of recursive globs and omitted the analyzer's destructive-effect claim. A fresh operator-sealed intake corrects both contract defects; no product file was changed to suppress the gate.
+
+### Executed publication and installation evidence
+
+- Release PR [#5](https://github.com/liyanqing90/rootloom/pull/5) was squash-merged as `bb35433fb938ac3bfdff5339954dff6b44472fc8` after PR run [29332224659](https://github.com/liyanqing90/rootloom/actions/runs/29332224659) passed all seven jobs.
+- Merged `main` run [29332440333](https://github.com/liyanqing90/rootloom/actions/runs/29332440333) passed the same seven jobs before the release tag was created.
+- Annotated tag object `eac0a9a07041a2b92b372f33ddfc8357ebdc3d62` peels to `bb35433fb938ac3bfdff5339954dff6b44472fc8`.
+- Public, non-draft, non-prerelease GitHub Release `RE_kwDOTVQo6M4VFlGv` is available at <https://github.com/liyanqing90/rootloom/releases/tag/v2.3.0>.
+- Local `rootloom@rootloom` is installed and enabled at 2.3.0. The managed personal preset upgraded from 2.1.0 to 2.3.0 and reports no drift or pending upgrade.
+- Both user Skill roots contain no `baoyu-*` directories. The unrelated illustration remains untracked with its original SHA-256, and `codex/enterprise-assurance` remains unchanged.
 
 ## Risks
 
