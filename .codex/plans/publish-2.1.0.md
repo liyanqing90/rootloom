@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-14
 - Task type: release and external publication
@@ -57,12 +57,15 @@ Success is observable when:
 
 ## Verification record
 
-- Pending release commit and GitHub Actions evidence.
-- Pending annotated tag and GitHub Release evidence.
-- Pending post-publication CI and remote-state verification.
+- Release commit `2ff0630d172c3b9e62e9d1011cc979519d11d170` was pushed to `origin/main` without force. GitHub Actions run [29294627077](https://github.com/liyanqing90/rootloom/actions/runs/29294627077) completed successfully across seven jobs: Linux Python 3.11–3.14, macOS, Windows, and Codex CLI contracts.
+- Annotated tag object `4f76bf3085beedf6d93d85d831111b8e845cffe0` dereferences to the release commit. GitHub Release [Rootloom 2.1.0 — Personal Intelligence and Engineering Memory](https://github.com/liyanqing90/rootloom/releases/tag/v2.1.0) is public, non-draft, non-prerelease, and the repository reports it as the latest release.
+- Remote `main` and `v2.1.0^{}` both resolve to the release commit; remote `codex/enterprise-assurance` remains `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a`.
+- The public Release page, README icon, architecture SVG, and `architecture@2x.png` each returned HTTP 200 after publication. The PNG response was `image/png` with the expected 4,036,210-byte size.
+- This factual publication record is the only post-tag repository change. Its push and CI are verified after the record commit because the file cannot contain its own commit identity.
 
 ## Decision log
 
 - 2026-07-14 — Use the established direct-`main` Rootloom release flow because the user authorized publication and 2.0 established the same branch/tag/Release model.
 - 2026-07-14 — Require passing release-commit CI before the irreversible tag push.
 - 2026-07-14 — Keep the Enterprise Assurance branch immutable during this release.
+- 2026-07-14 — Publication complete: `v2.1.0` identifies the passing release commit and GitHub Release 353501040 is public.
