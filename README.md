@@ -37,7 +37,7 @@ It is single-agent by default. Human approval state machines, protected-deletion
 
 | Product | Branch | Purpose |
 | --- | --- | --- |
-| Rootloom Personal Core 2.1.x | `main` | Everyday risk-aware engineering for individual Codex users |
+| Rootloom Personal Core 2.2.x | `main` | Low-friction daily engineering with opt-in deep review |
 | Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | Preserved audited workflow with Human Review, protected deletion, strict Runner, and recovery machinery |
 
 The split is intentional, not a feature downgrade. Enterprise Assurance remains available as a separate product line; personal users no longer pay its complexity cost.
@@ -48,7 +48,7 @@ The split is intentional, not a feature downgrade. Enterprise Assurance remains 
 
 > Rootloom is early-stage and single-maintainer. It makes workflow mechanics inspectable; it cannot prove that a model's evidence or diagnosis is true. See [maturity and guarantees](docs/maturity.md).
 
-## The personal engineering loop
+## The opt-in deep engineering loop
 
 ```text
 Task
@@ -62,6 +62,8 @@ Verification Intelligence → Final Review Summary
 Relevant Engineering Memory
 ```
 
+Rootloom does not run this deep loop merely because the plugin is installed. Ordinary work stays on the repository's direct edit-and-test path; invoke the analyzer, baseline, contract, memory, and finalizer only when their evidence is explicitly useful.
+
 The observable final summary stays small:
 
 ```json
@@ -71,7 +73,10 @@ The observable final summary stays small:
   "risk_assessment": {"minimum_tier": 1, "signals": [{"id": "behavioral-code"}]},
   "tests": [{"command": ["python3", "-m", "unittest"], "passed": true}],
   "verification_plan": {"status": "suggested-not-executed"},
-  "verification_preserved_capture": true,
+  "commands_passed": true,
+  "capture_preserved": true,
+  "verification_coverage": "complete",
+  "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []
 }
 ```
@@ -100,11 +105,13 @@ codex plugin marketplace add liyanqing90/rootloom
 codex plugin add rootloom@rootloom
 ```
 
-Start a new Codex task, then ask:
+Installation is complete after those two commands. Start a new Codex task to load the Skills. Plugin installation does not write `~/.codex/AGENTS.md`, install command Rules, enable the Hook, or run analyzers, baselines, contracts, finalizers, and project-memory reads.
+
+The optional `$setup-rootloom` Skill adds a cross-project policy layer only when you explicitly ask for it:
 
 ```text
 $setup-rootloom
-Plan and apply the personal preset.
+Plan and install the optional personal preset.
 ```
 
 The setup presets are:
@@ -118,15 +125,17 @@ The setup presets are:
 
 `skills-only` is a real empty capability selection. Status and later no-argument setup operations preserve it instead of silently expanding it to `personal`.
 
-The personal preset manages only `~/.codex/AGENTS.md`, `~/.codex/rules/rootloom.rules`, and Rootloom's small component/state files. It does not change the default model, reasoning effort, sandbox, approval policy, MCP servers, providers, plugins, or apps.
+The optional personal preset manages only `~/.codex/AGENTS.md`, `~/.codex/rules/rootloom.rules`, and Rootloom's small component/state files. It does not change the default model, reasoning effort, sandbox, approval policy, MCP servers, providers, plugins, or apps. Its policy keeps deep review opt-in rather than turning it into a default gate.
 
 Review the one bundled `SessionStart` Hook before trusting it. The Hook only runs deterministic project-guidance seeding when the installed component policy enables it; absent, malformed, or symlinked policy disables it.
 
 See [setup, update, and rollback](docs/setup.md).
 
+For normal upgrades, refresh the marketplace, reinstall the plugin, and start a new task. Nothing else is required. If you previously installed the optional global preset and want its copied assets refreshed, run one explicit `$setup-rootloom` `upgrade`; it preserves the installed preset and refuses post-install drift.
+
 ## Use
 
-For a non-trivial repository change:
+When you explicitly want a deep review bundle, or for governed high-risk/release work:
 
 ```text
 $engineering-change
@@ -171,7 +180,7 @@ Subagents are never a default requirement. If a user explicitly asks for delegat
 
 ## Verification artifacts
 
-`$engineering-change` can call its helper after implementation:
+`$engineering-change` can call its helper after implementation in advisory mode:
 
 ```bash
 python3 <engineering-change-skill>/scripts/finalize_change.py \
@@ -181,7 +190,11 @@ python3 <engineering-change-skill>/scripts/finalize_change.py \
   --verify 'make test'
 ```
 
-The output directory must be outside the captured repository so the bundle cannot become an uncaptured worktree change. The helper does not execute a shell. It records a tracked Git patch, bounded aggregate test output, changed paths, risk assessment, suggested verification plan, executed results, and remaining risks. Risk is automatic; optional `--risk` can raise but never lower the detected floor. Suggested commands are not executed automatically and never appear as passing tests. Untracked file contents are intentionally omitted, and repositories before their first commit are supported. The tracked patch has a configurable 16 MiB default refusal ceiling and at most 20 verification commands share the output budget. Verification must preserve the tracked patch and captured changed/untracked path set; drift makes the bundle fail instead of allowing stale changed-file or deletion evidence. Exact `.env`, secret, migration, or database deletions—including captured untracked paths removed during verification—require an explicit `--confirm-dangerous-delete` path after human confirmation.
+Advisory mode does not block a normal change for missing machine evidence. If commands pass and capture remains stable it exits zero, while incomplete coverage remains honest as `quality_status: UNVERIFIED` and compatibility `passed: false`.
+
+For a strict Tier 1/2 release or explicitly governed review, create the baseline before implementation with `analyze_change.py --write-baseline`, then add `--strict --baseline ... --change-contract ...`. Strict mode requires complete mapped claims and returns nonzero on incomplete governed evidence. The external output directory must be absent, empty, or Rootloom-owned. The helper does not execute a shell.
+
+Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash. Ignored, secret-like, user-declared sensitive, directory, and symlink paths remain metadata-only. Git/status/patch capture and command output are bounded while read, and verification terminates the controlled process tree on timeout, output overflow, or leaked descendants. The summary separates `commands_passed`, `capture_preserved`, and `verification_coverage`; only complete evidence yields `quality_status: VERIFIED_CHANGE`. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`. Protected deletions require exact `--confirm-dangerous-delete` authorization.
 
 ## Engineering memory
 
@@ -210,7 +223,7 @@ New explicit records can carry evidence and expiry. They receive deterministic I
 
 ## Setup safety boundary
 
-Personal setup remains plan-first, conflict-refusing, lock-serialized, backup-backed, mode-preserving on rollback, and atomic per file. It deliberately does not claim whole-transaction crash compensation or hostile multi-user filesystem protection. If setup stops between file replacements, `status` exposes the mismatch and the backup manifest remains available for explicit recovery.
+Plugin installation and upgrades are setup-free by default. Optional Personal setup distinguishes first `install` from `upgrade`; compatibility `apply` remains available. Upgrade preserves the installed preset, records version-only updates without redundant asset backups, refuses post-install drift instead of overwriting it, and backs up/removes pristine targets retired by the new catalog so rollback can restore them. Setup remains plan-first, conflict-refusing, lock-serialized, backup-backed, mode-preserving on rollback, and atomic per file. It deliberately does not claim whole-transaction crash compensation or hostile multi-user filesystem protection.
 
 ## Migrating from 1.2.19
 
@@ -218,7 +231,7 @@ Personal Core 2.0 is a breaking product split:
 
 1. use Rootloom 1.2.19 to roll back an installed Assurance setup;
 2. switch/install `main`;
-3. plan and apply the `personal` preset;
+3. optionally plan and apply the `personal` preset;
 4. start a new Codex task.
 
 If you still require Human Review, Decision Pair, protected-deletion approval, strict multi-agent routing, hardened Artifact binding, or setup recovery journals, stay on `codex/enterprise-assurance`.

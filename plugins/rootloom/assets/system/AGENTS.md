@@ -30,7 +30,13 @@
 - Raise risk for persisted state, authentication/authorization, money, concurrency, state machines, migrations, shared APIs, destructive operations, or many consumers.
 - Explain the concrete risk signals and choose the lightest workflow that still proves the result.
 - Use Tier 0 for mechanical edits, Tier 1 for bounded behavior or defects, and Tier 2 for governed contracts or materially uncertain blast radius.
-- For non-trivial repository changes, use `engineering-change`'s static analyzer when available. Treat its Tier as a minimum advisory floor, inspect its reasons, and raise it when semantic evidence requires; never use it to lower explicit risk.
+- Keep classification lightweight and internal by default. Run `engineering-change`'s static analyzer only when the user asks for machine analysis, repository guidance requires it, or a Tier 2/release task benefits from an inspectable assessment.
+
+### Cost discipline
+
+- Installing or upgrading Rootloom does not authorize automatic analyzer, baseline, change-contract, finalizer, project-memory, or planning runs.
+- For routine Tier 0/1 work, use the repository's existing evidence and smallest relevant checks directly.
+- Use the deep `engineering-change` bundle only when explicitly requested or when a high-risk/release workflow needs machine-readable evidence. Do not turn optional assurance into a universal precondition.
 
 ## Engineering Defaults
 
@@ -55,9 +61,9 @@
 - Use `operating-high-risk-change` for Tier 2 Governed work involving public or persisted contracts, schemas, migrations, security, infrastructure, production dependencies, deployment, release, destructive effects, or materially uncertain root cause.
 - Use installed design/product/frontend Skills for formal UI, UX, Figma, or visual work.
 - Use `record-engineering-decision` only for accepted durable architecture, contract, dependency, security, data, or operational decisions; keep routine task history out of permanent records.
-- Use `engineering-change` for the default single-agent quality loop; delegation remains explicit and platform-governed.
+- Use `engineering-change` as an opt-in deep review loop, not as a default requirement for ordinary implementation. Delegation remains explicit and platform-governed.
 - Keep task-specific requirements in the current prompt and reusable procedures in Skills.
-- Use `engineering-change` as the default personal implementation loop: Evidence → Diagnosis → Change Contract → Implementation → Verification → Final Review Summary.
+- For ordinary work, apply Evidence → Diagnosis → Scoped Change → Verification directly. Use the machine Change Contract and Final Review Summary only when their extra evidence changes a real decision.
 - Query relevant `.project-memory/` entries by task and path when present. Exclude stale entries from current decisions by default and treat every memory result as a lead until repository evidence confirms it.
 
 ## Automatic Project Guidance

@@ -21,6 +21,7 @@ from typing import Any, Iterator
 PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_lock import LockBusyError, LockFileError, simple_lock
+from rootloom_paths import normalize_repo_path, validate_nonsensitive_managed_targets
 
 
 MANAGED_TOKEN = "rootloom:managed"
@@ -66,7 +67,7 @@ class Action:
     action: str
     reason: str
     before_hash: str | None
-    after_hash: str
+    after_hash: str | None
 
 
 def sha256_bytes(value: bytes) -> str:
@@ -116,11 +117,15 @@ def components_for_capabilities(capabilities: tuple[str, ...]) -> tuple[str, ...
 
 def all_targets(root: Path) -> list[Target]:
     assets = root / "assets" / "system"
-    return [
+    targets = [
         Target("AGENTS.md", assets / "AGENTS.md", "global-guidance"),
         Target("rules/rootloom.rules", assets / "rules" / "rootloom.rules", "command-rules"),
         Target(COMPONENT_POLICY_PATH, None, "hook-policy", kind="hook-policy"),
     ]
+    validate_nonsensitive_managed_targets(
+        [target.relative_path for target in targets]
+    )
+    return targets
 
 
 def target_catalog(root: Path, capabilities: tuple[str, ...]) -> list[Target]:
@@ -280,20 +285,109 @@ def make_backup_dir(codex_home: Path) -> Path:
     return path
 
 
+def apply_installed_drift(
+    codex_home: Path,
+    state: dict[str, Any],
+    actions: list[Action],
+) -> tuple[list[Action], list[str]]:
+    installed_files = state.get("files")
+    if not isinstance(installed_files, dict) or any(
+        not isinstance(path, str) or not isinstance(digest, str)
+        for path, digest in installed_files.items()
+    ):
+        raise ValueError("invalid installed target hashes")
+    normalized_installed: dict[str, str] = {}
+    for raw_path, digest in installed_files.items():
+        normalized = normalize_repo_path(raw_path, label="installed setup target")
+        if normalized != raw_path or normalized in normalized_installed:
+            raise ValueError("installed setup targets must be unique normalized paths")
+        normalized_installed[normalized] = digest
+    validate_nonsensitive_managed_targets(list(normalized_installed))
+    drifted: list[str] = []
+    updated: list[Action] = []
+    for action in actions:
+        expected = normalized_installed.get(action.path)
+        if expected is None:
+            updated.append(action)
+            continue
+        destination = codex_home / action.path
+        current = None if has_symlink_component(destination, codex_home) else read_bytes(destination)
+        current_hash = sha256_bytes(current) if current is not None else None
+        if current_hash != expected:
+            drifted.append(action.path)
+            updated.append(
+                Action(
+                    path=action.path,
+                    action="conflict",
+                    reason="managed target changed after setup",
+                    before_hash=current_hash,
+                    after_hash=action.after_hash,
+                )
+            )
+        else:
+            updated.append(action)
+    current_targets = {action.path for action in actions}
+    for retired in sorted(set(normalized_installed) - current_targets):
+        destination = codex_home / retired
+        current = None if has_symlink_component(destination, codex_home) else read_bytes(destination)
+        current_hash = sha256_bytes(current) if current is not None else None
+        expected = normalized_installed[retired]
+        if current_hash != expected:
+            drifted.append(retired)
+            updated.append(
+                Action(
+                    path=retired,
+                    action="conflict",
+                    reason="retired managed target changed after setup",
+                    before_hash=current_hash,
+                    after_hash=None,
+                )
+            )
+        else:
+            updated.append(
+                Action(
+                    path=retired,
+                    action="remove",
+                    reason="managed target is absent from the upgraded catalog",
+                    before_hash=current_hash,
+                    after_hash=None,
+                )
+            )
+    return updated, sorted(drifted)
+
+
 def apply_plan(
     codex_home: Path,
     replace_conflicts: bool,
     capabilities: tuple[str, ...] = FULL_CAPABILITIES,
+    operation: str = "apply",
 ) -> dict[str, Any]:
     with setup_lock(codex_home):
+        if operation not in {"apply", "install", "upgrade"}:
+            raise ValueError(f"unsupported setup operation: {operation}")
         selected = normalize_capabilities(capabilities)
         previous_state = load_state(codex_home)
         current = installed_capabilities(previous_state)
+        if operation == "install" and current is not None:
+            raise RuntimeError("Rootloom setup is already installed; use upgrade")
+        if operation == "upgrade" and current is None:
+            raise RuntimeError("no installed Rootloom setup is available to upgrade")
         if current is not None and current != selected:
             raise RuntimeError(
                 "capability selection differs from the installed setup; roll back first"
             )
         version, targets, actions, desired = build_plan(codex_home, selected)
+        drifted: list[str] = []
+        if current is not None:
+            actions, drifted = apply_installed_drift(
+                codex_home, previous_state, actions
+            )
+        if drifted:
+            raise RuntimeError(
+                "managed setup targets changed after installation; restore or roll back before "
+                "upgrade: "
+                + ", ".join(drifted)
+            )
         conflicts = [item for item in actions if item.action == "conflict"]
         if conflicts and not replace_conflicts:
             raise RuntimeError(
@@ -302,8 +396,23 @@ def apply_plan(
             )
         changed = [item for item in actions if item.action != "unchanged"]
         if not changed:
+            previous_version = previous_state.get("version")
+            if current is not None and previous_version != version:
+                state = {**previous_state, "version": version}
+                atomic_write(
+                    codex_home / STATE_PATH,
+                    (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+                )
+                return {
+                    "status": "upgraded",
+                    "version": version,
+                    "previous_version": previous_version,
+                    "capabilities": list(selected),
+                    "components": list(components_for_capabilities(selected)),
+                    "actions": [asdict(item) for item in actions],
+                }
             return {
-                "status": "unchanged",
+                "status": "up_to_date" if operation == "upgrade" else "unchanged",
                 "version": version,
                 "capabilities": list(selected),
                 "components": list(components_for_capabilities(selected)),
@@ -349,7 +458,10 @@ def apply_plan(
             destination = codex_home / entry["path"]
             if has_symlink_component(destination, codex_home):
                 raise RuntimeError(f"setup target became symlinked: {entry['path']}")
-            atomic_write(destination, desired[entry["path"]])
+            if entry["path"] in desired:
+                atomic_write(destination, desired[entry["path"]])
+            else:
+                destination.unlink(missing_ok=True)
         state = {
             "managed_by": MANAGED_TOKEN,
             "status": "installed",
@@ -357,15 +469,26 @@ def apply_plan(
             "capabilities": list(selected),
             "components": list(components_for_capabilities(selected)),
             "backup": str(backup.relative_to(codex_home / STATE_DIRNAME)),
-            "files": {action.path: action.after_hash for action in actions},
+            "files": {
+                action.path: action.after_hash
+                for action in actions
+                if action.after_hash is not None
+            },
         }
         atomic_write(
             codex_home / STATE_PATH,
             (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
         )
         return {
-            "status": "applied",
+            "status": (
+                "installed"
+                if operation == "install"
+                else "upgraded"
+                if operation == "upgrade"
+                else "applied"
+            ),
             "version": version,
+            "previous_version": previous_state.get("version"),
             "capabilities": list(selected),
             "components": list(components_for_capabilities(selected)),
             "backup": str(backup),
@@ -501,9 +624,17 @@ def status_payload(
         else PRESETS["personal"]
     )
     version, _targets, actions, _desired = build_plan(codex_home, selected)
+    drifted: list[str] = []
+    if installed is not None:
+        actions, drifted = apply_installed_drift(codex_home, state, actions)
     return {
         "status": state.get("status", "not-installed"),
         "version": version,
+        "installed_version": state.get("version"),
+        "upgrade_available": bool(
+            installed is not None and state.get("version") != version
+        ),
+        "drifted_paths": drifted,
         "capabilities": list(normalize_capabilities(selected)),
         "components": list(components_for_capabilities(selected)),
         "actions": [asdict(item) for item in actions],
@@ -559,6 +690,11 @@ def build_parser() -> argparse.ArgumentParser:
     apply = commands.add_parser("apply")
     add_selection_arguments(apply)
     apply.add_argument("--replace-conflicts", action="store_true")
+    install = commands.add_parser("install")
+    add_selection_arguments(install)
+    install.add_argument("--replace-conflicts", action="store_true")
+    upgrade = commands.add_parser("upgrade")
+    upgrade.add_argument("--replace-conflicts", action="store_true")
     rollback_parser = commands.add_parser("rollback")
     rollback_parser.add_argument("--all", action="store_true", help="compatibility alias")
     return parser
@@ -574,16 +710,43 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "plan":
             selected = selected_capabilities(args, codex_home)
             version, _targets, actions, _desired = build_plan(codex_home, selected)
+            state = load_state(codex_home)
+            installed = installed_capabilities(state)
+            drifted: list[str] = []
+            if installed is not None and installed == selected:
+                actions, drifted = apply_installed_drift(
+                    codex_home, state, actions
+                )
             payload = {
                 "status": "planned",
                 "version": version,
+                "installed_version": state.get("version"),
+                "upgrade_available": bool(
+                    installed is not None and state.get("version") != version
+                ),
+                "drifted_paths": drifted,
                 "capabilities": list(selected),
                 "components": list(components_for_capabilities(selected)),
                 "actions": [asdict(item) for item in actions],
             }
-        elif args.command == "apply":
+        elif args.command in {"apply", "install"}:
             selected = selected_capabilities(args, codex_home)
-            payload = apply_plan(codex_home, args.replace_conflicts, selected)
+            payload = apply_plan(
+                codex_home,
+                args.replace_conflicts,
+                selected,
+                operation=args.command,
+            )
+        elif args.command == "upgrade":
+            installed = installed_capabilities(load_state(codex_home))
+            if installed is None:
+                raise RuntimeError("no installed Rootloom setup is available to upgrade")
+            payload = apply_plan(
+                codex_home,
+                args.replace_conflicts,
+                installed,
+                operation="upgrade",
+            )
         elif args.command == "status":
             selected = selected_capabilities(args, codex_home)
             payload = status_payload(codex_home, selected)

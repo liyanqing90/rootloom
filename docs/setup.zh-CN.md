@@ -1,6 +1,6 @@
 # Setup、更新与回滚
 
-安装插件只会暴露 Skills 和经过审查的 `SessionStart` Hook 定义。应用全局 Personal Core 资产是独立的显式操作。
+安装插件只会暴露 Skills 和经过审查的 `SessionStart` Hook 定义；不会安装全局策略、启用 Hook 或触发工程审查工具。应用全局 Personal Core 资产是独立且可选的操作。
 
 ## 安装
 
@@ -11,6 +11,8 @@ codex plugin add rootloom@rootloom
 
 新建任务并检查 `/hooks`。唯一 Hook 是本地项目指导播种；只有有效的托管组件策略启用后才会执行。
 
+此时插件已经可以完整使用，不需要 setup 命令、analyzer、baseline、contract、finalizer 或 project-memory 查询。
+
 ## Preset
 
 | Preset | 能力 |
@@ -20,16 +22,18 @@ codex plugin add rootloom@rootloom
 | `personal` | Guidance + `command-safety`；默认 |
 | `engineering` | `personal` 的兼容别名 |
 
-`skills-only` 使用的空 capability 集合会作为明确的已安装状态保存。后续没有显式新选择的 `status`、`plan` 与 `apply` 都会保持它。
+`skills-only` 使用的空 capability 集合会作为明确的已安装状态保存。后续没有显式新选择的 `status`、`plan` 与兼容命令 `apply` 都会保持它。
 
-检查并应用：
+只有用户明确需要跨项目全局层时，才检查并安装：
 
 ```bash
 python3 <setup-skill>/scripts/setup_rootloom.py list-components
 python3 <setup-skill>/scripts/setup_rootloom.py plan --preset personal
-python3 <setup-skill>/scripts/setup_rootloom.py apply --preset personal
+python3 <setup-skill>/scripts/setup_rootloom.py install --preset personal
 python3 <setup-skill>/scripts/setup_rootloom.py status
 ```
+
+`install` 会拒绝已经安装的 setup。`apply` 继续作为兼容/专家命令保留；显式使用 `install` 与 `upgrade` 能让生命周期和回滚意图清晰可见。
 
 也可以精确选择能力：
 
@@ -61,6 +65,7 @@ Setup：
 - 第一个托管目标写入前复制所有被替换文件；
 - 逐目标原子写入；
 - 记录 apply 后哈希以检测漂移；
+- 托管目标不再匹配已安装哈希时拒绝升级，即使传入 `--replace-conflicts` 也不会覆盖；
 - 回滚时恢复原内容和 POSIX mode。
 
 个人契约不承诺跨整个事务的崩溃补偿。如果进程在多个文件替换之间停止，请运行 `status`、检查 `.rootloom/backups/` 并显式处理可见不一致。它也不防御敌对同用户进程并发替换锁或目标路径。
@@ -82,7 +87,7 @@ codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git res
 ```bash
 python3 <setup-skill>/scripts/setup_rootloom.py rollback
 python3 <setup-skill>/scripts/setup_rootloom.py plan --preset guidance
-python3 <setup-skill>/scripts/setup_rootloom.py apply --preset guidance
+python3 <setup-skill>/scripts/setup_rootloom.py install --preset guidance
 ```
 
 回滚会预检每个托管文件。目标在 setup 后被修改时会停止，不覆盖该修改。普通 rollback 返回上一个简单备份；`rollback --all` 沿备份链回到安装前状态。
@@ -100,7 +105,15 @@ codex plugin marketplace upgrade rootloom
 codex plugin add rootloom@rootloom
 ```
 
-新建任务，再次检查 Hook 定义，规划同一 preset 后应用。
+Codex 负责刷新 marketplace snapshot 与插件包。新建任务以加载更新后的 Skills；普通升级至此完成，不会触发任何 Rootloom 审查门禁。
+
+如果之前安装过可选全局 preset，并且希望同时刷新其复制资产，只需显式运行一个命令：
+
+```bash
+python3 <setup-skill>/scripts/setup_rootloom.py upgrade
+```
+
+可选 setup 的 `upgrade` 始终保持已安装 capability 选择。插件与资产已经一致时返回 `up_to_date`；只有插件版本变化时只更新 setup 状态，不创建多余资产备份；托管内容变化时仍会在写入前创建正常备份。新版目录已退役的托管目标只有在仍匹配安装 Hash 时才会被移除，并会先备份，使 rollback 能恢复；访问前还会重新规范并校验已安装状态路径。`status` 会报告 `installed_version`、`upgrade_available` 与 `drifted_paths`。升级不会覆盖漂移：请先恢复预期内容或回滚。`--replace-conflicts` 只用于新版本首次引入的用户文件冲突，并且需要精确授权。
 
 ## 从 Enterprise Assurance 1.2.19 迁移
 

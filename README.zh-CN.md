@@ -37,7 +37,7 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 
 | 产品 | 分支 | 定位 |
 | --- | --- | --- |
-| Rootloom Personal Core 2.1.x | `main` | 面向个人 Codex 用户的日常风险感知工程闭环 |
+| Rootloom Personal Core 2.2.x | `main` | 低摩擦日常工程 + 显式按需深度审查 |
 | Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | 保留 Human Review、protected deletion、严格 Runner 与恢复机制的审计工作流 |
 
 这不是功能降级，而是明确的产品拆分。企业 Assurance 作为独立产品线保留，个人用户不再承担它的复杂度。
@@ -48,7 +48,7 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 
 > Rootloom 仍处于早期阶段，由单维护者维护。它能让流程机制可检查，但不能证明模型的证据或根因判断一定正确。参见[成熟度与保证](docs/maturity.zh-CN.md)。
 
-## 个人工程闭环
+## 显式按需的深度工程闭环
 
 ```text
 任务
@@ -62,6 +62,8 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 相关 Engineering Memory
 ```
 
+Rootloom 不会因为插件已经安装就自动运行这套深度闭环。普通任务直接使用仓库现有的编辑与测试路径；只有这些证据确实有用时，才显式调用 analyzer、baseline、contract、memory 与 finalizer。
+
 最终摘要保持轻量：
 
 ```json
@@ -71,7 +73,10 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
   "risk_assessment": {"minimum_tier": 1, "signals": [{"id": "behavioral-code"}]},
   "tests": [{"command": ["python3", "-m", "unittest"], "passed": true}],
   "verification_plan": {"status": "suggested-not-executed"},
-  "verification_preserved_capture": true,
+  "commands_passed": true,
+  "capture_preserved": true,
+  "verification_coverage": "complete",
+  "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []
 }
 ```
@@ -100,11 +105,13 @@ codex plugin marketplace add liyanqing90/rootloom
 codex plugin add rootloom@rootloom
 ```
 
-新建 Codex 任务，然后输入：
+两条命令完成后插件即安装完毕。新建 Codex 任务以加载 Skills。插件安装不会写入 `~/.codex/AGENTS.md`、安装命令 Rules、启用 Hook，也不会运行 analyzer、baseline、contract、finalizer 或 project-memory 读取。
+
+只有明确需要跨项目全局策略时，才可选调用 `$setup-rootloom`：
 
 ```text
 $setup-rootloom
-规划并应用 personal preset。
+规划并安装可选的 personal preset。
 ```
 
 setup preset：
@@ -118,15 +125,17 @@ setup preset：
 
 `skills-only` 是合法的空 capability 选择。`status` 与后续未指定参数的 setup 操作会保持该选择，不会静默扩展为 `personal`。
 
-个人 preset 只管理 `~/.codex/AGENTS.md`、`~/.codex/rules/rootloom.rules` 和 Rootloom 的小型组件/状态文件。它不会修改默认模型、推理强度、沙箱、审批策略、MCP、Provider、插件或 App。
+可选 personal preset 只管理 `~/.codex/AGENTS.md`、`~/.codex/rules/rootloom.rules` 和 Rootloom 的小型组件/状态文件。它不会修改默认模型、推理强度、沙箱、审批策略、MCP、Provider、插件或 App；其策略仍让深度审查保持显式按需，不会变成默认门禁。
 
 信任前请检查唯一的 `SessionStart` Hook。只有安装策略明确启用时，它才执行确定性的项目指导播种；策略缺失、损坏或为符号链接时会关闭执行。
 
 详见 [setup、更新与回滚](docs/setup.zh-CN.md)。
 
+普通升级只需刷新 marketplace、重新安装插件并新建任务，不需要其他步骤。只有之前安装过可选全局 preset 且希望刷新其复制资产时，才显式运行一次 `$setup-rootloom` `upgrade`；它会保持已安装 preset，并拒绝覆盖安装后的漂移。
+
 ## 使用
 
-非简单仓库修改：
+明确需要深度审查包，或执行高风险/发布工作时：
 
 ```text
 $engineering-change
@@ -171,7 +180,7 @@ $refine-project-guidance
 
 ## 验证产物
 
-`$engineering-change` 可以在实现后调用：
+`$engineering-change` 可以在实现后以 advisory 模式调用：
 
 ```bash
 python3 <engineering-change-skill>/scripts/finalize_change.py \
@@ -181,7 +190,11 @@ python3 <engineering-change-skill>/scripts/finalize_change.py \
   --verify 'make test'
 ```
 
-输出目录必须位于被捕获仓库之外，避免 bundle 自己成为未捕获的 worktree 修改。该工具不使用 shell。它记录 tracked Git patch、有界聚合测试输出、修改路径、风险评估、建议验证计划、已执行结果与剩余风险。风险默认自动判断；可选 `--risk` 只能提高、不能压低扫描下限。建议命令不会自动执行，也不会冒充通过的测试。工具故意不读取 untracked 文件内容，并支持尚未产生首个提交的仓库。tracked patch 默认超过可配置的 16 MiB 上限即拒绝，最多 20 条验证命令共享输出预算。验证必须保持 tracked patch 与已捕获的 changed/untracked 路径集合不变；一旦漂移，bundle 会失败，不会继续使用过期的修改路径或删除证据。精确删除 `.env`、secret、migration 或 database 路径时——包括验证期间消失的已捕获 untracked 路径——必须在人确认后传入对应的 `--confirm-dangerous-delete`。
+Advisory 模式不会因为缺少机器证据而拦截普通修改。命令通过且捕获稳定时退出 0；覆盖不完整仍会诚实标记为 `quality_status: UNVERIFIED` 与兼容字段 `passed: false`。
+
+严格 Tier 1/2 发布或显式治理审查应在实现前通过 `analyze_change.py --write-baseline` 创建 baseline，再增加 `--strict --baseline ... --change-contract ...`。严格模式要求完整 claim 映射，治理证据不足时返回非零。外部输出目录必须不存在、为空或已经由 Rootloom 标记拥有。工具不使用 shell。
+
+普通 untracked 文件使用流式 SHA-256 指纹与有界文本 patch；二进制/大文件记录类型、大小与 Hash。ignored、secret-like、用户声明敏感、目录和 symlink 路径只记录元数据。Git/status/patch 与命令输出在读取期间即受限；超时、输出超限或残留子进程会终止整个受控进程树。Summary 分开表达 `commands_passed`、`capture_preserved` 与 `verification_coverage`；只有完整证据才得到 `quality_status: VERIFIED_CHANGE`。纯验证必须使用 `--allow-no-change`，结果为 `NO_CHANGE`。受保护删除仍要求精确 `--confirm-dangerous-delete` 授权。
 
 ## Engineering Memory
 
@@ -210,7 +223,7 @@ python3 <project-memory-skill>/scripts/project_memory.py \
 
 ## Setup 安全边界
 
-个人 setup 仍保持先计划、拒绝冲突、加锁串行、预先备份、回滚恢复模式和逐文件原子写入。它明确不宣称跨整个事务的崩溃补偿或敌对多用户文件系统保护。如果进程在多个文件替换之间中断，`status` 会暴露不一致，备份清单仍可用于显式恢复。
+插件安装与升级默认不需要 setup。可选 Personal setup 明确区分首次 `install` 与后续 `upgrade`，同时保留兼容命令 `apply`。升级会保持已安装 preset，仅版本变化时不创建多余资产备份，拒绝覆盖安装后的漂移，并会先备份再移除新版目录已退役的未漂移目标，使回滚可以恢复。setup 仍保持先计划、拒绝冲突、加锁串行、预先备份、回滚恢复模式和逐文件原子写入；它不宣称跨整个事务的崩溃补偿或敌对多用户文件系统保护。
 
 ## 从 1.2.19 迁移
 
@@ -218,7 +231,7 @@ Personal Core 2.0 是一次破坏性产品拆分：
 
 1. 使用 Rootloom 1.2.19 回滚已经安装的 Assurance setup；
 2. 切换/安装 `main`；
-3. 规划并应用 `personal` preset；
+3. 按需选择是否规划并应用 `personal` preset；
 4. 新建 Codex 任务。
 
 如果仍需要 Human Review、Decision Pair、protected-deletion approval、严格多代理路由、加固 Artifact 绑定或 setup 恢复日志，请继续使用 `codex/enterprise-assurance`。

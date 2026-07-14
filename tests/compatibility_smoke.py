@@ -70,8 +70,21 @@ def main() -> int:
             str(codex_home),
             "--json",
         ]
-        commands["setup_apply"] = run([*setup_base, "apply", "--preset", "personal"], env=env)
+        plugin_install_side_effects = [
+            path
+            for path in (
+                "AGENTS.md",
+                "rules/rootloom.rules",
+                ".rootloom/components.json",
+                ".rootloom/state.json",
+            )
+            if (codex_home / path).exists()
+        ]
+        commands["setup_install"] = run(
+            [*setup_base, "install", "--preset", "personal"], env=env
+        )
         commands["setup_status"] = run([*setup_base, "status"], env=env)
+        commands["setup_upgrade"] = run([*setup_base, "upgrade"], env=env)
 
         rules = codex_home / "rules" / "rootloom.rules"
         decisions: dict[str, str | None] = {}
@@ -108,6 +121,7 @@ def main() -> int:
         passed = (
             plugin_path is not None
             and not failed
+            and not plugin_install_side_effects
             and decisions == {"commit": "allow", "push": "prompt", "reset": "forbidden"}
             and not leftovers
             and not (codex_home / "agents").exists()
@@ -119,6 +133,7 @@ def main() -> int:
                     "passed": passed,
                     "codex_version": commands["version"].stdout.strip(),
                     "plugin_path": str(plugin_path) if plugin_path else None,
+                    "plugin_install_side_effects": plugin_install_side_effects,
                     "rule_decisions": decisions,
                     "managed_leftovers_after_rollback": leftovers,
                     "failed_commands": failed,
