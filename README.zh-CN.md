@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/rootloom-brand.webp" width="920" alt="Rootloom 将仓库上下文编织成经过验证的工程修改">
+  <img src="assets/rootloom-xiaohei-loom-zh.png" width="920" alt="Rootloom 将风险、缺陷、上下文、证据、契约与测试编织成经过验证的工程修改">
 </p>
 
 Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
