@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/rootloom-brand.webp" width="920" alt="Rootloom weaving repository context into a verified engineering change">
+  <img src="assets/rootloom-xiaohei-loom-en.png" width="920" alt="Rootloom weaving risk, defects, context, evidence, contracts, and tests into a verified engineering change">
 </p>
 
 Rootloom Personal Core keeps the part an individual developer uses every day:
