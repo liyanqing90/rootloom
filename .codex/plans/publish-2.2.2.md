@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-14
 - Task type: release and external publication
@@ -105,6 +105,14 @@ Success requires a passing release PR, merge to `main`, annotated `v2.2.2` tag, 
 - PR #4 CI run `29325918198` passed Linux Python 3.11–3.14, macOS, and Codex CLI but exposed four Windows-only test portability defects: executable-bit assumptions, `core.autocrlf` byte conversion, and an unescaped Windows path in the evidence-mutation command. Publication stopped before merge/tagging; focused test-only repairs make those fixtures deterministic without changing product behavior.
 - After the test-only repair, all three focused regression methods passed with `ResourceWarning` promoted to errors and a complete local `make check` again passed 144 tests with one platform-conditional skip.
 
+### Publication result
+
+- PR #4 was Squash Merged as `a8e3fdf5592781d455683c61b26bc36351213c4d` after replacement PR run `29326416156` passed all seven jobs.
+- The merged `main` run `29326643548` passed the same Linux 3.11–3.14, macOS, Windows, and Codex CLI matrix before tagging.
+- Annotated tag object `029a53a3a683a22a8da6abfeecab8680234cdaf7` peels to the passing merge commit.
+- GitHub Release `RE_kwDOTVQo6M4VFYr5` is public, non-draft, non-prerelease at <https://github.com/liyanqing90/rootloom/releases/tag/v2.2.2>.
+- Remote `main` and the peeled tag match; `codex/enterprise-assurance` remains unchanged at `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a`.
+
 ## Risks
 
 - Risk: publishing a tag before CI proves the merge commit.
@@ -123,6 +131,7 @@ Success requires a passing release PR, merge to `main`, annotated `v2.2.2` tag, 
 - 2026-07-14 — Use the established PR → CI → merge → annotated tag → public Release → publication-record flow.
 - 2026-07-14 — Keep the Enterprise Assurance branch and unrelated illustration outside the release.
 - 2026-07-14 — Treat PR #4's first Windows failure as a test-portability blocker; repair observed mode/newline/path assumptions and require a completely green rerun before merge.
+- 2026-07-14 — Publication complete: PR #4 merged, both PR and `main` matrices passed, and public `v2.2.2` Release `RE_kwDOTVQo6M4VFYr5` was published without changing Enterprise Assurance.
 
 ## Durable decision records
 
