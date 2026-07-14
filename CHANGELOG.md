@@ -13,6 +13,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Require an operator-sealed `begin_review.py` run manifest before strict review output can claim `VERIFIED_CHANGE`; analyzer-created or after-the-fact baselines remain self-declared and produce `MECHANICALLY_VERIFIED`.
 - Read and hash baseline evidence through no-follow descriptor validation before parsing, so symlinked baseline inputs are rejected before content hashing.
 - Report `detached_descendant_possible: true` with `isolation: process-group-only`, avoiding an overclaim about verification process containment.
+- Treat transient Windows lock-create `PermissionError` as a busy cooperative lock so concurrent Project Memory writers can retry instead of dropping an update.
 
 ## [2.2.0] - 2026-07-14
 
