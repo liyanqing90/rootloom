@@ -37,13 +37,13 @@ It is single-agent by default. Human approval state machines, protected-deletion
 
 | Product | Branch | Purpose |
 | --- | --- | --- |
-| Rootloom Personal Core 2.2.x | `main` | Low-friction daily engineering with opt-in deep review |
-| Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | Preserved audited workflow with Human Review, protected deletion, strict Runner, and recovery machinery |
+| Rootloom Personal Core | `main` | Low-friction daily engineering with opt-in deep review |
+| Rootloom Enterprise Assurance | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | Preserved audited workflow with Human Review, protected deletion, strict Runner, and recovery machinery |
 
 The split is intentional, not a feature downgrade. Enterprise Assurance remains available as a separate product line; personal users no longer pay its complexity cost.
 
 <p align="center">
-  <img src="docs/diagram/architecture.svg" width="980" alt="Rootloom Personal Core and Enterprise Assurance product architecture">
+  <img src="docs/diagram/architecture-en.svg" width="980" alt="Rootloom Personal Core authorization and engineering architecture">
 </p>
 
 > Rootloom is early-stage and single-maintainer. It makes workflow mechanics inspectable; it cannot prove that a model's evidence or diagnosis is true. See [maturity and guarantees](docs/maturity.md).
@@ -133,7 +133,19 @@ The setup presets are:
 
 `skills-only` is a real empty capability selection. Status and later no-argument setup operations preserve it instead of silently expanding it to `personal`.
 
+`command-safety` depends on and automatically includes `global-policy`; authorization-aware Rules are never installed without their semantic policy.
+
 The optional personal preset manages only `~/.codex/AGENTS.md`, `~/.codex/rules/rootloom.rules`, and Rootloom's small component/state files. It does not change the default model, reasoning effort, sandbox, approval policy, MCP servers, providers, plugins, or apps. Its policy keeps deep review opt-in rather than turning it into a default gate.
+
+Rootloom uses three authorization modes:
+
+| Mode | Lifetime | Coverage |
+| --- | --- | --- |
+| Single action | Once | Only the displayed command or action |
+| Standard | Persistent across tasks | All non-high-risk steps needed by each explicit goal; each task resolves its own operation type, repository, account, service, and environment |
+| Full | Current task | Routine and high-risk steps inside that task's stated operation type and scope |
+
+Standard is the installed default, so requests such as “publish this plugin” or “deploy this service” do not trigger command-by-command confirmation for routine implementation, publication, rollout, or verification steps. Full is never inferred. Static Rules allow commands so they do not repeat the semantic authorization decision; only catastrophic recursive deletion remains a bundled hard deny. Rules never create authority, Standard never permits self-initiated work, and platform, sandbox, organization, credential, and other active Rules remain authoritative.
 
 Review the one bundled `SessionStart` Hook before trusting it. The Hook only runs deterministic project-guidance seeding when the installed component policy enables it; absent, malformed, or symlinked policy disables it.
 

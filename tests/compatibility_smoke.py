@@ -91,7 +91,24 @@ def main() -> int:
         for name, argv in (
             ("commit", ["git", "commit", "-m", "compatibility"]),
             ("push", ["git", "push", "origin", "main"]),
+            (
+                "force_push",
+                ["git", "push", "--force-with-lease", "origin", "main"],
+            ),
+            ("pr_create", ["gh", "pr", "create", "--title", "compatibility"]),
+            ("pr_merge", ["gh", "pr", "merge", "123", "--merge"]),
+            ("release_create", ["gh", "release", "create", "v9.9.9"]),
+            ("release_delete", ["gh", "release", "delete", "v9.9.9"]),
+            ("package_publish", ["npm", "publish"]),
+            ("image_push", ["docker", "push", "example/app:latest"]),
+            ("cluster_apply", ["kubectl", "apply", "-f", "deployment.yaml"]),
+            ("cluster_delete", ["kubectl", "delete", "pod", "app-1"]),
+            ("helm_uninstall", ["helm", "uninstall", "app"]),
+            ("terraform_destroy", ["terraform", "destroy"]),
+            ("pulumi_destroy", ["pulumi", "destroy"]),
+            ("bulk_restore", ["git", "restore", "."]),
             ("reset", ["git", "reset", "--hard"]),
+            ("catastrophic_delete", ["rm", "-rf", "/"]),
         ):
             completed = run(
                 ["codex", "execpolicy", "check", "--rules", str(rules), "--", *argv],
@@ -122,7 +139,26 @@ def main() -> int:
             plugin_path is not None
             and not failed
             and not plugin_install_side_effects
-            and decisions == {"commit": "allow", "push": "prompt", "reset": "forbidden"}
+            and decisions
+            == {
+                "commit": "allow",
+                "push": "allow",
+                "force_push": "allow",
+                "pr_create": "allow",
+                "pr_merge": "allow",
+                "release_create": "allow",
+                "release_delete": "allow",
+                "package_publish": "allow",
+                "image_push": "allow",
+                "cluster_apply": "allow",
+                "cluster_delete": "allow",
+                "helm_uninstall": "allow",
+                "terraform_destroy": "allow",
+                "pulumi_destroy": "allow",
+                "bulk_restore": "allow",
+                "reset": "allow",
+                "catastrophic_delete": "forbidden",
+            }
             and not leftovers
             and not (codex_home / "agents").exists()
             and not (codex_home / "high-assurance.config.toml").exists()

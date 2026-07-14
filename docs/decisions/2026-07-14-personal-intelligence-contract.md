@@ -92,7 +92,7 @@ Both owners remain Python-standard-library-only, local, network-free, and single
 - `tests/test_project_memory.py` covers legacy reads, relevance, no-write context, provenance/expiry, deduplication, stale exclusion/history inclusion, lifecycle transition, concurrent writers, descriptor-read drift, and unsafe-path refusal.
 - `tests/test_engineering_change.py` covers advisory non-blocking behavior, atomic no-replace intake and draft sealing, contract/manifest post-seal tamper refusal, strict quality/bundle exits, legacy-evidence downgrade, strict JSON, stable two-pass HEAD/ref/index capture, dirty-overlap binding, recursive sensitive ancestors, symlink-target hashing, sensitive replacement/rename/new-ignored-addition quarantine and scope, linked-worktree Git-common-directory refusal, untracked risk signals/applyable patches, segment-aware globs, qualifying structured claims, semantic caps, gate priority, output/evidence symlink chains, all-command preflight, streaming output, descendant cleanup, Windows fallback, dangerous deletion, unborn Git, and non-UTF-8 paths.
 - `tests/compatibility_smoke.py` proves plugin installation creates no global AGENTS, command Rules, component policy, setup state, or review-gate side effects before separately exercising optional setup.
-- `scripts/validate_repo.py` requires the analyzer, memory lifecycle, additive summary, synchronized documentation, and 2.1 diagram surfaces.
+- `scripts/validate_repo.py` requires the analyzer, memory lifecycle, additive summary, synchronized documentation, and bilingual version-neutral diagram surfaces.
 - `make check` and `make compatibility-smoke` remain release gates.
 
 ## Revisit when

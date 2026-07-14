@@ -37,13 +37,13 @@ Rootloom Personal Core 只保留个人开发者每天都会使用的部分：
 
 | 产品 | 分支 | 定位 |
 | --- | --- | --- |
-| Rootloom Personal Core 2.2.x | `main` | 低摩擦日常工程 + 显式按需深度审查 |
-| Rootloom Enterprise Assurance 1.2.19 | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | 保留 Human Review、protected deletion、严格 Runner 与恢复机制的审计工作流 |
+| Rootloom Personal Core | `main` | 低摩擦日常工程 + 显式按需深度审查 |
+| Rootloom Enterprise Assurance | [`codex/enterprise-assurance`](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance) | 保留 Human Review、protected deletion、严格 Runner 与恢复机制的审计工作流 |
 
 这不是功能降级，而是明确的产品拆分。企业 Assurance 作为独立产品线保留，个人用户不再承担它的复杂度。
 
 <p align="center">
-  <img src="docs/diagram/architecture.svg" width="980" alt="Rootloom Personal Core 与 Enterprise Assurance 产品架构">
+  <img src="docs/diagram/architecture-zh.svg" width="980" alt="Rootloom 个人核心授权与工程架构">
 </p>
 
 > Rootloom 仍处于早期阶段，由单维护者维护。它能让流程机制可检查，但不能证明模型的证据或根因判断一定正确。参见[成熟度与保证](docs/maturity.zh-CN.md)。
@@ -133,7 +133,19 @@ setup preset：
 
 `skills-only` 是合法的空 capability 选择。`status` 与后续未指定参数的 setup 操作会保持该选择，不会静默扩展为 `personal`。
 
+`command-safety` 依赖并会自动包含 `global-policy`；授权感知命令规则不会脱离其语义策略单独安装。
+
 可选 personal preset 只管理 `~/.codex/AGENTS.md`、`~/.codex/rules/rootloom.rules` 和 Rootloom 的小型组件/状态文件。它不会修改默认模型、推理强度、沙箱、审批策略、MCP、Provider、插件或 App；其策略仍让深度审查保持显式按需，不会变成默认门禁。
+
+Rootloom 提供三档授权：
+
+| 模式 | 有效期 | 覆盖范围 |
+| --- | --- | --- |
+| 本条命令 | 一次 | 仅当前展示的命令或动作 |
+| 普通权限 | 跨任务持久 | 每个明确目标所需的全部非高危步骤；每个任务仍单独解析操作类型、仓库、账号、服务和环境 |
+| 所有权限 | 当前任务 | 该任务已经声明的操作类型与范围内，包含高危操作在内的全部步骤 |
+
+安装后的默认模式是普通权限，因此“发布这个插件”“部署这个服务”等请求在常规实现、发布、上线和核验步骤中不会逐条确认。所有权限绝不会被自动推断。静态命令规则会放行命令，避免重复一次语义授权判断；只有针对根目录、主目录、当前目录或父目录的灾难性递归删除仍是内置硬拒绝。命令规则本身不会产生授权，普通权限也不允许代理自行发起任务；平台、沙箱、组织、凭据以及其他有效规则仍然具有最高约束力。
 
 信任前请检查唯一的 `SessionStart` Hook。只有安装策略明确启用时，它才执行确定性的项目指导播种；策略缺失、损坏或为符号链接时会关闭执行。
 

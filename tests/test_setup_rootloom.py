@@ -47,6 +47,14 @@ class SetupRootloomTests(unittest.TestCase):
         )
         self.assertEqual(policy["hooks"], {"project-guidance-hook": True})
 
+    def test_command_safety_always_includes_its_global_authorization_policy(self) -> None:
+        selected = setup.normalize_capabilities(["command-safety"])
+        self.assertEqual(selected, ("global-policy", "command-safety"))
+        self.assertEqual(
+            setup.components_for_capabilities(selected),
+            ("global-guidance", "command-rules"),
+        )
+
     def test_plan_apply_status_and_rollback_round_trip(self) -> None:
         version, _targets, actions, _desired = setup.build_plan(self.codex_home)
         self.assertTrue(version)

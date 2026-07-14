@@ -1,0 +1,138 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">Rootloom personal engineering architecture</title>
+  <desc id="desc">A light professional architecture diagram. An explicit goal flows through one of three authorization modes, the Personal Core daily engineering loop, and into a verified change. Supporting context, delivery layers, and the separate Enterprise Assurance line are shown below.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
+    </marker>
+    <style>
+      text { font-family: Inter, Arial, sans-serif; }
+      .title { font-size: 34px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-size: 17px; font-weight: 400; fill: #64748b; }
+      .section { font-size: 16px; font-weight: 700; letter-spacing: 1px; }
+      .card-title { font-size: 18px; font-weight: 700; fill: #0f172a; }
+      .label { font-size: 14px; font-weight: 650; fill: #334155; }
+      .small { font-size: 12px; font-weight: 450; fill: #64748b; }
+      .node { font-size: 12px; font-weight: 650; fill: #1e293b; }
+    </style>
+  </defs>
+
+  <rect width="1600" height="900" fill="#f8fafc"/>
+  <rect x="0" y="0" width="1600" height="142" fill="#ffffff"/>
+  <rect x="80" y="48" width="10" height="58" rx="5" fill="#2563eb"/>
+  <text x="112" y="72" class="section" fill="#2563eb">ROOTLOOM</text>
+  <text x="112" y="108" class="title">Personal Engineering Architecture</text>
+  <text x="650" y="88" class="subtitle">One explicit goal → chosen authorization → evidence-led loop → verified change</text>
+
+  <!-- Primary flow -->
+  <rect x="70" y="178" width="1460" height="370" rx="24" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="100" y="216" class="section" fill="#64748b">PRIMARY FLOW</text>
+
+  <rect x="100" y="258" width="220" height="190" rx="18" fill="#eff6ff" stroke="#93c5fd" stroke-width="2"/>
+  <circle cx="140" cy="300" r="18" fill="#2563eb"/>
+  <path d="M132 300 L138 306 L149 293" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="170" y="306" class="card-title">Explicit Goal</text>
+  <rect x="126" y="336" width="168" height="38" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="210" y="360" text-anchor="middle" class="label">Operation type</text>
+  <rect x="126" y="386" width="168" height="38" rx="9" fill="#ffffff" stroke="#bfdbfe"/>
+  <text x="210" y="410" text-anchor="middle" class="label">Intended scope</text>
+
+  <path d="M320 353 L360 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="380" y="232" width="330" height="242" rx="18" fill="#ffffff" stroke="#cbd5e1" stroke-width="2"/>
+  <text x="406" y="270" class="card-title">Authorization Modes</text>
+  <rect x="406" y="292" width="278" height="46" rx="10" fill="#eff6ff" stroke="#93c5fd"/>
+  <circle cx="430" cy="315" r="10" fill="#2563eb"/>
+  <text x="450" y="312" class="label">Single Action</text>
+  <text x="450" y="328" class="small">one command or action</text>
+  <rect x="406" y="350" width="278" height="46" rx="10" fill="#fff7ed" stroke="#fdba74"/>
+  <circle cx="430" cy="373" r="10" fill="#f59e0b"/>
+  <text x="450" y="370" class="label">Standard</text>
+  <text x="450" y="386" class="small">persistent · non-high-risk</text>
+  <rect x="406" y="408" width="278" height="46" rx="10" fill="#fff1f2" stroke="#fda4af"/>
+  <circle cx="430" cy="431" r="10" fill="#ef4444"/>
+  <text x="450" y="428" class="label">Full</text>
+  <text x="450" y="444" class="small">current task · high-risk included</text>
+
+  <path d="M710 353 L750 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="770" y="232" width="570" height="242" rx="18" fill="#ffffff" stroke="#c4b5fd" stroke-width="2"/>
+  <text x="796" y="270" class="card-title">Personal Core · Daily Engineering Loop</text>
+  <path d="M815 353 L1297 353" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round"/>
+
+  <g>
+    <rect x="794" y="310" width="78" height="86" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
+    <circle cx="833" cy="334" r="13" fill="#e2e8f0"/>
+    <text x="833" y="339" text-anchor="middle" class="node">R</text>
+    <text x="833" y="375" text-anchor="middle" class="node">Route</text>
+
+    <rect x="882" y="310" width="82" height="86" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
+    <circle cx="923" cy="334" r="13" fill="#2563eb"/>
+    <text x="923" y="339" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">E</text>
+    <text x="923" y="375" text-anchor="middle" class="node">Evidence</text>
+
+    <rect x="974" y="310" width="88" height="86" rx="12" fill="#fff7ed" stroke="#fdba74"/>
+    <circle cx="1018" cy="334" r="13" fill="#f59e0b"/>
+    <text x="1018" y="339" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">D</text>
+    <text x="1018" y="375" text-anchor="middle" class="node">Diagnosis</text>
+
+    <rect x="1072" y="310" width="104" height="86" rx="12" fill="#f5f3ff" stroke="#c4b5fd"/>
+    <circle cx="1124" cy="334" r="13" fill="#7c3aed"/>
+    <text x="1124" y="339" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">C</text>
+    <text x="1124" y="369" text-anchor="middle" class="node">Scoped</text>
+    <text x="1124" y="385" text-anchor="middle" class="node">Change</text>
+
+    <rect x="1186" y="310" width="66" height="86" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <circle cx="1219" cy="334" r="13" fill="#059669"/>
+    <path d="M1213 334 L1217 338 L1225 329" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="1219" y="375" text-anchor="middle" class="node">Verify</text>
+
+    <rect x="1262" y="310" width="58" height="86" rx="12" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <circle cx="1291" cy="334" r="13" fill="#059669"/>
+    <text x="1291" y="339" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">S</text>
+    <text x="1291" y="369" text-anchor="middle" class="node">Review</text>
+    <text x="1291" y="385" text-anchor="middle" class="node">Summary</text>
+  </g>
+  <path d="M833 408 C833 448 923 448 923 408" fill="none" stroke="#94a3b8" stroke-width="2" stroke-dasharray="5 5" marker-end="url(#arrow)"/>
+  <text x="1055" y="434" text-anchor="middle" class="small">Evidence → diagnosis → scoped change → verification</text>
+
+  <path d="M1340 353 L1380 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
+
+  <rect x="1400" y="278" width="100" height="150" rx="18" fill="#ecfdf5" stroke="#34d399" stroke-width="2"/>
+  <circle cx="1450" cy="319" r="20" fill="#059669"/>
+  <path d="M1440 319 L1447 326 L1461 311" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="1450" y="361" text-anchor="middle" class="label">Verified</text>
+  <text x="1450" y="380" text-anchor="middle" class="label">Change</text>
+  <text x="1450" y="406" text-anchor="middle" class="small">reviewable</text>
+
+  <!-- Supporting context and delivery -->
+  <rect x="70" y="578" width="960" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="98" y="615" class="section" fill="#64748b">SUPPORTING CONTEXT</text>
+  <rect x="98" y="636" width="205" height="46" rx="12" fill="#eff6ff"/>
+  <text x="200" y="664" text-anchor="middle" class="label">Project Guidance</text>
+  <rect x="318" y="636" width="205" height="46" rx="12" fill="#f5f3ff"/>
+  <text x="420" y="664" text-anchor="middle" class="label">Engineering Memory</text>
+  <rect x="538" y="636" width="205" height="46" rx="12" fill="#fff7ed"/>
+  <text x="640" y="664" text-anchor="middle" class="label">Decision Records</text>
+  <rect x="758" y="636" width="244" height="46" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="6 5"/>
+  <text x="880" y="664" text-anchor="middle" class="label">Optional Strict Review</text>
+
+  <rect x="1060" y="578" width="470" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
+  <text x="1088" y="615" class="section" fill="#64748b">DELIVERY LAYERS</text>
+  <rect x="1088" y="636" width="180" height="46" rx="12" fill="#eff6ff"/>
+  <text x="1178" y="656" text-anchor="middle" class="label">Plugin Install</text>
+  <text x="1178" y="674" text-anchor="middle" class="small">skills only</text>
+  <rect x="1282" y="636" width="220" height="46" rx="12" fill="#f5f3ff"/>
+  <text x="1392" y="656" text-anchor="middle" class="label">Optional Personal Setup</text>
+  <text x="1392" y="674" text-anchor="middle" class="small">guidance · rules · hook</text>
+
+  <rect x="70" y="742" width="960" height="92" rx="18" fill="#eff6ff" stroke="#bfdbfe"/>
+  <circle cx="108" cy="788" r="15" fill="#2563eb"/>
+  <text x="108" y="793" text-anchor="middle" font-size="15" font-weight="700" fill="#ffffff">i</text>
+  <text x="138" y="780" class="label">Authorization boundary</text>
+  <text x="138" y="804" class="small">Global guidance owns mode and scope semantics. Platform controls remain authoritative.</text>
+
+  <rect x="1060" y="742" width="470" height="92" rx="18" fill="#ffffff" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="1088" y="780" class="card-title">Enterprise Assurance</text>
+  <text x="1088" y="805" class="small">Separate product line · no Personal Core runtime dependency</text>
+</svg>

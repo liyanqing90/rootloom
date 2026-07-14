@@ -5,7 +5,9 @@ description: Plan and execute high-risk engineering changes involving public API
 
 # High-Risk Change Workflow
 
-Use this Skill for Tier 2 Governed work. Do not execute production mutation, deployment, publication, release, force-push, credential change, billing action, or destructive data operation unless the current request clearly authorizes the exact target and scope.
+Use this Skill for Tier 2 Governed work. **Standard** is the persistent cross-task default for non-high-risk steps of each explicit user goal. **Single action** covers one displayed command/action, and **Full** covers high-risk plus routine steps only for the current task's stated operation type and scope. Never infer Full or reuse a previous task's repository, account, service, or environment without current-task evidence. Static Rules do not carry this authorization state.
+
+When a Standard workflow reaches a high-risk boundary, present Single action, Standard, and Full once with the exact scope. If the user chooses Standard, do not execute that high-risk step; continue only with safe alternatives or report the remaining blocker. A current request that explicitly names the exact high-risk action counts as Single action authorization, so do not ask for it twice. Platform-enforced approvals remain separate and cannot be bypassed.
 
 ## 1. Establish authority and risk
 
@@ -82,11 +84,11 @@ For a new or materially changed production dependency:
 
 Before external or irreversible execution:
 
-1. reconfirm target, scope, branch/environment/account and blast radius;
+1. verify the authorized operation type, target, scope, branch/environment/account and blast radius from the current request and evidence; ask only when a material part is missing or ambiguous;
 2. use plan, preview, dry-run, backup, canary, staged rollout, or reversible mode where available;
 3. verify credentials and permissions without exposing them;
 4. define detection and rollback criteria;
-5. obtain explicit approval for the exact action if not already present;
+5. if the active mode does not cover the next action, offer Single action, Standard, and Full with the exact operation type and scope; never confirm each routine command separately;
 6. verify the resulting external state—command submission alone is not success.
 
 ## 8. Verification

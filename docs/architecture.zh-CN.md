@@ -2,7 +2,7 @@
 
 Rootloom `main` 是 Personal Core。架构目标是个人每天使用的单代理工程闭环，而不是企业审计与审批。
 
-![Rootloom Personal Core 与 Enterprise Assurance 产品拆分](diagram/architecture.svg)
+![Rootloom 个人核心授权与工程架构](diagram/architecture-zh.svg)
 
 ## 产品边界
 
@@ -115,6 +115,8 @@ Runner 辅助模块保持小型：
 ## Setup 与 Hook 边界
 
 Codex 添加插件后安装即完成：Skills 可用，但全局指导、命令 Rules、Hook 策略与 setup 状态仍不存在。只有用户明确要求时，可选 Personal setup 才管理这些复制的全局资产。其 `install` 负责首次 setup；`upgrade` 保持已安装 capability，只有版本变化时不创建多余资产备份，资产变化时先备份，并安全退役已从新版目录移除且未漂移的目标。`status` 与 `upgrade` 都会校验已安装路径、对照已安装 Hash 并拒绝安装后漂移。兼容命令 `apply` 继续保留。setup 先计划、拒绝冲突、使用 create-exclusive 普通锁串行、逐目标原子写入。
+
+复制后的全局指导负责语义授权：普通权限跨任务持久，覆盖每个明确目标的非高危步骤；本条命令与所有权限分别是单动作和当前任务的提升。静态命令规则无法携带这些上下文，因此 `command-safety` 总会包含 `global-policy`；命令规则只负责避免重复弹窗，并保留灾难性递归删除的硬拒绝。详见[分级授权决策](decisions/2026-07-14-tiered-authorization-modes.md)。
 
 该设计不提供跨文件崩溃原子性、敌对同用户保护或恢复日志重放。中断造成的部分 apply 会通过 `status` 暴露，备份内容仍可检查。
 

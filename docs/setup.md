@@ -42,6 +42,8 @@ python3 <setup-skill>/scripts/setup_rootloom.py plan \
   --capabilities global-policy,project-context,command-safety
 ```
 
+Selecting `command-safety` always includes `global-policy`; Rules that suppress duplicate prompts must not be installed without the guidance that owns Standard, Single action, and Full authorization.
+
 ## Managed targets
 
 | Path | Purpose |
@@ -75,10 +77,18 @@ This personal contract does not promise whole-transaction crash compensation. If
 ```bash
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git commit -m test
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git push origin main
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh pr merge 123 --merge
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh release create v1.0.0
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- npm publish
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- kubectl apply -f deployment.yaml
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git push --force-with-lease origin main
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- gh release delete v1.0.0
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- terraform destroy
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git reset --hard
+codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- rm -rf /
 ```
 
-Expected decisions are `allow`, `prompt`, and `forbidden`. Rules are argv-prefix policy, not a complete shell security boundary.
+Expected decisions are ten `allow`, followed by `forbidden`. The installed global guidance—not argv Rules—owns authorization state: Single action applies once, Standard persists across tasks for all non-high-risk steps of each explicit goal, and Full covers high-risk steps only in the current task and scope. The Rules avoid a second prompt after that semantic decision and retain only the catastrophic recursive-deletion hard deny. A more restrictive active Rule or platform policy can still prompt.
 
 ## Change preset or roll back
 

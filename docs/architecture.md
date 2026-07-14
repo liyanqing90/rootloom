@@ -2,7 +2,7 @@
 
 Rootloom `main` is Personal Core. Its architecture optimizes for a daily single-agent engineering loop rather than enterprise audit and approval.
 
-![Rootloom Personal Core and Enterprise Assurance product split](diagram/architecture.svg)
+![Rootloom Personal Core authorization and engineering architecture](diagram/architecture-en.svg)
 
 ## Product boundary
 
@@ -115,6 +115,8 @@ Accepted durable architecture and contract decisions still belong in repository 
 ## Setup and Hook boundary
 
 Plugin installation is complete after Codex adds the plugin: Skills become available, while global guidance, command Rules, Hook policy, and setup state remain absent. Optional Personal setup manages those copied global assets only after an explicit user request. Its `install` handles first setup; `upgrade` preserves the installed capability selection, records version-only changes without redundant asset backups, backs up changed assets, and safely retires pristine targets that disappear from the catalog. Both status and upgrade validate installed paths, compare targets with installed hashes, and refuse post-install drift. Compatibility `apply` remains available. Setup is plan-first, conflict-refusing, serialized by a create-exclusive local lock, and atomic per target.
+
+The copied global guidance owns semantic authorization: Standard permission persists across tasks for the non-high-risk steps of each explicit goal, while Single action and Full are one-action/current-task elevations. Static command Rules cannot carry that context, so `command-safety` always includes `global-policy`; the Rules avoid duplicate prompts and retain only a catastrophic recursive-deletion hard deny. See [the tiered authorization decision](decisions/2026-07-14-tiered-authorization-modes.md).
 
 This design does not provide cross-file crash atomicity, hostile same-user protection, or recovery-journal replay. A partial interrupted apply is visible through `status`; backup contents remain inspectable.
 
