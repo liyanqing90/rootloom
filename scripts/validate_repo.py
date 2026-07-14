@@ -326,6 +326,11 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "7018c317e59a6e44081e07c1d68d277c469f0cfb",
             "RE_kwDOTVQo6M4VEtd1",
         ),
+        ROOT / "docs" / "releases" / "2.2.1.md": (
+            "Status: published",
+            "da1c174f524c61f53d1ff3cc8650165eb10246ab",
+            "RE_kwDOTVQo6M4VE4K1",
+        ),
         ROOT / "docs" / "diagram" / "architecture.svg": (
             "PERSONAL CORE 2.1",
             "Risk Scanner",

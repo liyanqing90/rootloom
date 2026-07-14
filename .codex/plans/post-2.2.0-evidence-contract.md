@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: publishing as 2.2.1
+- State: published as 2.2.1; external facts recorded in `docs/releases/2.2.1.md`
 - Owner: Codex
 - Last updated: 2026-07-14
 - Task type: architecture / public contract / release record
@@ -108,6 +108,7 @@ Success is proven by focused contract tests, repository validation, and full `ma
 
 - 2026-07-14 — Treat post-2.2.0 findings as public contract hardening, not external publication; do not mutate existing release artifacts.
 - 2026-07-14 — User authorized publishing the fixed latest version; release as 2.2.1 rather than mutating `v2.2.0`.
+- 2026-07-14 — PR #2 merged, `v2.2.1` published, and release metadata recorded in `docs/releases/2.2.1.md`.
 
 ## Durable decision records
 
