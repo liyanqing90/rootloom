@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import time
 from typing import Iterator
 
 
@@ -26,6 +27,19 @@ def _current_owner(path: Path) -> bytes:
         return path.read_bytes()[:4096]
     except OSError:
         return b""
+
+
+def _unlink_lock(path: Path) -> None:
+    for attempt in range(20):
+        try:
+            path.unlink()
+            return
+        except FileNotFoundError:
+            return
+        except PermissionError as exc:
+            if attempt == 19:
+                raise LockFileError(f"could not remove lock {path}: {exc}") from exc
+            time.sleep(0.025)
 
 
 @contextmanager
@@ -54,7 +68,4 @@ def simple_lock(path: Path, owner_bytes: bytes | None = None) -> Iterator[int]:
         yield descriptor
     finally:
         os.close(descriptor)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
+        _unlink_lock(path)

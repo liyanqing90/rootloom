@@ -41,6 +41,23 @@ class SimpleLockTests(unittest.TestCase):
                     with lock.simple_lock(path):
                         pass
 
+    def test_windows_lock_release_retries_transient_permission_denied(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-lock-", dir=Path.home()) as temporary:
+            path = Path(temporary) / "run.lock"
+            with (
+                mock.patch.object(
+                    lock.Path,
+                    "unlink",
+                    autospec=True,
+                    side_effect=[PermissionError("busy"), None],
+                ) as unlink,
+                mock.patch.object(lock.time, "sleep") as sleep,
+            ):
+                with lock.simple_lock(path):
+                    pass
+            self.assertEqual(unlink.call_count, 2)
+            sleep.assert_called_once_with(0.025)
+
 
 if __name__ == "__main__":
     unittest.main()
