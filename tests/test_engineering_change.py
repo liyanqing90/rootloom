@@ -1736,9 +1736,11 @@ class EngineeringChangeTests(unittest.TestCase):
             root = Path(temporary)
             repo = self.make_repo(root)
             seal_path = root / "evidence-drift-review" / "contract.seal.json"
+            seal_path_hex = str(seal_path).encode("utf-8").hex()
             command = (
                 f"{sys.executable} -c "
-                f"'p=__import__(\"pathlib\").Path(\"{seal_path}\");"
+                "'p=__import__(\"pathlib\").Path("
+                f"bytes.fromhex(\"{seal_path_hex}\").decode());"
                 "p.write_bytes(p.read_bytes()+b\" \")'"
             )
             governed = self.prepare_governed_change(
@@ -3618,7 +3620,10 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             patch = (root / "run" / "diff.patch").read_bytes()
             self.assertIn(b'"a/safe.py +++ injected.py"', patch)
-            self.assertIn(b"new file mode 100755", patch)
+            expected_mode = (
+                b"100755" if candidate.stat().st_mode & 0o111 else b"100644"
+            )
+            self.assertIn(b"new file mode " + expected_mode, patch)
             self.assertNotIn(b"diff --git a/safe.py +++ injected.py", patch)
 
     def test_untracked_text_patches_apply_for_empty_and_nonempty_files(self) -> None:
@@ -3636,6 +3641,11 @@ class EngineeringChangeTests(unittest.TestCase):
             ) as temporary:
                 repo = Path(temporary)
                 subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                subprocess.run(
+                    ["git", "config", "core.autocrlf", "false"],
+                    cwd=repo,
+                    check=True,
+                )
                 patch = _new_file_patch("new file.txt", content, mode=0o644)
                 checked = subprocess.run(
                     ["git", "apply", "--check", "-"],

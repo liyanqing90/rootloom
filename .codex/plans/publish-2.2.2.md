@@ -102,6 +102,8 @@ Success requires a passing release PR, merge to `main`, annotated `v2.2.2` tag, 
 - `make check` passed repository validation and all 144 tests; one platform-conditional non-UTF-8 filename case was skipped because the current macOS filesystem rejects the fixture name.
 - `make compatibility-smoke` passed with no plugin-install side effects, failed commands, or managed rollback leftovers.
 - `git diff --check` passed, version surfaces agree on 2.2.2, and no dependency or marketplace source-path change is present.
+- PR #4 CI run `29325918198` passed Linux Python 3.11–3.14, macOS, and Codex CLI but exposed four Windows-only test portability defects: executable-bit assumptions, `core.autocrlf` byte conversion, and an unescaped Windows path in the evidence-mutation command. Publication stopped before merge/tagging; focused test-only repairs make those fixtures deterministic without changing product behavior.
+- After the test-only repair, all three focused regression methods passed with `ResourceWarning` promoted to errors and a complete local `make check` again passed 144 tests with one platform-conditional skip.
 
 ## Risks
 
@@ -120,6 +122,7 @@ Success requires a passing release PR, merge to `main`, annotated `v2.2.2` tag, 
 - 2026-07-14 — User explicitly confirmed formal publication as `v2.2.2` after exact target and irreversible actions were presented.
 - 2026-07-14 — Use the established PR → CI → merge → annotated tag → public Release → publication-record flow.
 - 2026-07-14 — Keep the Enterprise Assurance branch and unrelated illustration outside the release.
+- 2026-07-14 — Treat PR #4's first Windows failure as a test-portability blocker; repair observed mode/newline/path assumptions and require a completely green rerun before merge.
 
 ## Durable decision records
 
