@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+from unittest import mock
 from pathlib import Path
 import tempfile
 import unittest
@@ -30,6 +31,15 @@ class SimpleLockTests(unittest.TestCase):
             with self.assertRaises(lock.LockFileError):
                 with lock.simple_lock(Path(temporary) / "run.lock", owner_bytes=b"x" * 4097):
                     pass
+
+    def test_windows_permission_denied_for_existing_lock_is_busy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-lock-", dir=Path.home()) as temporary:
+            path = Path(temporary) / "run.lock"
+            path.write_bytes(b"pid=123\n")
+            with mock.patch.object(lock.os, "open", side_effect=PermissionError("busy")):
+                with self.assertRaisesRegex(lock.LockBusyError, "pid=123"):
+                    with lock.simple_lock(path):
+                        pass
 
 
 if __name__ == "__main__":

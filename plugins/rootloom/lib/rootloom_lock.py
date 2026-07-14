@@ -21,6 +21,13 @@ class LockBusyError(RuntimeError):
         super().__init__(f"lock is already held: {path}{suffix}")
 
 
+def _current_owner(path: Path) -> bytes:
+    try:
+        return path.read_bytes()[:4096]
+    except OSError:
+        return b""
+
+
 @contextmanager
 def simple_lock(path: Path, owner_bytes: bytes | None = None) -> Iterator[int]:
     """Acquire an ordinary create-exclusive lock and remove it on exit."""
@@ -34,11 +41,11 @@ def simple_lock(path: Path, owner_bytes: bytes | None = None) -> Iterator[int]:
     try:
         descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
     except FileExistsError as exc:
-        try:
-            current = path.read_bytes()[:4096]
-        except OSError:
-            current = b""
-        raise LockBusyError(path, current) from exc
+        raise LockBusyError(path, _current_owner(path)) from exc
+    except PermissionError as exc:
+        if path.exists():
+            raise LockBusyError(path, _current_owner(path)) from exc
+        raise LockFileError(f"could not create lock {path}: {exc}") from exc
     except OSError as exc:
         raise LockFileError(f"could not create lock {path}: {exc}") from exc
     try:
