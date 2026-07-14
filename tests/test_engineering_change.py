@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+from datetime import UTC, datetime, timedelta
 import os
 from pathlib import Path
 import subprocess
@@ -9,6 +10,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -23,6 +25,7 @@ SCRIPT = (
 )
 ANALYZE = SCRIPT.parent / "analyze_change.py"
 BEGIN_REVIEW = SCRIPT.parent / "begin_review.py"
+SEAL_CONTRACT = SCRIPT.parent / "seal_contract.py"
 PROJECT_MEMORY = (
     REPO_ROOT
     / "plugins"
@@ -33,6 +36,19 @@ PROJECT_MEMORY = (
     / "project_memory.py"
 )
 sys.path.insert(0, str(SCRIPT.parent))
+import begin_review as begin_review_module
+from rootloom_paths import is_protected_deletion_path, is_sensitive_path
+from runner.baseline import read_baseline_payload_with_hash
+from runner.change_contract import load_change_contract, path_matches
+from runner.evidence_paths import rename_directory_no_replace
+from runner.intelligence import (
+    MAX_COMMAND_DISCOVERY_BYTES,
+    analyze_change as analyze_change_intelligence,
+    read_bounded_repository_text,
+)
+from runner.process import _controlled_tree_active
+from runner.state import _new_file_patch, repository_snapshot, stable_repository_capture
+from runner.strict_json import parse_json_object
 from runner.verification import split_command, verify
 
 
@@ -75,6 +91,17 @@ class EngineeringChangeTests(unittest.TestCase):
             ],
         )
 
+    def test_windows_process_fallback_does_not_treat_missing_job_support_as_a_leak(self) -> None:
+        process = mock.Mock()
+        process.poll.return_value = 0
+        job = mock.Mock()
+        job.supported = False
+        with mock.patch("runner.process.os.name", "nt"):
+            self.assertFalse(_controlled_tree_active(process, job))
+        process.poll.return_value = None
+        with mock.patch("runner.process.os.name", "nt"):
+            self.assertTrue(_controlled_tree_active(process, job))
+
     def test_verification_output_budget_is_aggregate_and_strict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             repo = self.make_repo(Path(temporary))
@@ -107,6 +134,24 @@ class EngineeringChangeTests(unittest.TestCase):
                 noisy_results[0].output_bytes_retained,
             )
             self.assertLessEqual(len(noisy_log), noisy_budget)
+
+    def test_verification_parses_every_command_before_any_execution(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            marker = repo / "must-not-exist"
+            first = (
+                f"{sys.executable} -c "
+                "'__import__(\"pathlib\").Path(\"must-not-exist\").touch()'"
+            )
+            with self.assertRaises(ValueError):
+                verify(
+                    [first, "unterminated '"],
+                    repo=repo,
+                    timeout=30,
+                    max_output_bytes=4096,
+                )
+            self.assertFalse(marker.exists())
 
     @unittest.skipIf(os.name == "nt", "POSIX process-group regression")
     def test_verification_terminates_a_leaked_descendant_process_group(self) -> None:
@@ -191,6 +236,7 @@ class EngineeringChangeTests(unittest.TestCase):
         allowed_paths: list[str] | None = None,
         claims: tuple[str, ...] | None = None,
         name: str = "change",
+        allow_dirty_baseline: bool = False,
     ) -> list[str]:
         review_dir = root / f"{name}-review"
         baseline = review_dir / "baseline.json"
@@ -209,6 +255,7 @@ class EngineeringChangeTests(unittest.TestCase):
                     for path in (allowed_paths or ["**"])
                     for part in ("--path", path)
                 ],
+                *(["--allow-dirty-baseline"] if allow_dirty_baseline else []),
             ],
             capture_output=True,
             text=True,
@@ -217,7 +264,7 @@ class EngineeringChangeTests(unittest.TestCase):
         self.assertEqual(begun.returncode, 0, begun.stderr)
         baseline_payload = json.loads(baseline.read_text(encoding="ascii"))
         baseline_sha256 = hashlib.sha256(baseline.read_bytes()).hexdigest()
-        contract = review_dir / "change-contract.json"
+        draft = review_dir / "change-contract.draft.json"
         payload = {
             "format": "rootloom-change-contract-v1",
             "run_id": baseline_payload["run_id"],
@@ -229,27 +276,32 @@ class EngineeringChangeTests(unittest.TestCase):
             "root_cause_alignment": "PASS",
             "verification_commands": {"verify-1": command},
             "verification_claims": {
-                claim: ["verify-1"]
+                claim: [
+                    {
+                        "id": claim,
+                        "command_ids": ["verify-1"],
+                        "target": command.split()[0],
+                        "expected_evidence": f"{claim} behavior is exercised",
+                        "evidence_kind": "regression-test",
+                    }
+                ]
                 for claim in (claims or self.ALL_CLAIM_IDS)
             },
         }
-        payload["contract_sha256"] = self.contract_sha256(payload)
-        contract.write_text(json.dumps(payload), encoding="utf-8")
-        (review_dir / "review.json").write_text(
-            json.dumps(
-                {
-                    "format": "rootloom-review-run-v1",
-                    "run_id": baseline_payload["run_id"],
-                    "nonce": baseline_payload["nonce"],
-                    "task_sha256": baseline_payload["task_sha256"],
-                    "baseline": baseline.name,
-                    "baseline_sha256": baseline_sha256,
-                    "change_contract": contract.name,
-                    "change_contract_sha256": payload["contract_sha256"],
-                }
-            ),
-            encoding="ascii",
+        draft.write_text(json.dumps(payload), encoding="utf-8")
+        sealed = subprocess.run(
+            [
+                sys.executable,
+                str(SEAL_CONTRACT),
+                "--review-dir",
+                str(review_dir),
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
+        self.assertEqual(sealed.returncode, 0, sealed.stderr)
+        contract = review_dir / "change-contract.json"
         return [
             "--task",
             task,
@@ -257,6 +309,8 @@ class EngineeringChangeTests(unittest.TestCase):
             str(baseline),
             "--change-contract",
             str(contract),
+            "--semantic-coverage",
+            "reviewed",
         ]
 
     def test_analyzer_keeps_docs_auth_reference_low_risk(self) -> None:
@@ -303,13 +357,16 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(created.returncode, 0, created.stderr)
             manifest = json.loads((output / "review.json").read_text(encoding="ascii"))
             baseline = json.loads((output / "baseline.json").read_text(encoding="ascii"))
-            contract = json.loads(
-                (output / "change-contract.json").read_text(encoding="utf-8")
-            )
+            draft_path = output / "change-contract.draft.json"
+            contract = json.loads(draft_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["run_id"], baseline["run_id"])
             self.assertEqual(manifest["nonce"], baseline["nonce"])
             self.assertEqual(manifest["baseline"], "baseline.json")
-            self.assertEqual(manifest["change_contract"], "change-contract.json")
+            self.assertEqual(
+                manifest["change_contract_draft"], "change-contract.draft.json"
+            )
+            self.assertFalse((output / "change-contract.json").exists())
+            self.assertFalse((output / "contract.seal.json").exists())
             self.assertEqual(contract["run_id"], baseline["run_id"])
             self.assertEqual(contract["nonce"], baseline["nonce"])
             self.assertEqual(
@@ -317,8 +374,66 @@ class EngineeringChangeTests(unittest.TestCase):
                 hashlib.sha256((output / "baseline.json").read_bytes()).hexdigest(),
             )
             self.assertEqual(manifest["baseline_sha256"], contract["baseline_sha256"])
+            todo_refused = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(todo_refused.returncode, 0)
+            self.assertIn("TODO", todo_refused.stderr)
+            command = f"{sys.executable} -c 'assert True'"
+            contract["root_cause_alignment"] = "PASS"
+            contract["verification_commands"] = {"verify-1": command}
+            contract["verification_claims"] = {
+                claim: [
+                    {
+                        "id": claim,
+                        "command_ids": ["verify-1"],
+                        "target": sys.executable,
+                        "expected_evidence": f"{claim} is reviewed",
+                        "evidence_kind": "regression-test",
+                    }
+                ]
+                for claim in self.ALL_CLAIM_IDS
+            }
+            contract["verification_claims"]["primary-behavior"][0][
+                "unexpected"
+            ] = True
+            draft_path.write_text(json.dumps(contract), encoding="utf-8")
+            malformed = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(malformed.returncode, 0)
+            self.assertIn("unexpected or missing fields", malformed.stderr)
+            del contract["verification_claims"]["primary-behavior"][0][
+                "unexpected"
+            ]
+            draft_path.write_text(json.dumps(contract), encoding="utf-8")
+            manifest_before = (output / "review.json").read_bytes()
+            sealed = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+            self.assertEqual((output / "review.json").read_bytes(), manifest_before)
+            final_contract = json.loads(
+                (output / "change-contract.json").read_text(encoding="ascii")
+            )
+            seal = json.loads((output / "contract.seal.json").read_text(encoding="ascii"))
+            self.assertEqual(final_contract["contract_sha256"], seal["contract_sha256"])
             self.assertEqual(
-                manifest["change_contract_sha256"], contract["contract_sha256"]
+                seal["contract_file_sha256"],
+                hashlib.sha256((output / "change-contract.json").read_bytes()).hexdigest(),
+            )
+            self.assertEqual(
+                seal["review_manifest_sha256"],
+                hashlib.sha256(manifest_before).hexdigest(),
             )
             refused = subprocess.run(
                 [
@@ -330,6 +445,8 @@ class EngineeringChangeTests(unittest.TestCase):
                     "change product behavior",
                     "--output",
                     str(output),
+                    "--path",
+                    "app.py",
                 ],
                 capture_output=True,
                 text=True,
@@ -337,6 +454,253 @@ class EngineeringChangeTests(unittest.TestCase):
             )
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("already exists", refused.stderr)
+
+    def test_review_directory_publication_never_replaces_an_empty_destination(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            source = root / "source"
+            destination = root / "destination"
+            source.mkdir()
+            destination.mkdir()
+            source_identity = source.stat().st_ino
+            destination_identity = destination.stat().st_ino
+            with self.assertRaises(OSError):
+                rename_directory_no_replace(source, destination)
+            self.assertTrue(source.is_dir())
+            self.assertEqual(source.stat().st_ino, source_identity)
+            self.assertTrue(destination.is_dir())
+            self.assertEqual(destination.stat().st_ino, destination_identity)
+
+    def test_begin_review_requires_scope_cleanliness_and_cleans_failed_transaction(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            missing_scope = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(root / "missing-scope"),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(missing_scope.returncode, 0)
+            self.assertIn("at least one --path", missing_scope.stderr)
+            (repo / "preexisting.txt").write_text("mine\n", encoding="utf-8")
+            dirty = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(root / "dirty"),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(dirty.returncode, 0)
+            self.assertIn("clean worktree and index", dirty.stderr)
+            (repo / "preexisting.txt").unlink()
+            output = root / "transaction"
+            with mock.patch.object(
+                begin_review_module,
+                "write_new_json",
+                side_effect=OSError("synthetic write failure"),
+            ):
+                with self.assertRaisesRegex(OSError, "synthetic write failure"):
+                    begin_review_module.main(
+                        [
+                            "--repo",
+                            str(repo),
+                            "--task",
+                            "change product behavior",
+                            "--output",
+                            str(output),
+                            "--path",
+                            "app.py",
+                        ]
+                    )
+            self.assertFalse(output.exists())
+            self.assertEqual(list(root.glob(".transaction.tmp-*")), [])
+
+    def test_sealed_contract_rejects_missing_hash_or_post_seal_content_change(self) -> None:
+        for mutation in ("missing-hash", "changed-content"):
+            with self.subTest(mutation=mutation), tempfile.TemporaryDirectory(
+                prefix="rootloom-change-", dir=Path.home()
+            ) as temporary:
+                root = Path(temporary)
+                repo = self.make_repo(root)
+                command = f"{sys.executable} -c 'assert True'"
+                governed = self.prepare_governed_change(
+                    root, repo, command=command, name=mutation
+                )
+                contract_path = Path(governed[5])
+                contract = json.loads(contract_path.read_text(encoding="ascii"))
+                if mutation == "missing-hash":
+                    contract.pop("contract_sha256")
+                else:
+                    contract["allowed_paths"].append("docs/**")
+                    contract["contract_sha256"] = self.contract_sha256(contract)
+                contract_path.write_text(json.dumps(contract), encoding="ascii")
+                (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--repo",
+                        str(repo),
+                        "--output",
+                        str(root / "run"),
+                        *governed,
+                        "--strict",
+                        "--verify",
+                        command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                summary = json.loads((root / "run" / "summary.json").read_text())
+                self.assertEqual(summary["quality_status"], "FAILED")
+                self.assertFalse(summary["review_manifest"]["valid"])
+                self.assertFalse(summary["passed"])
+
+    def test_dirty_baseline_overlap_is_conservatively_attributed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["app.py"],
+                name="dirty-overlap",
+                allow_dirty_baseline=True,
+            )
+            (repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["change_partition"], "conservative-overlap")
+            self.assertEqual(summary["changed_files"], ["app.py"])
+            self.assertEqual(summary["task_changes"][0]["path"], "app.py")
+            self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
+
+    def test_dirty_baseline_overlap_cannot_hide_behind_a_new_path(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["new.py"],
+                name="dirty-hidden-overlap",
+                allow_dirty_baseline=True,
+            )
+            (repo / "app.py").write_text("value = 3\n", encoding="utf-8")
+            (repo / "new.py").write_text("created = True\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["change_partition"], "conservative-overlap")
+            self.assertIn(
+                "app.py",
+                summary["change_contract"]["scope_violations"][
+                    "outside_allowed_paths"
+                ],
+            )
+            self.assertEqual(summary["quality_status"], "FAILED")
+
+    def test_removed_preexisting_dirty_path_cannot_be_reported_as_no_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["app.py"],
+                name="dirty-removed",
+                allow_dirty_baseline=True,
+            )
+            (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--allow-no-change",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(
+                summary["change_partition"], "preexisting-state-removed"
+            )
+            self.assertEqual(summary["removed_preexisting_paths"], ["app.py"])
+            self.assertEqual(summary["quality_status"], "FAILED")
 
     def test_analyzer_promotes_auth_source_and_explains_verification(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -406,6 +770,22 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertIn("primary-behavior", behavior_ids)
             self.assertIn("data-compatibility", behavior_ids)
             self.assertNotIn("documentation-contract", behavior_ids)
+
+    def test_analyzer_reads_bounded_untracked_code_for_risk_signals(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            (repo / "worker module.py").write_text(
+                "import argparse\nparser = argparse.ArgumentParser()\n",
+                encoding="utf-8",
+            )
+            completed = self.analyze(repo, "--task", "add worker behavior")
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            assessment = json.loads(completed.stdout)
+            self.assertEqual(assessment["detected_risk"], "high")
+            self.assertIn(
+                "public-contract",
+                {item["id"] for item in assessment["signals"]},
+            )
 
     def test_analyzer_ignores_unchanged_diff_context_and_detects_workflows(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -496,6 +876,71 @@ class EngineeringChangeTests(unittest.TestCase):
                 ["risk-expired"],
             )
             self.assertEqual(assessment["detected_risk"], "medium")
+
+    def test_sensitive_quarantine_disables_additional_repository_reads(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            memory = repo / ".project-memory"
+            memory.mkdir()
+            secret = "must-never-enter-quarantined-assessment"
+            (memory / "known-risks.json").write_text(
+                json.dumps(
+                    {
+                        "format": "rootloom-project-memory-v1",
+                        "kind": "risks",
+                        "entries": [
+                            {
+                                "id": "secret-risk",
+                                "date": "2026-01-01",
+                                "summary": secret,
+                                "mitigation": "do not read this record",
+                                "paths": ["app.py"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            assessment = analyze_change_intelligence(
+                repo,
+                task="change app behavior",
+                anticipated_paths=["app.py"],
+                changes=[],
+                tracked_patch=b"",
+                declared_risk=None,
+                allow_repository_reads=False,
+            )
+            serialized = json.dumps(assessment, ensure_ascii=True)
+            self.assertNotIn(secret, serialized)
+            self.assertEqual(assessment["memory"]["matches"], [])
+            self.assertEqual(
+                assessment["verification_plan"]["suggested_commands"], []
+            )
+            self.assertIn("sensitive-change quarantine", serialized)
+
+    def test_repository_command_discovery_is_bounded_and_no_follow(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            makefile = root / "Makefile"
+            makefile.write_text("check:\n\t@true\n", encoding="utf-8")
+            self.assertIn(
+                "check:",
+                read_bounded_repository_text(
+                    makefile, max_bytes=MAX_COMMAND_DISCOVERY_BYTES
+                ),
+            )
+            makefile.write_bytes(b"x" * (MAX_COMMAND_DISCOVERY_BYTES + 1))
+            with self.assertRaisesRegex(ValueError, "exceeds"):
+                read_bounded_repository_text(
+                    makefile, max_bytes=MAX_COMMAND_DISCOVERY_BYTES
+                )
+            if os.name != "nt":
+                makefile.unlink()
+                makefile.symlink_to(root / "outside")
+                with self.assertRaisesRegex(ValueError, "must not be a symlink"):
+                    read_bounded_repository_text(
+                        makefile, max_bytes=MAX_COMMAND_DISCOVERY_BYTES
+                    )
 
     def test_analyzer_and_memory_cli_share_the_entry_limit(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -665,16 +1110,18 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
             self.assertTrue(summary["passed"])
-            self.assertEqual(summary["schema_revision"], 2)
+            self.assertEqual(summary["schema_revision"], 3)
             self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
             self.assertEqual(summary["verification_coverage"], "complete")
             self.assertEqual(summary["claim_binding"], "complete")
-            self.assertEqual(summary["semantic_coverage"], "unknown")
+            self.assertEqual(summary["semantic_coverage"], "reviewed")
             self.assertEqual(summary["evidence_provenance"]["baseline"], "operator-sealed")
             self.assertEqual(
                 summary["evidence_provenance"]["change_contract"], "operator-sealed"
             )
-            self.assertEqual(summary["evidence_provenance"]["verification_claims"], "self-declared")
+            self.assertEqual(summary["evidence_provenance"]["verification_claims"], "operator-sealed")
+            self.assertEqual(summary["evidence_provenance"]["semantic_review"], "operator-asserted")
+            self.assertEqual(summary["sensitive_integrity"], "metadata-observed")
             self.assertTrue(summary["hash_chain"]["valid"])
             self.assertEqual(summary["process_convergence"], "complete")
             self.assertTrue(summary["detached_descendant_possible"])
@@ -722,7 +1169,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.returncode, 4, completed.stderr)
             summary = json.loads((root / "run" / "summary.json").read_text())
             self.assertTrue(summary["commands_passed"])
             self.assertTrue(summary["capture_preserved"])
@@ -730,6 +1177,119 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(summary["verification_coverage"], "partial")
             self.assertEqual(summary["quality_status"], "COMMANDS_PASSED")
             self.assertFalse(summary["passed"])
+
+    def test_strict_bundle_only_is_explicitly_nonblocking(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                claims=("primary",),
+                name="strict-bundle",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--strict-bundle-only",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "COMMANDS_PASSED")
+            self.assertEqual(summary["exit_policy"], "bundle")
+
+    def test_semantic_unknown_caps_sealed_evidence_at_mechanical(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="mechanical-cap"
+            )
+            governed = governed[:-2]
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 4, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["claim_binding"], "complete")
+            self.assertEqual(summary["semantic_coverage"], "unknown")
+            self.assertEqual(summary["quality_status"], "MECHANICALLY_VERIFIED")
+            self.assertFalse(summary["passed"])
+
+    def test_cli_claims_cannot_promote_a_partial_sealed_contract(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                claims=("primary",),
+                name="cli-claims",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            cli_claims = [
+                part
+                for claim in self.ALL_CLAIM_IDS
+                if claim != "primary-behavior"
+                for part in ("--verify-claim", f"{claim}:{command}")
+            ]
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                    *cli_claims,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 4, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["declared_claim_binding"], "complete")
+            self.assertEqual(summary["claim_binding"], "partial")
+            self.assertEqual(summary["quality_status"], "COMMANDS_PASSED")
 
     def test_advisory_finalizer_does_not_block_without_governed_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -822,7 +1382,7 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(summary["quality_status"], "NO_CHANGE")
             self.assertEqual(summary["process_exit_code"], 3)
 
-    def test_self_declared_strict_evidence_is_mechanically_verified_not_passed(self) -> None:
+    def test_simple_string_claims_cannot_complete_strict_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
             repo = self.make_repo(root)
@@ -863,6 +1423,7 @@ class EngineeringChangeTests(unittest.TestCase):
                     str(baseline),
                     "--change-contract",
                     str(contract),
+                    "--strict",
                     "--verify",
                     command,
                 ],
@@ -870,9 +1431,11 @@ class EngineeringChangeTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.returncode, 4, completed.stderr)
             summary = json.loads((root / "run" / "summary.json").read_text())
-            self.assertEqual(summary["quality_status"], "MECHANICALLY_VERIFIED")
+            self.assertEqual(summary["quality_status"], "UNVERIFIED")
+            self.assertEqual(summary["declared_claim_binding"], "complete")
+            self.assertEqual(summary["claim_binding"], "unverified")
             self.assertFalse(summary["passed"])
             self.assertEqual(summary["evidence_provenance"]["baseline"], "self-declared")
             self.assertEqual(summary["evidence_provenance"]["change_contract"], "self-declared")
@@ -913,7 +1476,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("baseline must not be a symlink", completed.stderr)
+            self.assertIn("baseline path must not traverse a symlink", completed.stderr)
             self.assertFalse((root / "run" / "summary.json").exists())
 
     def test_structured_claim_binding_requires_target_in_command(self) -> None:
@@ -976,6 +1539,83 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("target is not present", completed.stderr)
 
+    def test_repository_globs_are_segment_aware(self) -> None:
+        self.assertTrue(path_matches("src/auth/user.py", "src/auth/*"))
+        self.assertFalse(path_matches("src/auth/internal/token.py", "src/auth/*"))
+        self.assertTrue(path_matches("src/auth/internal/token.py", "src/auth/**"))
+        self.assertFalse(path_matches("src/auth/internal/token.py", "src/auth/*.py"))
+        self.assertTrue(
+            path_matches("src/auth/internal/token.py", "src/auth/**/token.py")
+        )
+        self.assertTrue(path_matches("src/auth/token.py", "src/auth/**/token.py"))
+        self.assertTrue(path_matches("src/a.py", "src/?.py"))
+        self.assertFalse(path_matches("src/ab.py", "src/?.py"))
+        self.assertTrue(path_matches("src/auth/[ab].py", "src/auth/[ab].py"))
+        self.assertFalse(path_matches("src/auth/a.py", "src/auth/[ab].py"))
+        self.assertTrue(path_matches("src/auth/token.py", "**/token.py"))
+        self.assertTrue(path_matches("token.py", "**/token.py"))
+        self.assertFalse(path_matches("src/auth/token.txt", "**/token.py"))
+
+    def test_legacy_baseline_remains_readable_but_cannot_be_sealed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            review_dir = root / "legacy-review"
+            begun = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(review_dir),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(begun.returncode, 0, begun.stderr)
+            baseline_path = review_dir / "baseline.json"
+            baseline = json.loads(baseline_path.read_text(encoding="ascii"))
+            baseline["format"] = "rootloom-change-baseline-v1"
+            baseline_path.write_text(json.dumps(baseline), encoding="ascii")
+            loaded, _digest = read_baseline_payload_with_hash(baseline_path)
+            self.assertEqual(loaded["format"], "rootloom-change-baseline-v1")
+            sealed = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(review_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(sealed.returncode, 0)
+            self.assertIn("operator-sealed baseline v2", sealed.stderr)
+            self.assertFalse((review_dir / "change-contract.json").exists())
+            self.assertFalse((review_dir / "contract.seal.json").exists())
+
+    def test_contract_rejects_duplicate_claim_aliases(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            contract = Path(temporary) / "contract.json"
+            command = f"{sys.executable} -c 'assert True'"
+            payload = {
+                "format": "rootloom-change-contract-v1",
+                "allowed_paths": ["**"],
+                "forbidden_paths": [],
+                "root_cause_alignment": "PASS",
+                "verification_commands": {"verify-1": command},
+                "verification_claims": {
+                    "primary": ["verify-1"],
+                    "primary-behavior": ["verify-1"],
+                },
+            }
+            payload["contract_sha256"] = self.contract_sha256(payload)
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "duplicate alias"):
+                load_change_contract(contract)
+
     def test_strict_finalizer_requires_governed_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
@@ -1002,6 +1642,433 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertIn("requires --baseline", completed.stderr)
             self.assertFalse((root / "run" / "summary.json").exists())
+
+    def test_strict_finalizer_binds_baseline_head_ref_and_index(self) -> None:
+        for movement in ("index", "head", "head_ref"):
+            with self.subTest(movement=movement), tempfile.TemporaryDirectory(
+                prefix="rootloom-change-", dir=Path.home()
+            ) as temporary:
+                root = Path(temporary)
+                repo = self.make_repo(root)
+                command = f"{sys.executable} -c 'assert True'"
+                governed = self.prepare_governed_change(
+                    root, repo, command=command, name=f"base-{movement}"
+                )
+                if movement == "head":
+                    (repo / "base.txt").write_text("new base\n", encoding="utf-8")
+                    subprocess.run(["git", "add", "base.txt"], cwd=repo, check=True)
+                    subprocess.run(["git", "commit", "-qm", "move base"], cwd=repo, check=True)
+                elif movement == "head_ref":
+                    subprocess.run(
+                        ["git", "checkout", "-qb", "alternate"], cwd=repo, check=True
+                    )
+                (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+                if movement == "index":
+                    subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--repo",
+                        str(repo),
+                        "--output",
+                        str(root / "run"),
+                        *governed,
+                        "--strict",
+                        "--verify",
+                        command,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 1, completed.stderr)
+                summary = json.loads((root / "run" / "summary.json").read_text())
+                self.assertEqual(summary["quality_status"], "FAILED")
+                self.assertFalse(summary["baseline"]["repository_base_stable"])
+                errors = summary["hash_chain"]["errors"]
+                expected = "head ref" if movement == "head_ref" else movement
+                self.assertTrue(
+                    any(f"repository {expected} changed" in item.lower() for item in errors),
+                    errors,
+                )
+
+    def test_verification_cannot_move_head_with_an_identical_tree(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = "git commit --allow-empty -qm verification-base-drift"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="verification-base-drift"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["capture_preserved"])
+            self.assertFalse(
+                summary["repository_base_preserved_during_verification"]
+            )
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn(
+                "repository HEAD changed during verification",
+                summary["post_execution_errors"],
+            )
+
+    def test_verification_cannot_mutate_sealed_evidence_after_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            seal_path = root / "evidence-drift-review" / "contract.seal.json"
+            seal_path_hex = str(seal_path).encode("utf-8").hex()
+            command = (
+                f"{sys.executable} -c "
+                "'p=__import__(\"pathlib\").Path("
+                f"bytes.fromhex(\"{seal_path_hex}\").decode());"
+                "p.write_bytes(p.read_bytes()+b\" \")'"
+            )
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="evidence-drift"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["capture_preserved"])
+            self.assertFalse(summary["evidence_files_preserved"])
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn(
+                "contract seal bytes changed during verification",
+                summary["evidence_preservation_errors"],
+            )
+
+    def test_operator_evidence_must_remain_outside_the_repository(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="inside-evidence"
+            )
+            review_dir = Path(governed[3]).parent
+            inside_review = repo / "review"
+            review_dir.rename(inside_review)
+            governed[3] = str(inside_review / "baseline.json")
+            governed[5] = str(inside_review / "change-contract.json")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("must be outside the repository", completed.stderr)
+            self.assertFalse((root / "run").exists())
+
+    def test_invalid_evidence_beats_no_change_status(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="no-change-invalid"
+            )
+            contract_path = Path(governed[5])
+            contract = json.loads(contract_path.read_text(encoding="ascii"))
+            contract.pop("contract_sha256")
+            contract_path.write_text(json.dumps(contract), encoding="ascii")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--allow-no-change",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "FAILED")
+
+    def test_review_manifest_requires_exact_schema(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="manifest-schema"
+            )
+            review_dir = Path(governed[3]).parent
+            manifest_path = review_dir / "review.json"
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            manifest["unexpected"] = True
+            manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn("unexpected or missing fields", summary["review_manifest"]["errors"][0])
+
+    def test_review_manifest_byte_drift_invalidates_contract_seal(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="manifest-byte-drift"
+            )
+            review_dir = Path(governed[3]).parent
+            manifest_path = review_dir / "review.json"
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            manifest["next_step"] = "A different but still schema-valid instruction."
+            manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn(
+                "review_manifest_sha256 does not match",
+                summary["review_manifest"]["errors"][0],
+            )
+
+    def test_contract_seal_rejects_duplicate_json_keys(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="duplicate-seal-key"
+            )
+            review_dir = Path(governed[3]).parent
+            seal_path = review_dir / "contract.seal.json"
+            seal_raw = seal_path.read_text(encoding="ascii")
+            seal_path.write_text(
+                seal_raw.replace(
+                    "{\n",
+                    '{\n  "format": "rootloom-contract-seal-v1",\n',
+                    1,
+                ),
+                encoding="ascii",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn(
+                "duplicate JSON key: format",
+                summary["review_manifest"]["errors"][0],
+            )
+
+    def test_evidence_json_rejects_duplicate_object_keys(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            baseline_path = root / "baseline.json"
+            analyzed = self.analyze(repo, "--write-baseline", str(baseline_path))
+            self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
+            baseline_raw = baseline_path.read_text(encoding="ascii")
+            baseline_path.write_text(
+                baseline_raw.replace(
+                    "{\n",
+                    '{\n  "format": "rootloom-change-baseline-v2",\n',
+                    1,
+                ),
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key: format"):
+                read_baseline_payload_with_hash(baseline_path)
+
+            contract_path = root / "contract.json"
+            contract_path.write_text(
+                '{"format":"rootloom-change-contract-v1",'
+                '"format":"rootloom-change-contract-v1"}',
+                encoding="ascii",
+            )
+            with self.assertRaisesRegex(ValueError, "duplicate JSON key: format"):
+                load_change_contract(contract_path)
+            with self.assertRaisesRegex(ValueError, "out-of-range JSON number"):
+                parse_json_object(
+                    b'{"value": 1e999}',
+                    label="evidence",
+                    encoding="ascii",
+                )
+
+    def test_baseline_schema_rejects_future_and_malformed_identity(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            source = root / "baseline.json"
+            analyzed = self.analyze(repo, "--write-baseline", str(source))
+            self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
+            original = json.loads(source.read_text(encoding="ascii"))
+            mutations = {
+                "run_id": "not-a-uuid",
+                "nonce": "ABC",
+                "task_sha256": "0" * 63,
+                "created_at": (
+                    datetime.now(UTC) + timedelta(hours=1)
+                ).isoformat().replace("+00:00", "Z"),
+            }
+            for field, value in mutations.items():
+                with self.subTest(field=field):
+                    target = root / f"baseline-{field}.json"
+                    payload = dict(original)
+                    payload[field] = value
+                    target.write_text(json.dumps(payload), encoding="ascii")
+                    with self.assertRaises(ValueError):
+                        read_baseline_payload_with_hash(target)
+            nested_mutations = []
+            unexpected_snapshot = json.loads(json.dumps(original))
+            unexpected_snapshot["snapshot"]["unexpected"] = True
+            nested_mutations.append(("snapshot-fields", unexpected_snapshot))
+            unsafe_path = json.loads(json.dumps(original))
+            unsafe_path["snapshot"]["changes"] = [
+                {"status": " M", "path": "../escape.py", "original_path": ""}
+            ]
+            unsafe_path["preexisting_changes"] = list(
+                unsafe_path["snapshot"]["changes"]
+            )
+            unsafe_path["allow_dirty_baseline"] = True
+            nested_mutations.append(("unsafe-path", unsafe_path))
+            bad_policy = json.loads(json.dumps(original))
+            bad_policy["sensitive_policy_sha256"] = "0" * 64
+            nested_mutations.append(("sensitive-policy", bad_policy))
+            clean_with_patch = json.loads(json.dumps(original))
+            clean_with_patch["tracked_patch_sha256"] = "1" * 64
+            nested_mutations.append(("clean-with-patch", clean_with_patch))
+            missing_ref = json.loads(json.dumps(original))
+            missing_ref["git"].pop("head_ref")
+            nested_mutations.append(("missing-head-ref", missing_ref))
+            empty_index = json.loads(json.dumps(original))
+            empty_index["git"]["index_sha256"] = ""
+            nested_mutations.append(("empty-index", empty_index))
+            for name, payload in nested_mutations:
+                with self.subTest(name=name):
+                    target = root / f"baseline-{name}.json"
+                    target.write_text(json.dumps(payload), encoding="ascii")
+                    with self.assertRaises(ValueError):
+                        read_baseline_payload_with_hash(target)
+            negative_age = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "negative-age"),
+                    "--max-baseline-age-seconds",
+                    "-1",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(negative_age.returncode, 0)
+            self.assertIn("must be nonnegative", negative_age.stderr)
 
     def test_untracked_content_rewrite_changes_capture_and_patch_contains_content(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1113,7 +2180,209 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertNotIn("sha256", metadata)
             self.assertNotIn("never-read-nested-secret", baseline.read_text())
 
-    def test_sensitive_directory_and_symlink_are_metadata_only_without_recursion(self) -> None:
+    def test_ignored_uppercase_secret_and_declared_directory_boundary_are_safe(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(
+                ".ENV\nprivate-config/\nprivate-backup/\n", encoding="utf-8"
+            )
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore private files"], cwd=repo, check=True)
+            (repo / ".ENV").write_text("TOKEN=uppercase-secret\n", encoding="utf-8")
+            private = repo / "private-config"
+            private.mkdir()
+            (private / "nested.txt").write_text("declared-secret\n", encoding="utf-8")
+            backup = repo / "private-backup"
+            backup.mkdir()
+            (backup / "nested.txt").write_text("not-declared\n", encoding="utf-8")
+            baseline = root / "case-sensitive-baseline.json"
+            completed = self.analyze(
+                repo,
+                "--sensitive-path",
+                "private-config",
+                "--write-baseline",
+                str(baseline),
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            payload = json.loads(baseline.read_text())
+            paths = {item["path"] for item in payload["snapshot"]["sensitive_paths"]}
+            self.assertIn(".ENV", paths)
+            self.assertIn("private-config/nested.txt", paths)
+            self.assertNotIn("private-backup/nested.txt", paths)
+            serialized = baseline.read_text()
+            self.assertNotIn("uppercase-secret", serialized)
+            self.assertNotIn("declared-secret", serialized)
+
+    def test_new_ignored_sensitive_path_is_a_scoped_task_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["app.py"],
+                name="new-ignored-sensitive",
+            )
+            synthetic = "ignored-addition-synthetic-value"
+            (repo / ".env").write_text(f"TOKEN={synthetic}\n", encoding="utf-8")
+            (repo / "leaked.txt").write_text(
+                f"TOKEN={synthetic}\n", encoding="utf-8"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "FAILED")
+            self.assertIn(".env", summary["baseline_sensitive_preservation"]["added"])
+            self.assertIn(
+                ".env",
+                summary["change_contract"]["scope_violations"][
+                    "outside_allowed_paths"
+                ],
+            )
+            self.assertIn(".env", {item["path"] for item in summary["task_changes"]})
+            self.assertTrue(summary["sensitive_change_quarantine"])
+            patch = (root / "run" / "diff.patch").read_text()
+            self.assertNotIn(synthetic, patch)
+            leaked = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertTrue(leaked["sensitive"])
+            self.assertFalse(leaked["content_read"])
+
+    def test_unchanged_ignored_sensitive_reference_does_not_quarantine(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            (repo / ".env").write_text("TOKEN=unchanged-synthetic\n", encoding="utf-8")
+            baseline, _patch = repository_snapshot(repo)
+
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            current, _patch = repository_snapshot(
+                repo,
+                reference_sensitive_metadata=baseline["sensitive_paths"],
+            )
+
+            self.assertFalse(current["bounds"]["sensitive_change_quarantine"])
+            metadata = next(
+                item for item in current["sensitive_paths"] if item["path"] == ".env"
+            )
+            self.assertFalse(metadata["content_read"])
+
+    def test_verification_new_ignored_sensitive_path_quarantines_before_recapture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            synthetic = "verification-ignored-addition-synthetic-value"
+            command = (
+                f"{sys.executable} -c "
+                "'from pathlib import Path; "
+                f'Path(".env").write_text("TOKEN={synthetic}\\n"); '
+                f'Path("leaked.txt").write_text("TOKEN={synthetic}\\n")'
+                "'"
+            )
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["app.py", ".env", "leaked.txt"],
+                name="verification-new-ignored-sensitive",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["verification_sensitive_change_quarantine"])
+            self.assertFalse(summary["capture_preserved"])
+            patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
+            self.assertNotIn(synthetic, patch)
+            leaked = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertTrue(leaked["sensitive"])
+            self.assertFalse(leaked["content_read"])
+
+    def test_strict_cannot_add_sensitive_policy_after_baseline(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="late-sensitive-policy"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--sensitive-path",
+                    "app.py",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("must be declared in the baseline intake", completed.stderr)
+            self.assertFalse((root / "run").exists())
+
+    def test_sensitive_directory_and_symlink_are_metadata_only_recursively(self) -> None:
         if os.name == "nt":
             self.skipTest("symlink creation is not portable on Windows CI")
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1125,6 +2394,12 @@ class EngineeringChangeTests(unittest.TestCase):
             (repo / "credential-link").symlink_to(
                 "private-config", target_is_directory=True
             )
+            subprocess.run(
+                ["git", "add", "private-config/nested.txt", "credential-link"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "commit", "-qm", "private inputs"], cwd=repo, check=True)
             baseline = root / "metadata-baseline.json"
             completed = self.analyze(
                 repo,
@@ -1141,9 +2416,126 @@ class EngineeringChangeTests(unittest.TestCase):
                 item["path"]: item for item in payload["snapshot"]["sensitive_paths"]
             }
             self.assertEqual(metadata["private-config"]["kind"], "directory")
+            self.assertEqual(metadata["private-config/nested.txt"]["kind"], "file")
+            self.assertFalse(metadata["private-config/nested.txt"]["content_read"])
             self.assertEqual(metadata["credential-link"]["kind"], "symlink")
-            self.assertEqual(metadata["credential-link"]["target"], "private-config")
+            self.assertEqual(
+                metadata["credential-link"]["target_sha256"],
+                hashlib.sha256(b"private-config").hexdigest(),
+            )
+            self.assertEqual(metadata["credential-link"]["target_bytes"], 14)
+            self.assertNotIn("target", metadata["credential-link"])
             self.assertNotIn("never capture this text", baseline.read_text())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation is not portable on Windows CI")
+    def test_sensitive_capture_never_traverses_a_symlink_parent(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            outside = root / "outside"
+            outside.mkdir()
+            (outside / "value.txt").write_text("outside-value\n", encoding="utf-8")
+            (repo / "redirect").symlink_to(outside, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "symlink parent"):
+                repository_snapshot(
+                    repo,
+                    extra_sensitive=["redirect/value.txt"],
+                )
+
+    def test_builtin_sensitive_directory_names_protect_all_descendants(self) -> None:
+        for path in (
+            ".env/config",
+            ".env.production/config",
+            ".netrc/config",
+            "certificates.key/config",
+            "nested/id_rsa/config",
+        ):
+            with self.subTest(path=path):
+                self.assertTrue(is_sensitive_path(path))
+        self.assertFalse(is_sensitive_path("environment/config"))
+        self.assertTrue(is_protected_deletion_path("state.sqlite"))
+        self.assertTrue(is_protected_deletion_path("state.sqlite3"))
+
+    def test_equal_length_ignored_sensitive_rewrite_breaks_capture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            (repo / ".env").write_text("TOKEN=AAAA\n", encoding="utf-8")
+            command = (
+                f"{sys.executable} -c "
+                "'__import__(\"pathlib\").Path(\".env\").write_text(\"TOKEN=BBBB\\n\")'"
+            )
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="same-size-sensitive"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertFalse(summary["capture_preserved"])
+            self.assertEqual(summary["sensitive_integrity"], "metadata-observed")
+            metadata = next(
+                item
+                for item in summary["repository_capture"]["sensitive_paths"]
+                if item["path"] == ".env"
+            )
+            for field in ("device", "inode", "link_count", "mtime_ns", "ctime_ns"):
+                self.assertIn(field, metadata)
+
+    def test_sensitive_directory_rename_does_not_enter_patch(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            private = repo / "private-config"
+            private.mkdir()
+            secret = private / "secret.txt"
+            secret.write_text("never-enter-review-patch\n", encoding="utf-8")
+            subprocess.run(["git", "add", "private-config/secret.txt"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "private config"], cwd=repo, check=True)
+            private.rename(repo / "public-config")
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--sensitive-path",
+                    "private-config",
+                    "--confirm-dangerous-delete",
+                    "private-config/secret.txt",
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertNotIn(
+                b"never-enter-review-patch", (root / "run" / "diff.patch").read_bytes()
+            )
 
     def test_untracked_binary_is_hashed_without_entering_text_patch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1220,6 +2612,19 @@ class EngineeringChangeTests(unittest.TestCase):
             encoded = (root / "run" / "summary.json").read_bytes()
             self.assertIn(b"bad-\\udcff.py", encoded)
             json.loads(encoded.decode("ascii"))
+
+    @unittest.skipIf(os.name == "nt", "POSIX file-name edge case")
+    def test_git_paths_are_never_silently_trimmed_or_reinterpreted(self) -> None:
+        for path in (" leading.py", "back\\slash.py"):
+            with self.subTest(path=path), tempfile.TemporaryDirectory(
+                prefix="rootloom-change-", dir=Path.home()
+            ) as temporary:
+                root = Path(temporary)
+                repo = self.make_repo(root)
+                (repo / path).write_text("value = 2\n", encoding="utf-8")
+                completed = self.analyze(repo)
+                self.assertNotEqual(completed.returncode, 0)
+                self.assertIn("without changing the path", completed.stderr)
 
     def test_change_contract_blocks_out_of_scope_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1306,6 +2711,45 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertFalse(summary["passed"])
             self.assertTrue((root / "empty" / ".rootloom-engineering-bundle.json").is_file())
 
+    @unittest.skipIf(os.name == "nt", "symlink creation is not portable on Windows CI")
+    def test_output_ownership_marker_must_be_bounded_regular_file(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            target = root / "external-marker.json"
+            target.write_text(
+                json.dumps(
+                    {
+                        "format": "rootloom-engineering-bundle-owner-v1",
+                        "managed_by": "rootloom",
+                    }
+                ),
+                encoding="ascii",
+            )
+            output = root / "linked-marker-output"
+            output.mkdir()
+            (output / ".rootloom-engineering-bundle.json").symlink_to(target)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(output),
+                    "--allow-no-change",
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("ownership marker", completed.stderr)
+            self.assertTrue((output / ".rootloom-engineering-bundle.json").is_symlink())
+            self.assertIn("managed_by", target.read_text(encoding="ascii"))
+
     def test_finalizer_refuses_in_repository_output_and_oversized_patch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
@@ -1350,6 +2794,272 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertNotEqual(oversized.returncode, 0)
             self.assertIn("exceeds configured 1-byte budget", oversized.stderr)
             self.assertFalse((root / "run").exists())
+
+    def test_evidence_entry_points_reject_linked_worktree_git_common_directory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            main = self.make_repo(root)
+            worktree = root / "linked-worktree"
+            subprocess.run(
+                ["git", "worktree", "add", "-q", "-b", "linked-review", str(worktree)],
+                cwd=main,
+                check=True,
+            )
+            raw_common = subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=worktree,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            common = Path(raw_common)
+            if not common.is_absolute():
+                common = worktree / common
+            common = common.resolve()
+
+            intake_inside = common / "refs" / "heads" / "rootloom-review-intake"
+            begun = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(worktree),
+                    "--task",
+                    "reject Git storage output",
+                    "--output",
+                    str(intake_inside),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(begun.returncode, 0)
+            self.assertIn("Git common directory", begun.stderr)
+            self.assertFalse(intake_inside.exists())
+
+            baseline_inside = common / "rootloom-review-baseline.json"
+            analyzed = self.analyze(
+                worktree,
+                "--task",
+                "reject Git storage baseline",
+                "--path",
+                "app.py",
+                "--write-baseline",
+                str(baseline_inside),
+            )
+            self.assertNotEqual(analyzed.returncode, 0)
+            self.assertIn("Git common directory", analyzed.stderr)
+            self.assertFalse(baseline_inside.exists())
+
+            review_outside = root / "review-outside"
+            begun_outside = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(worktree),
+                    "--task",
+                    "reject Git storage seal",
+                    "--output",
+                    str(review_outside),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(begun_outside.returncode, 0, begun_outside.stderr)
+            review_inside = common / "rootloom-review-seal"
+            review_outside.rename(review_inside)
+            sealed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SEAL_CONTRACT),
+                    "--review-dir",
+                    str(review_inside),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(sealed.returncode, 0)
+            self.assertIn("Git common directory", sealed.stderr)
+
+            (worktree / "app.py").write_text("value = 2\n", encoding="utf-8")
+            evidence_inside = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(worktree),
+                    "--output",
+                    str(root / "evidence-run"),
+                    "--baseline",
+                    str(review_inside / "baseline.json"),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(evidence_inside.returncode, 0)
+            self.assertIn("Git common directory", evidence_inside.stderr)
+            self.assertFalse((root / "evidence-run").exists())
+
+            bundle_inside = common / "rootloom-review-bundle"
+            finalized = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(worktree),
+                    "--output",
+                    str(bundle_inside),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(finalized.returncode, 0)
+            self.assertIn("Git common directory", finalized.stderr)
+            self.assertFalse(bundle_inside.exists())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation is not portable on Windows CI")
+    def test_review_and_bundle_outputs_reject_symlinked_parent_components(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            target = root / "target"
+            target.mkdir()
+            linked_parent = root / "linked-parent"
+            linked_parent.symlink_to(target, target_is_directory=True)
+            begun = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(linked_parent / "review"),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(begun.returncode, 0)
+            self.assertIn("must not traverse a symlink", begun.stderr)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            finalized = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(linked_parent / "bundle"),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(finalized.returncode, 0)
+            self.assertIn("must not traverse a symlink", finalized.stderr)
+            analyzed = self.analyze(
+                repo,
+                "--write-baseline",
+                str(linked_parent / "baseline.json"),
+            )
+            self.assertNotEqual(analyzed.returncode, 0)
+            self.assertIn("must not traverse a symlink", analyzed.stderr)
+            self.assertFalse((target / "review").exists())
+            self.assertFalse((target / "bundle").exists())
+            self.assertFalse((target / "baseline.json").exists())
+
+            traversing = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    os.fspath(linked_parent / ".." / "traversed-review"),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(traversing.returncode, 0)
+            self.assertIn("parent traversal", traversing.stderr)
+            self.assertFalse((root / "traversed-review").exists())
+
+    @unittest.skipIf(os.name == "nt", "symlink creation is not portable on Windows CI")
+    def test_verification_cannot_redirect_bundle_output_after_preflight(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            output = root / "run"
+            victim = root / "victim"
+            victim.mkdir()
+            command = (
+                f"{sys.executable} -c "
+                f"'__import__(\"pathlib\").Path(\"{output}\").symlink_to("
+                f"\"{victim}\",target_is_directory=True)'"
+            )
+            governed = self.prepare_governed_change(
+                root, repo, command=command, name="output-redirection"
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(output),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("output path changed during verification", completed.stderr)
+            self.assertTrue(output.is_symlink())
+            self.assertEqual(list(victim.iterdir()), [])
+
+    def test_analyzer_dirty_baseline_is_declared_and_readable(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            baseline = root / "dirty-baseline.json"
+            analyzed = self.analyze(repo, "--write-baseline", str(baseline))
+            self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
+            payload, _digest = read_baseline_payload_with_hash(baseline)
+            self.assertTrue(payload["allow_dirty_baseline"])
+            self.assertEqual(
+                payload["preexisting_changes"], payload["snapshot"]["changes"]
+            )
 
     def test_finalizer_auto_risk_and_manual_high_risk_are_not_lowered(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1451,6 +3161,357 @@ class EngineeringChangeTests(unittest.TestCase):
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
 
+    def test_dangerous_deletion_never_leaves_a_stale_summary(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            secret = repo / ".env"
+            secret.write_text("TOKEN=redacted\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".env"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "track env"], cwd=repo, check=True)
+            output = root / "run"
+            output.mkdir()
+            (output / ".rootloom-engineering-bundle.json").write_text(
+                json.dumps(
+                    {
+                        "format": "rootloom-engineering-bundle-owner-v1",
+                        "managed_by": "rootloom",
+                    }
+                ),
+                encoding="ascii",
+            )
+            (output / "summary.json").write_text(
+                '{"quality_status":"VERIFIED_CHANGE","passed":true}',
+                encoding="ascii",
+            )
+            secret.unlink()
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(output),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 10, completed.stderr)
+            self.assertFalse((output / "summary.json").exists())
+
+    def test_confirmed_sensitive_rename_quarantines_all_changed_content(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            secret = repo / ".env"
+            secret.write_text("TOKEN=never-enter-bundle\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="relocate obsolete secret configuration",
+                allowed_paths=[".env", "app.py", "leaked.txt"],
+                name="quarantined-sensitive-rename",
+            )
+            secret.rename(repo / "leaked.txt")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--confirm-dangerous-delete",
+                    ".env",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["sensitive_deletion_quarantine"])
+            self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
+            patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
+            self.assertNotIn("never-enter-bundle", patch)
+            metadata = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertFalse(metadata["content_read"])
+            self.assertTrue(metadata["sensitive"])
+
+    def test_ignored_sensitive_deletion_is_enforced_by_contract_scope(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            secret = repo / ".env"
+            secret.write_text("TOKEN=scope-protected\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="delete obsolete sensitive configuration",
+                allowed_paths=["app.py"],
+                name="sensitive-scope",
+            )
+            secret.unlink()
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--confirm-dangerous-delete",
+                    ".env",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["changed_files"], [".env"])
+            self.assertEqual(
+                summary["change_contract"]["scope_violations"][
+                    "outside_allowed_paths"
+                ],
+                [".env"],
+            )
+            self.assertEqual(summary["quality_status"], "FAILED")
+
+    def test_sensitive_replacement_quarantines_content_before_baseline_comparison(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            secret = repo / ".env"
+            secret.write_text("TOKEN=never-read-after-replacement\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="reject replaced sensitive state",
+                allowed_paths=["app.py", "leaked.txt"],
+                name="replaced-sensitive-state",
+            )
+            secret.rename(repo / "leaked.txt")
+            secret.write_text("placeholder\n", encoding="utf-8")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["sensitive_change_quarantine"])
+            self.assertFalse(summary["sensitive_deletion_quarantine"])
+            self.assertEqual(summary["quality_status"], "FAILED")
+            patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
+            self.assertNotIn("never-read-after-replacement", patch)
+            metadata = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertFalse(metadata["content_read"])
+
+    def test_snapshot_quarantines_all_changes_when_git_reports_sensitive_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            secret = repo / ".env"
+            secret.write_text("TOKEN=never-read-from-relocated-file\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".env"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "track env"], cwd=repo, check=True)
+            secret.rename(repo / "relocated.txt")
+            snapshot, untracked_patch = repository_snapshot(repo)
+            self.assertTrue(snapshot["bounds"]["sensitive_change_quarantine"])
+            metadata = next(
+                item
+                for item in snapshot["untracked"]
+                if item["path"] == "relocated.txt"
+            )
+            self.assertTrue(metadata["sensitive"])
+            self.assertFalse(metadata["content_read"])
+            self.assertNotIn(b"never-read-from-relocated-file", untracked_patch)
+
+    def test_repository_capture_rejects_a_mixed_concurrent_state(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            original_capture = repository_snapshot
+            calls = 0
+
+            def mutate_after_first_snapshot(*args, **kwargs):
+                nonlocal calls
+                captured = original_capture(*args, **kwargs)
+                calls += 1
+                if calls == 1:
+                    (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+                return captured
+
+            with mock.patch(
+                "runner.state.repository_snapshot",
+                side_effect=mutate_after_first_snapshot,
+            ):
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "did not stabilize across bounded captures",
+                ):
+                    stable_repository_capture(repo)
+
+    def test_verification_sensitive_rename_is_quarantined_before_recapture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            (repo / ".env").write_text(
+                "TOKEN=verification-secret\n", encoding="utf-8"
+            )
+            command = (
+                f"{sys.executable} -c "
+                "'__import__(\"pathlib\").Path(\".env\").rename(\"leaked.txt\")'"
+            )
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="verify secret relocation is rejected",
+                allowed_paths=["app.py", "leaked.txt"],
+                name="verification-sensitive-rename",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--confirm-dangerous-delete",
+                    ".env",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["verification_sensitive_deletion_quarantine"])
+            self.assertFalse(summary["capture_preserved"])
+            self.assertEqual(summary["quality_status"], "FAILED")
+            patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
+            self.assertNotIn("verification-secret", patch)
+            metadata = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertFalse(metadata["content_read"])
+
+    def test_verification_sensitive_replacement_is_quarantined_before_recapture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text(".env\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore env"], cwd=repo, check=True)
+            (repo / ".env").write_text(
+                "TOKEN=verification-replacement-secret\n", encoding="utf-8"
+            )
+            command = (
+                f"{sys.executable} -c "
+                "'from pathlib import Path; "
+                "Path(\".env\").rename(\"leaked.txt\"); "
+                "Path(\".env\").write_text(\"placeholder\\n\")'"
+            )
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="reject sensitive replacement during verification",
+                allowed_paths=["app.py", "leaked.txt"],
+                name="verification-sensitive-replacement",
+            )
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertTrue(summary["verification_sensitive_change_quarantine"])
+            self.assertFalse(summary["verification_sensitive_deletion_quarantine"])
+            self.assertFalse(summary["capture_preserved"])
+            patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
+            self.assertNotIn("verification-replacement-secret", patch)
+            metadata = next(
+                item
+                for item in summary["repository_capture"]["untracked"]
+                if item["path"] == "leaked.txt"
+            )
+            self.assertFalse(metadata["content_read"])
+
     def test_sensitive_rename_guards_the_original_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
@@ -1533,6 +3594,77 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertIn("verification introduced dangerous deletions", completed.stdout)
             self.assertFalse((root / "run" / "summary.json").exists())
 
+    def test_untracked_patch_quotes_ambiguous_file_names(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            path = "safe.py +++ injected.py"
+            candidate = repo / path
+            candidate.write_text("value = 2\n", encoding="utf-8")
+            candidate.chmod(0o755)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            patch = (root / "run" / "diff.patch").read_bytes()
+            self.assertIn(b'"a/safe.py +++ injected.py"', patch)
+            expected_mode = (
+                b"100755" if candidate.stat().st_mode & 0o111 else b"100644"
+            )
+            self.assertIn(b"new file mode " + expected_mode, patch)
+            self.assertNotIn(b"diff --git a/safe.py +++ injected.py", patch)
+
+    def test_untracked_text_patches_apply_for_empty_and_nonempty_files(self) -> None:
+        for content in (
+            b"",
+            b"one line",
+            b"one line\n",
+            b"one\ntwo",
+            b"one\r",
+            b"one\r\ntwo\r\n",
+            b"\r",
+        ):
+            with self.subTest(content=content), tempfile.TemporaryDirectory(
+                prefix="rootloom-change-", dir=Path.home()
+            ) as temporary:
+                repo = Path(temporary)
+                subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+                subprocess.run(
+                    ["git", "config", "core.autocrlf", "false"],
+                    cwd=repo,
+                    check=True,
+                )
+                patch = _new_file_patch("new file.txt", content, mode=0o644)
+                checked = subprocess.run(
+                    ["git", "apply", "--check", "-"],
+                    cwd=repo,
+                    input=patch,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(checked.returncode, 0, checked.stderr.decode())
+                applied = subprocess.run(
+                    ["git", "apply", "-"],
+                    cwd=repo,
+                    input=patch,
+                    capture_output=True,
+                    check=False,
+                )
+                self.assertEqual(applied.returncode, 0, applied.stderr.decode())
+                self.assertEqual((repo / "new file.txt").read_bytes(), content)
+
     def test_verification_cannot_delete_an_untracked_sensitive_file(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
@@ -1548,6 +3680,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 command=command,
                 task="change product behavior",
                 name="untracked-secret",
+                allow_dirty_baseline=True,
             )
             (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
             completed = subprocess.run(

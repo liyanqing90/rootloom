@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
-import json
 import os
 from pathlib import Path
+import re
 import stat
 from typing import Any
+import uuid
 
 from .baseline import canonical_json_bytes
+from .strict_json import parse_json_object
 
 
 CHANGE_CONTRACT_FORMAT = "rootloom-change-contract-v1"
@@ -18,6 +19,7 @@ MAX_CONTRACT_BYTES = 1024 * 1024
 MAX_PATTERNS = 200
 MAX_VERIFICATIONS = 20
 MAX_COMMAND_CHARS = 8192
+MAX_PATTERN_CHARS = 4096
 CLAIM_ALIASES = {
     "primary": "primary-behavior",
     "invariant": "owning-invariant",
@@ -34,6 +36,29 @@ EVIDENCE_KINDS = {
     "build",
     "other",
 }
+SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
+NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
+CONTRACT_FIELDS = {
+    "format",
+    "run_id",
+    "nonce",
+    "baseline_sha256",
+    "task_sha256",
+    "allowed_paths",
+    "forbidden_paths",
+    "root_cause_alignment",
+    "verification_commands",
+    "verification_claims",
+    "contract_sha256",
+}
+CLAIM_BINDING_FIELDS = {
+    "id",
+    "command_ids",
+    "target",
+    "expected_evidence",
+    "evidence_kind",
+}
+CLAIM_BINDING_REQUIRED_FIELDS = CLAIM_BINDING_FIELDS - {"id"}
 
 
 def contract_sha256(payload: dict[str, Any]) -> str:
@@ -42,7 +67,7 @@ def contract_sha256(payload: dict[str, Any]) -> str:
     return hashlib.sha256(canonical_json_bytes(normalized)).hexdigest()
 
 
-def _read_json(path: Path) -> dict[str, Any]:
+def _read_json(path: Path) -> tuple[dict[str, Any], bytes]:
     if path.is_symlink():
         raise ValueError(f"change contract must not be a symlink: {path}")
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
@@ -59,21 +84,30 @@ def _read_json(path: Path) -> dict[str, Any]:
             raw.extend(chunk)
         after = os.fstat(descriptor)
         if (
-            (opened.st_dev, opened.st_ino, opened.st_size)
-            != (after.st_dev, after.st_ino, after.st_size)
+            (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_size,
+                opened.st_mtime_ns,
+                opened.st_ctime_ns,
+            )
+            != (
+                after.st_dev,
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            )
         ):
             raise ValueError(f"change contract changed during read: {path}")
         if len(raw) > MAX_CONTRACT_BYTES or after.st_size > MAX_CONTRACT_BYTES:
             raise ValueError(f"change contract exceeds {MAX_CONTRACT_BYTES} bytes: {path}")
     finally:
         os.close(descriptor)
-    try:
-        payload = json.loads(bytes(raw).decode("utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"invalid change contract JSON: {path}") from exc
-    if not isinstance(payload, dict):
-        raise ValueError("change contract must be a JSON object")
-    return payload
+    payload = parse_json_object(
+        bytes(raw), label="change contract", encoding="utf-8"
+    )
+    return payload, bytes(raw)
 
 
 def _normalize_pattern(raw: str, *, field: str) -> str:
@@ -81,8 +115,10 @@ def _normalize_pattern(raw: str, *, field: str) -> str:
     parts = value.split("/")
     if (
         not value
+        or len(value) > MAX_PATTERN_CHARS
         or value.startswith("/")
         or any(part in {"", ".", ".."} for part in parts)
+        or any("**" in part and part != "**" for part in parts)
         or any(ord(character) < 32 for character in value)
     ):
         raise ValueError(f"{field} contains an unsafe repository-relative glob: {raw!r}")
@@ -106,17 +142,47 @@ def _string_list(payload: dict[str, Any], field: str, *, required: bool) -> list
 
 
 def load_change_contract(path: Path) -> dict[str, Any]:
-    payload = _read_json(path)
+    payload, raw = _read_json(path)
+    unknown = set(payload) - CONTRACT_FIELDS
+    if unknown:
+        raise ValueError(
+            "change contract has unexpected fields: " + ", ".join(sorted(unknown))
+        )
     if payload.get("format") != CHANGE_CONTRACT_FORMAT:
         raise ValueError(f"change contract format must be {CHANGE_CONTRACT_FORMAT}")
     actual_sha256 = contract_sha256(payload)
     declared_sha256 = payload.get("contract_sha256")
-    if declared_sha256 is not None and declared_sha256 != actual_sha256:
-        raise ValueError("change contract contract_sha256 does not match content")
-    for field in ("baseline_sha256", "task_sha256", "run_id", "nonce"):
+    if "contract_sha256" in payload:
+        if (
+            not isinstance(declared_sha256, str)
+            or SHA256_PATTERN.fullmatch(declared_sha256) is None
+        ):
+            raise ValueError(
+                "change contract contract_sha256 must be 64 lowercase hexadecimal characters"
+            )
+        if declared_sha256 != actual_sha256:
+            raise ValueError("change contract contract_sha256 does not match content")
+    for field in ("baseline_sha256", "task_sha256"):
         value = payload.get(field)
-        if value is not None and (not isinstance(value, str) or not value.strip()):
-            raise ValueError(f"change contract {field} must be a nonempty string")
+        if value is not None and (
+            not isinstance(value, str) or SHA256_PATTERN.fullmatch(value) is None
+        ):
+            raise ValueError(
+                f"change contract {field} must be 64 lowercase hexadecimal characters"
+            )
+    run_id = payload.get("run_id")
+    if run_id is not None:
+        try:
+            parsed_run_id = uuid.UUID(str(run_id))
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("change contract run_id must be a canonical UUID") from exc
+        if str(parsed_run_id) != run_id:
+            raise ValueError("change contract run_id must be a canonical UUID")
+    nonce = payload.get("nonce")
+    if nonce is not None and (
+        not isinstance(nonce, str) or NONCE_PATTERN.fullmatch(nonce) is None
+    ):
+        raise ValueError("change contract nonce must be 32 lowercase hexadecimal characters")
     allowed = _string_list(payload, "allowed_paths", required=True)
     forbidden = _string_list(payload, "forbidden_paths", required=False)
     alignment = payload.get("root_cause_alignment")
@@ -147,6 +213,10 @@ def load_change_contract(path: Path) -> dict[str, Any]:
         if not isinstance(raw_claim, str) or not raw_claim.strip():
             raise ValueError("change contract claim IDs must be nonempty strings")
         claim_id = CLAIM_ALIASES.get(raw_claim, raw_claim)
+        if claim_id in normalized_claims:
+            raise ValueError(
+                f"change contract verification_claims contains duplicate alias {claim_id}"
+            )
         if not isinstance(references, list) or not references:
             raise ValueError("change contract claims must contain verification IDs")
         command_ids: list[str] = []
@@ -159,12 +229,23 @@ def load_change_contract(path: Path) -> dict[str, Any]:
                 continue
             if not isinstance(item, dict):
                 raise ValueError("change contract claim bindings must be strings or objects")
+            if not CLAIM_BINDING_REQUIRED_FIELDS.issubset(item) or not set(
+                item
+            ).issubset(CLAIM_BINDING_FIELDS):
+                raise ValueError(
+                    "change contract claim binding has unexpected or missing fields"
+                )
             raw_commands = item.get("command_ids")
             if not isinstance(raw_commands, list) or not raw_commands or any(
                 not isinstance(command_id, str) or not command_id.strip()
                 for command_id in raw_commands
             ):
                 raise ValueError("change contract claim binding command_ids must be nonempty")
+            if len(set(raw_commands)) != len(raw_commands):
+                raise ValueError("change contract claim binding command_ids must be unique")
+            binding_id = item.get("id", claim_id)
+            if not isinstance(binding_id, str) or not binding_id.strip():
+                raise ValueError("change contract claim binding id must be nonempty")
             target = item.get("target")
             expected = item.get("expected_evidence")
             evidence_kind = item.get("evidence_kind")
@@ -179,7 +260,7 @@ def load_change_contract(path: Path) -> dict[str, Any]:
             command_ids.extend(raw_commands)
             bindings.append(
                 {
-                    "id": str(item.get("id") or claim_id),
+                    "id": binding_id,
                     "command_ids": list(raw_commands),
                     "target": target,
                     "expected_evidence": expected,
@@ -204,21 +285,76 @@ def load_change_contract(path: Path) -> dict[str, Any]:
         normalized_bindings[claim_id] = bindings
     return {
         **payload,
+        "raw_payload": dict(payload),
         "allowed_paths": allowed,
         "forbidden_paths": forbidden,
         "verification_commands": dict(commands),
         "verification_claims": normalized_claims,
         "verification_claim_bindings": normalized_bindings,
         "actual_contract_sha256": actual_sha256,
+        "actual_contract_file_sha256": hashlib.sha256(raw).hexdigest(),
+        "declared_contract_sha256_valid": declared_sha256 == actual_sha256,
     }
 
 
 def path_matches(path: str, pattern: str) -> bool:
-    if fnmatch.fnmatchcase(path, pattern):
-        return True
-    if pattern.endswith("/**") and path == pattern[:-3].rstrip("/"):
-        return True
-    return False
+    path_parts = tuple(path.split("/"))
+    pattern_parts = tuple(pattern.split("/"))
+    path_index = 0
+    pattern_index = 0
+    globstar_index = -1
+    retry_path_index = -1
+    while path_index < len(path_parts):
+        if (
+            pattern_index < len(pattern_parts)
+            and pattern_parts[pattern_index] != "**"
+            and _segment_matches(
+                path_parts[path_index], pattern_parts[pattern_index]
+            )
+        ):
+            path_index += 1
+            pattern_index += 1
+        elif pattern_index < len(pattern_parts) and pattern_parts[pattern_index] == "**":
+            globstar_index = pattern_index
+            retry_path_index = path_index
+            pattern_index += 1
+        elif globstar_index >= 0:
+            retry_path_index += 1
+            path_index = retry_path_index
+            pattern_index = globstar_index + 1
+        else:
+            return False
+    while pattern_index < len(pattern_parts) and pattern_parts[pattern_index] == "**":
+        pattern_index += 1
+    return pattern_index == len(pattern_parts)
+
+
+def _segment_matches(value: str, pattern: str) -> bool:
+    """Match only the documented segment-local `*` and `?` wildcards."""
+
+    value_index = 0
+    pattern_index = 0
+    star_index = -1
+    retry_value_index = -1
+    while value_index < len(value):
+        if pattern_index < len(pattern) and (
+            pattern[pattern_index] == "?" or pattern[pattern_index] == value[value_index]
+        ):
+            value_index += 1
+            pattern_index += 1
+        elif pattern_index < len(pattern) and pattern[pattern_index] == "*":
+            star_index = pattern_index
+            retry_value_index = value_index
+            pattern_index += 1
+        elif star_index >= 0:
+            retry_value_index += 1
+            value_index = retry_value_index
+            pattern_index = star_index + 1
+        else:
+            return False
+    while pattern_index < len(pattern) and pattern[pattern_index] == "*":
+        pattern_index += 1
+    return pattern_index == len(pattern)
 
 
 def scope_violations(
@@ -262,6 +398,23 @@ def claimed_commands(
             result.setdefault(claim, set()).update(commands[item] for item in references)
     for claim, command in cli_claims:
         result.setdefault(claim, set()).add(command)
+    return result
+
+
+def structured_contract_claimed_commands(
+    contract: dict[str, Any] | None,
+) -> dict[str, set[str]]:
+    """Return only structured claims originating in the loaded contract."""
+
+    result: dict[str, set[str]] = {}
+    if contract is None:
+        return result
+    commands = contract["verification_commands"]
+    for claim, bindings in contract["verification_claim_bindings"].items():
+        for binding in bindings:
+            result.setdefault(claim, set()).update(
+                commands[command_id] for command_id in binding["command_ids"]
+            )
     return result
 
 

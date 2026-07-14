@@ -78,13 +78,17 @@ run/
 └── summary.json
 ```
 
-只有明确要求严格 Tier 1/2 证据时，`begin_review.py` 会在实现前以独占方式创建仓库外 intake 目录，写入 `rootloom-change-baseline-v2` 与 contract skeleton。Analyzer 生成的 v2 baseline 包含 `run_id`、`nonce`、`task_sha256`、producer version、repository identity、Git identity 与 sensitive-policy hash；v1 baseline 仍可作为 self-declared 兼容输入读取。Baseline 绑定有界 Git/untracked 状态以及只含元数据的 ignored/secret-like 状态，使 Finalizer 能发现 Git status 看不到的 intake 敏感删除。普通 untracked 文件使用流式 Hash 与有界文本 patch；二进制/大文件记录类型、大小与 Hash；敏感文件、目录和 symlink 永不读取内容。
+只有明确要求严格 Tier 1/2 证据时，`begin_review.py` 才以事务方式创建仓库外 Intake，写入 `rootloom-change-baseline-v2`、可编辑的 `change-contract.draft.json` 与 `rootloom-review-run-v2`。除非显式允许全仓库范围，否则必须至少指定一个 Scope Path；默认要求干净 HEAD/Index，已有修改只能通过 `--allow-dirty-baseline` 显式纳入。发布使用平台的原子不可替换目录原语，因此不会覆盖并发创建的空目标目录。`seal_contract.py` 校验完成后的 Draft，再独占创建规范化 Final Contract 与 `rootloom-contract-seal-v1`。Seal 通过 Baseline Hash、Task Hash、Run ID 与 Nonce 绑定规范化 Contract 内容、最终 Contract 字节和 Review Manifest 字节，无需修改 Manifest。
 
-`rootloom-change-contract-v1` 用 allowed/forbidden glob 约束实际路径，要求缺陷工作声明根因对齐，并把主路径/不变量/相邻路径及风险专属 claim 映射到显式执行命令。Operator-sealed contract 还会引用 baseline 的 hash、`run_id`、`nonce` 与 `task_sha256`；结构化 claim binding 必须声明 command IDs、target、evidence kind 与 expected evidence。仅写在契约里的命令不构成执行授权。Summary 保持 `format: rootloom-engineering-summary-v1`，并增加 `schema_revision: 2`；它保留 `risk_assessment`，同时分开表达命令退出成功、捕获保留、`claim_binding`、兼容字段 `verification_coverage`、`semantic_coverage`、provenance、hash chain 与 `quality_status`；兼容字段 `passed` 只会在 operator-sealed 的 `VERIFIED_CHANGE` 时为 true。Advisory 模式可省略 baseline/contract，默认 `--exit-policy bundle` 会在命令通过且捕获稳定时退出 0，同时报告 `UNVERIFIED`；自动化可使用 `--exit-policy quality` 或 `--require-verified`。
+Baseline v2 使用规范 UUID、Nonce、Hash 与 UTC Timestamp，并绑定 Repository Identity、HEAD、符号 HEAD Ref 与 Index。只有连续两次有界 Snapshot/Patch/Git Identity 采集完全一致，Repository Capture 才会被接受。Strict 会拒绝 Base 漂移，并在验证后重新校验证据字节、Seal、Git Base 与 Output Target。脏 Baseline 会记录既有修改；后续变化存在重叠时按保守范围检查，既有脏路径若消失则视为 Gate Failure，因为它无法表示为当前任务 Patch。Strict JSON Decoder 会拒绝重复 Key、非有限或超范围数值。
 
-验证运行在受控本地 process group 或 Windows Job Object 中，并记录 `process_convergence` 与 `isolation: process-group-only`。这不是执行不可信命令的沙箱，无法保证控制 detached service、容器或特权后台管理器。
+敏感发现采用有界路径枚举与共享的大小写不敏感分类器。内置精确名称/后缀与用户声明的目录 Root 都会按路径段边界递归保护后代。敏感的常规文件、目录、Symlink、Tracked/Ignored/Untracked 项及 Rename 两端都不读取内容；Symlink Target 只做 Hash 绑定，不保存原值。在读取普通内容前，Capture 会比较完整发现的敏感元数据集合与 Baseline 或验证前 Reference；因此 Git Status 遗漏的新 Ignored 敏感新增也会触发隔离。任何 Reference Drift 或 Git 可观察的敏感变化都会隔离所有变更端点，并停止 Project Memory/Makefile Discovery。被忽略的敏感新增、修改和删除会合成为 Risk、Scope 与 Summary 共用的 Task Change。元数据包含身份、链接数、大小、权限、修改时间与变更时间，并明确标记为 `metadata-observed`，而非内容完整性。
 
-Status 与 Git diff 在保留前即通过字节/路径上限流式捕获。验证输出增量读取；超时、输出超限或残留子进程会终止受控 POSIX process group 或 Windows Job Object。输出目录必须位于仓库外，且不存在、为空或由 Rootloom 标记拥有。完整 patch 默认上限为可配置的 16 MiB。敏感删除要求精确确认。这仍是可变审查包，不是不可篡改审计记录。
+`rootloom-change-contract-v1` 使用路径段感知的 Repository Glob（`*`/`?` 不跨段，`**` 才跨段），要求根因对齐，并把行为 Claim 映射到显式执行命令。只有来自 Sealed Contract 的结构化 Binding 能完成 Strict Claim Coverage；CLI Claim 只作诊断声明。Summary 保持 `rootloom-engineering-summary-v1`，升级到 `schema_revision: 3`，保留 `risk_assessment`，并分开一般声明与合格 Claim。`semantic_coverage: reviewed` 是操作方断言；语义未知最高只能得到 `MECHANICALLY_VERIFIED`，`VERIFIED_CHANGE` 同时要求 Operator-sealed 机械证据与语义审查。Strict 默认采用 Quality Exit，`--strict-bundle-only` 是显式非阻断形式；Advisory 仍保持按需和 Bundle 导向。
+
+所有命令字符串都会在第一条验证命令执行前完成解析。验证随后运行在受控本地 Process Group 或 Windows Job Object 中，并记录 `process_convergence` 与 `isolation: process-group-only`；无法分配 Job Object 时，Windows 会回退到 Parent/Pipe Observation 与系统进程树终止。这不是执行不可信命令的沙箱，也不保证控制 Detached Service、容器、特权后台管理器、非敏感 Ignored 文件、Git 管理状态或外部状态。命令参数与输出会原样保存在本地 Bundle 中。
+
+Status 与 Git Diff 在保留前即通过字节/路径上限流式捕获。验证输出增量读取；超时、输出超限或残留子进程会终止受控 POSIX Process Group 或 Windows Job Object。证据和输出路径先对词法路径及父目录链执行无 Symlink 检查，再进行 Resolve 后的包含关系判断。Evidence 与 Output 必须同时位于 Repository Worktree 和解析后的 Git Common Directory 之外；Output 还必须不存在、为空或由 Rootloom 标记拥有。这样 Linked Worktree 的证据不会进入 Refs、Objects 或其他 Git 管理区。复用自有输出时，会先失效旧 Summary，避免新运行早退后留下过期权威结果。完整 Patch 默认上限为可配置的 16 MiB。敏感删除要求精确确认。这仍是可变审查包，不是不可篡改审计记录。
 
 Runner 辅助模块保持小型：
 
@@ -92,6 +96,9 @@ Runner 辅助模块保持小型：
 - `state.py`：有界 Git 状态、untracked 指纹与 patch；
 - `baseline.py`：修改前敏感/状态生产者—消费者契约；
 - `change_contract.py`：路径范围与验证 claim 门禁；
+- `review_run.py`：Review Manifest 与 Contract Seal 的精确 Schema；
+- `evidence_paths.py`：证据路径的词法无 Symlink 检查；
+- `strict_json.py`：拒绝重复 Key 且只接受有限数值的 Evidence JSON Decoder；
 - `verification.py`：命令解析与顺序检查；
 - `intelligence.py`：建议式风险、记忆匹配与验证规划；
 - `contracts.py`：摘要/结果格式；

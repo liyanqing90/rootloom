@@ -6,6 +6,24 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.2] - 2026-07-14
+
+### Added
+
+- Add a transactional review intake with editable draft contracts, explicit immutable sealing, strict evidence JSON, and hash binding across the baseline, manifest, final contract, and seal.
+
+### Changed
+
+- Require two identical bounded repository captures, unchanged HEAD/ref/index, post-verification evidence revalidation, structured sealed claims, and an explicit semantic-review assertion before strict evidence can reach `VERIFIED_CHANGE`.
+- Make strict review use quality exit codes by default, retain `--strict-bundle-only` as the explicit nonblocking path, parse every verification command before execution, and conservatively attribute dirty-baseline overlap.
+- Include bounded non-sensitive untracked text in risk analysis, apply segment-aware scope globs, and keep legacy evidence readable only as self-declared compatibility input.
+
+### Fixed
+
+- Quarantine sensitive replacements, renames, nested paths, and newly discovered ignored additions before ordinary content capture, including after verification; synthesize ignored sensitive changes into scope without reading their contents or allowing values to enter patches through simultaneously changed ordinary files.
+- Reject symlink-redirection and paths inside either the worktree or resolved Git common directory for intake, baseline, seal, evidence, and bundle output; revalidate paths before publication so linked-worktree output cannot occupy Git refs or objects.
+- Prevent stale summaries, mixed-time repository state, partial command execution, slash-crossing scope matches, nonexclusive intake publication, and Windows fallback misclassification from overstating review quality.
+
 ## [2.2.1] - 2026-07-14
 
 ### Fixed
@@ -521,7 +539,12 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v1.2.11...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v2.2.2...HEAD
+[2.2.2]: https://github.com/liyanqing90/rootloom/compare/v2.2.1...v2.2.2
+[2.2.1]: https://github.com/liyanqing90/rootloom/compare/v2.2.0...v2.2.1
+[2.2.0]: https://github.com/liyanqing90/rootloom/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/liyanqing90/rootloom/compare/v2.0.0...v2.1.0
+[2.0.0]: https://github.com/liyanqing90/rootloom/compare/v1.2.19...v2.0.0
 [1.2.11]: https://github.com/liyanqing90/rootloom/compare/v1.2.10...v1.2.11
 [1.2.10]: https://github.com/liyanqing90/rootloom/compare/v1.2.9...v1.2.10
 [1.2.9]: https://github.com/liyanqing90/rootloom/compare/v1.2.8...v1.2.9

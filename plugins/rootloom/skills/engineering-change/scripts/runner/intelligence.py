@@ -7,6 +7,7 @@ import io
 import os
 from pathlib import Path, PurePosixPath
 import re
+import stat
 import sys
 from typing import Any
 
@@ -26,6 +27,7 @@ MAX_MEMORY_MATCHES = 5
 MAX_TASK_CHARS = 32 * 1024
 MAX_CHANGED_PATHS = 1000
 MAX_SIGNAL_PATHS = 20
+MAX_COMMAND_DISCOVERY_BYTES = 256 * 1024
 WORD = re.compile(r"[\w.-]+", re.UNICODE)
 DOC_SUFFIXES = {".md", ".mdx", ".rst", ".png", ".svg", ".webp"}
 DEPENDENCY_EXACT_NAMES = {
@@ -189,12 +191,56 @@ def load_memory_matches(
     return active[:MAX_MEMORY_MATCHES], stale[:MAX_MEMORY_MATCHES], warnings
 
 
+def read_bounded_repository_text(path: Path, *, max_bytes: int) -> str:
+    """Read one regular repository file without following a symlink or size drift."""
+
+    if path.is_symlink():
+        raise ValueError(f"repository command file must not be a symlink: {path}")
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        opened = os.fstat(descriptor)
+        if not stat.S_ISREG(opened.st_mode):
+            raise ValueError(f"repository command file must be regular: {path}")
+        raw = bytearray()
+        while len(raw) <= max_bytes:
+            chunk = os.read(descriptor, min(64 * 1024, max_bytes + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_size,
+            opened.st_mtime_ns,
+            opened.st_ctime_ns,
+        ) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        ):
+            raise ValueError(f"repository command file changed during read: {path}")
+        if len(raw) > max_bytes or after.st_size > max_bytes:
+            raise ValueError(f"repository command file exceeds {max_bytes} bytes: {path}")
+    finally:
+        os.close(descriptor)
+    return bytes(raw).decode("utf-8", errors="replace")
+
+
 def repository_commands(repo: Path, risk: str) -> list[dict[str, str]]:
     suggestions: list[dict[str, str]] = []
     makefile = repo / "Makefile"
     targets: set[str] = set()
-    if makefile.is_file() and not makefile.is_symlink() and makefile.stat().st_size <= 256 * 1024:
-        text = makefile.read_text(encoding="utf-8", errors="replace")
+    try:
+        text = read_bounded_repository_text(
+            makefile, max_bytes=MAX_COMMAND_DISCOVERY_BYTES
+        )
+    except (FileNotFoundError, OSError, ValueError):
+        text = ""
+    if text:
         targets = set(re.findall(r"^([A-Za-z0-9_.-]+):", text, re.MULTILINE))
     if risk == "low" and "validate" in targets:
         suggestions.append(
@@ -223,6 +269,7 @@ def verification_plan(
     has_paths: bool,
     signals: list[dict[str, Any]],
     risk: str,
+    allow_repository_reads: bool,
 ) -> dict[str, Any]:
     signal_ids = {signal["id"] for signal in signals}
     behaviors: list[dict[str, str]] = []
@@ -311,7 +358,9 @@ def verification_plan(
     return {
         "status": "suggested-not-executed",
         "required_behaviors": behaviors,
-        "suggested_commands": repository_commands(repo, risk),
+        "suggested_commands": (
+            repository_commands(repo, risk) if allow_repository_reads else []
+        ),
     }
 
 
@@ -327,13 +376,16 @@ def changed_patch_text(value: bytes, product_paths: list[str]) -> tuple[str, boo
     selected: list[str] = []
     selected_bytes = 0
     truncated = False
-    product_markers = tuple(f" b/{path}" for path in product_paths)
+    product_markers = tuple(f"b/{path}" for path in product_paths)
     include_section = False
     binary_section = False
     for raw in io.BytesIO(value):
         line = raw.decode("utf-8", errors="replace").rstrip("\r\n")
         if line.startswith("diff --git "):
-            include_section = any(marker in line for marker in product_markers)
+            include_section = any(
+                _patch_header_contains_path(line, marker)
+                for marker in product_markers
+            )
             binary_section = False
             continue
         if not include_section:
@@ -355,6 +407,22 @@ def changed_patch_text(value: bytes, product_paths: list[str]) -> tuple[str, boo
     return "\n".join(selected), truncated
 
 
+def _patch_header_contains_path(line: str, marker: str) -> bool:
+    """Find one literal Git path in a normal or double-quoted diff header."""
+
+    offset = 0
+    while True:
+        index = line.find(marker, offset)
+        if index < 0:
+            return False
+        before = line[index - 1] if index else ""
+        end = index + len(marker)
+        after = line[end] if end < len(line) else ""
+        if before in {" ", '"'} and after in {"", " ", '"'}:
+            return True
+        offset = index + 1
+
+
 def analyze_change(
     repo: Path,
     *,
@@ -363,6 +431,7 @@ def analyze_change(
     changes: list[dict[str, str]],
     tracked_patch: bytes,
     declared_risk: str | None,
+    allow_repository_reads: bool = True,
 ) -> dict[str, Any]:
     repo = repo.expanduser().resolve()
     if len(task) > MAX_TASK_CHARS:
@@ -599,9 +668,15 @@ def analyze_change(
             paths=signal_paths,
         )
 
-    memory_matches, stale_memory, memory_warnings = load_memory_matches(
-        repo, paths=paths, task=task
-    )
+    if allow_repository_reads:
+        memory_matches, stale_memory, memory_warnings = load_memory_matches(
+            repo, paths=paths, task=task
+        )
+    else:
+        memory_matches, stale_memory = [], []
+        memory_warnings = [
+            "repository memory and command discovery were not read during sensitive-change quarantine"
+        ]
     if memory_matches and not docs_or_tests_only:
         add_signal(
             signals,
@@ -652,6 +727,7 @@ def analyze_change(
             has_paths=bool(paths),
             signals=ordered_signals,
             risk=effective_risk,
+            allow_repository_reads=allow_repository_reads,
         ),
         "limitations": [
             "Static signals cannot prove semantic risk or test sufficiency.",
