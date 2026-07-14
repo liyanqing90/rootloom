@@ -22,7 +22,19 @@ python3 <skill-dir>/scripts/analyze_change.py \
   --path src/anticipated-owner.py
 ```
 
-For strict governed evidence, run it before editing and add the external baseline:
+For operator-sealed governed evidence, create a review intake directory before editing:
+
+```bash
+python3 <skill-dir>/scripts/begin_review.py \
+  --repo /absolute/path/to/repository \
+  --task 'Describe the requested behavior' \
+  --output /absolute/path/outside-repo/run \
+  --path src/anticipated-owner.py
+```
+
+This uses exclusive creation for the run directory, baseline, and contract skeleton. It gives the baseline and contract the same `run_id`, `nonce`, `task_sha256`, and `baseline_sha256` chain so later finalization can distinguish operator-sealed evidence from self-declared evidence. Edit the generated `change-contract.json` before finalization.
+
+For an analyzer-only baseline, run it before editing and add the external baseline:
 
 ```bash
 python3 <skill-dir>/scripts/analyze_change.py \
@@ -32,7 +44,7 @@ python3 <skill-dir>/scripts/analyze_change.py \
   --write-baseline /absolute/path/outside-repo/baseline.json
 ```
 
-The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. It captures bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Use repeatable `--sensitive-path` for additional metadata-only paths. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
+The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. New baselines use `rootloom-change-baseline-v2` with `run_id`, `nonce`, `task_sha256`, producer version, repository identity, Git identity, and sensitive-policy hash. v1 baselines remain readable as self-declared compatibility input. Baselines capture bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Use repeatable `--sensitive-path` for additional metadata-only paths. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
 
 Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
 
@@ -84,14 +96,25 @@ Minimal machine contract:
     "verify-adjacent": "python3 -m unittest tests.test_auth.AuthTests.test_expired"
   },
   "verification_claims": {
-    "primary": ["verify-primary"],
+    "primary": [{
+      "id": "primary-behavior",
+      "command_ids": ["verify-primary"],
+      "target": "tests/test_auth.py::AuthTests.test_login",
+      "expected_evidence": "valid login creates a session",
+      "evidence_kind": "regression-test"
+    }],
     "invariant": ["verify-invariant"],
     "adjacent": ["verify-adjacent"]
-  }
+  },
+  "baseline_sha256": "<sha256 of baseline.json>",
+  "task_sha256": "<baseline task_sha256>",
+  "run_id": "<baseline run_id>",
+  "nonce": "<baseline nonce>",
+  "contract_sha256": "<sha256 of canonical contract without this field>"
 }
 ```
 
-The contract never authorizes commands by itself. Every mapped command must still be passed through `--verify` or directly declared with `--verify-claim CLAIM:COMMAND`.
+The contract never authorizes commands by itself. Every mapped command must still be passed through `--verify` or directly declared with `--verify-claim CLAIM:COMMAND`. Structured claim bindings are still self-declared semantic evidence, but the finalizer checks that each command ran, each command ID exists, and each structured `target` appears in the command line.
 
 ## 5. Implement once, in scope
 
@@ -123,7 +146,7 @@ python3 <skill-dir>/scripts/finalize_change.py \
   --remaining-risk 'Describe only a material remaining risk'
 ```
 
-Advisory mode exits successfully when the explicit commands pass and capture remains stable, even if no baseline/contract proves complete coverage. It reports `quality_status: UNVERIFIED` and keeps compatibility `passed: false`; exit zero means the bundle operation succeeded, not that engineering sufficiency was proven.
+Advisory mode exits successfully when the explicit commands pass and capture remains stable, even if no baseline/contract proves complete coverage. It reports `quality_status: UNVERIFIED` and keeps compatibility `passed: false`; default `--exit-policy bundle` means exit zero can mean "bundle generated", not "engineering sufficiency proven". Use `--exit-policy quality` or `--require-verified` in CI.
 
 For release or other explicitly governed work, add:
 
@@ -135,9 +158,9 @@ For release or other explicitly governed work, add:
 
 The output directory must be outside the repository and must be absent, empty, or already carry Rootloom's ownership marker. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files. Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash; sensitive files remain metadata-only. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
 
-Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. The summary records observed/retained bytes, process convergence, `commands_passed`, `capture_preserved`, `verification_coverage`, and authoritative `quality_status`. `passed` remains for compatibility but becomes true only for `VERIFIED_CHANGE`; it cannot turn an unrelated passing command into verified engineering evidence. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`.
+Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. Personal Core reports `isolation: process-group-only`; it is not a sandbox for untrusted commands and cannot govern detached service managers, containers, or privileged background processes. The summary records observed/retained bytes, `process_convergence`, `commands_passed`, `capture_preserved`, `claim_binding`, compatibility `verification_coverage`, `semantic_coverage`, evidence provenance, hash chain, and authoritative `quality_status`. `passed` remains for compatibility but becomes true only for operator-sealed `VERIFIED_CHANGE`; it cannot turn an unrelated passing command into verified engineering evidence. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`.
 
-`--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2 and returns nonzero when governed evidence is incomplete. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
+`--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2 and refuses inconsistent operator-sealed hash chains. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
 
 ## 7. Challenge and summarize
 
@@ -154,7 +177,14 @@ Finish with:
   "verification_plan": {"status": "suggested-not-executed"},
   "commands_passed": true,
   "capture_preserved": true,
+  "claim_binding": "complete",
   "verification_coverage": "complete",
+  "semantic_coverage": "unknown",
+  "evidence_provenance": {
+    "baseline": "operator-sealed",
+    "change_contract": "operator-sealed",
+    "verification_claims": "self-declared"
+  },
   "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []
 }

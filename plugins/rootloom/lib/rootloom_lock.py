@@ -57,7 +57,7 @@ def simple_lock(path: Path, owner_bytes: bytes | None = None) -> Iterator[int]:
     except FileExistsError as exc:
         raise LockBusyError(path, _current_owner(path)) from exc
     except PermissionError as exc:
-        if path.exists():
+        if path.exists() or os.name == "nt":
             raise LockBusyError(path, _current_owner(path)) from exc
         raise LockFileError(f"could not create lock {path}: {exc}") from exc
     except OSError as exc:

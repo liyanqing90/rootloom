@@ -54,6 +54,7 @@ def main(argv: list[str] | None = None) -> int:
                 snapshot=snapshot,
                 tracked_patch=patch,
                 extra_sensitive=args.sensitive_path,
+                task=args.task,
             ),
         )
     print(json.dumps(assessment, ensure_ascii=True, indent=2, sort_keys=True))

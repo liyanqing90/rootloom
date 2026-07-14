@@ -41,6 +41,17 @@ class SimpleLockTests(unittest.TestCase):
                     with lock.simple_lock(path):
                         pass
 
+    def test_windows_permission_denied_during_create_race_is_busy(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-lock-", dir=Path.home()) as temporary:
+            path = Path(temporary) / "run.lock"
+            with (
+                mock.patch.object(lock.os, "name", "nt"),
+                mock.patch.object(lock.os, "open", side_effect=PermissionError("busy")),
+            ):
+                with self.assertRaises(lock.LockBusyError):
+                    with lock.simple_lock(path):
+                        pass
+
     def test_windows_lock_release_retries_transient_permission_denied(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-lock-", dir=Path.home()) as temporary:
             path = Path(temporary) / "run.lock"

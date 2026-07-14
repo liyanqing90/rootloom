@@ -75,7 +75,14 @@ The observable final summary stays small:
   "verification_plan": {"status": "suggested-not-executed"},
   "commands_passed": true,
   "capture_preserved": true,
+  "claim_binding": "complete",
   "verification_coverage": "complete",
+  "semantic_coverage": "unknown",
+  "evidence_provenance": {
+    "baseline": "operator-sealed",
+    "change_contract": "operator-sealed",
+    "verification_claims": "self-declared"
+  },
   "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []
 }
@@ -190,11 +197,11 @@ python3 <engineering-change-skill>/scripts/finalize_change.py \
   --verify 'make test'
 ```
 
-Advisory mode does not block a normal change for missing machine evidence. If commands pass and capture remains stable it exits zero, while incomplete coverage remains honest as `quality_status: UNVERIFIED` and compatibility `passed: false`.
+Advisory mode does not block a normal change for missing machine evidence. With the default `--exit-policy bundle`, a stable bundle exits zero while incomplete coverage remains honest as `quality_status: UNVERIFIED` and compatibility `passed: false`. Automation that must stop on anything short of verified quality should use `--exit-policy quality` or `--require-verified`.
 
-For a strict Tier 1/2 release or explicitly governed review, create the baseline before implementation with `analyze_change.py --write-baseline`, then add `--strict --baseline ... --change-contract ...`. Strict mode requires complete mapped claims and returns nonzero on incomplete governed evidence. The external output directory must be absent, empty, or Rootloom-owned. The helper does not execute a shell.
+For a strict Tier 1/2 release or explicitly governed review, create the intake before implementation with `begin_review.py --repo ... --task ... --output ...`, or create a baseline with `analyze_change.py --write-baseline` and provide a matching contract, then run finalization with `--strict`. Baseline v2, contract, and finalizer summaries record `run_id`, `nonce`, `task_sha256`, and hash links so operator-sealed evidence is distinguishable from self-declared evidence. The external output directory must be absent, empty, or Rootloom-owned. The helper does not execute a shell.
 
-Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash. Ignored, secret-like, user-declared sensitive, directory, and symlink paths remain metadata-only. Git/status/patch capture and command output are bounded while read, and verification terminates the controlled process tree on timeout, output overflow, or leaked descendants. The summary separates `commands_passed`, `capture_preserved`, and `verification_coverage`; only complete evidence yields `quality_status: VERIFIED_CHANGE`. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`. Protected deletions require exact `--confirm-dangerous-delete` authorization.
+Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash. Ignored, secret-like, user-declared sensitive, directory, and symlink paths remain metadata-only. Git/status/patch capture and command output are bounded while read, and verification terminates the controlled process tree on timeout, output overflow, or leaked descendants. The summary separates `commands_passed`, `capture_preserved`, `claim_binding`, compatibility `verification_coverage`, and `semantic_coverage`; only operator-sealed complete evidence yields `quality_status: VERIFIED_CHANGE`. Personal Core reports `isolation: process-group-only`; it is not a sandbox for untrusted commands. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`. Protected deletions require exact `--confirm-dangerous-delete` authorization.
 
 ## Engineering memory
 

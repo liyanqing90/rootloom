@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -21,6 +22,7 @@ SCRIPT = (
     / "finalize_change.py"
 )
 ANALYZE = SCRIPT.parent / "analyze_change.py"
+BEGIN_REVIEW = SCRIPT.parent / "begin_review.py"
 PROJECT_MEMORY = (
     REPO_ROOT
     / "plugins"
@@ -48,6 +50,15 @@ class EngineeringChangeTests(unittest.TestCase):
         "destructive-effect",
         "historical-counterexample",
     )
+
+    @staticmethod
+    def contract_sha256(payload: dict[str, object]) -> str:
+        normalized = dict(payload)
+        normalized.pop("contract_sha256", None)
+        encoded = json.dumps(
+            normalized, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode("ascii")
+        return hashlib.sha256(encoded).hexdigest()
     def test_windows_command_split_preserves_backslash_paths_and_outer_quotes(self) -> None:
         raw = r"C:\hostedtoolcache\Python\python.exe -c 'assert 2 == 2'"
         self.assertEqual(
@@ -181,31 +192,63 @@ class EngineeringChangeTests(unittest.TestCase):
         claims: tuple[str, ...] | None = None,
         name: str = "change",
     ) -> list[str]:
-        baseline = root / f"{name}-baseline.json"
-        analyzed = self.analyze(
-            repo,
-            "--task",
-            task,
-            "--write-baseline",
-            str(baseline),
+        review_dir = root / f"{name}-review"
+        baseline = review_dir / "baseline.json"
+        begun = subprocess.run(
+            [
+                sys.executable,
+                str(BEGIN_REVIEW),
+                "--repo",
+                str(repo),
+                "--task",
+                task,
+                "--output",
+                str(review_dir),
+                *[
+                    part
+                    for path in (allowed_paths or ["**"])
+                    for part in ("--path", path)
+                ],
+            ],
+            capture_output=True,
+            text=True,
+            check=False,
         )
-        self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
-        contract = root / f"{name}-contract.json"
-        contract.write_text(
+        self.assertEqual(begun.returncode, 0, begun.stderr)
+        baseline_payload = json.loads(baseline.read_text(encoding="ascii"))
+        baseline_sha256 = hashlib.sha256(baseline.read_bytes()).hexdigest()
+        contract = review_dir / "change-contract.json"
+        payload = {
+            "format": "rootloom-change-contract-v1",
+            "run_id": baseline_payload["run_id"],
+            "nonce": baseline_payload["nonce"],
+            "baseline_sha256": baseline_sha256,
+            "task_sha256": baseline_payload["task_sha256"],
+            "allowed_paths": allowed_paths or ["**"],
+            "forbidden_paths": [],
+            "root_cause_alignment": "PASS",
+            "verification_commands": {"verify-1": command},
+            "verification_claims": {
+                claim: ["verify-1"]
+                for claim in (claims or self.ALL_CLAIM_IDS)
+            },
+        }
+        payload["contract_sha256"] = self.contract_sha256(payload)
+        contract.write_text(json.dumps(payload), encoding="utf-8")
+        (review_dir / "review.json").write_text(
             json.dumps(
                 {
-                    "format": "rootloom-change-contract-v1",
-                    "allowed_paths": allowed_paths or ["**"],
-                    "forbidden_paths": [],
-                    "root_cause_alignment": "PASS",
-                    "verification_commands": {"verify-1": command},
-                    "verification_claims": {
-                        claim: ["verify-1"]
-                        for claim in (claims or self.ALL_CLAIM_IDS)
-                    },
+                    "format": "rootloom-review-run-v1",
+                    "run_id": baseline_payload["run_id"],
+                    "nonce": baseline_payload["nonce"],
+                    "task_sha256": baseline_payload["task_sha256"],
+                    "baseline": baseline.name,
+                    "baseline_sha256": baseline_sha256,
+                    "change_contract": contract.name,
+                    "change_contract_sha256": payload["contract_sha256"],
                 }
             ),
-            encoding="utf-8",
+            encoding="ascii",
         )
         return [
             "--task",
@@ -234,6 +277,66 @@ class EngineeringChangeTests(unittest.TestCase):
                 [item["id"] for item in assessment["signals"]],
                 ["docs-or-tests-only"],
             )
+
+    def test_begin_review_creates_operator_sealed_intake_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            output = root / "review"
+            created = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(output),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            manifest = json.loads((output / "review.json").read_text(encoding="ascii"))
+            baseline = json.loads((output / "baseline.json").read_text(encoding="ascii"))
+            contract = json.loads(
+                (output / "change-contract.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["run_id"], baseline["run_id"])
+            self.assertEqual(manifest["nonce"], baseline["nonce"])
+            self.assertEqual(manifest["baseline"], "baseline.json")
+            self.assertEqual(manifest["change_contract"], "change-contract.json")
+            self.assertEqual(contract["run_id"], baseline["run_id"])
+            self.assertEqual(contract["nonce"], baseline["nonce"])
+            self.assertEqual(
+                contract["baseline_sha256"],
+                hashlib.sha256((output / "baseline.json").read_bytes()).hexdigest(),
+            )
+            self.assertEqual(manifest["baseline_sha256"], contract["baseline_sha256"])
+            self.assertEqual(
+                manifest["change_contract_sha256"], contract["contract_sha256"]
+            )
+            refused = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "change product behavior",
+                    "--output",
+                    str(output),
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("already exists", refused.stderr)
 
     def test_analyzer_promotes_auth_source_and_explains_verification(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -562,8 +665,23 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
             self.assertTrue(summary["passed"])
+            self.assertEqual(summary["schema_revision"], 2)
             self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
             self.assertEqual(summary["verification_coverage"], "complete")
+            self.assertEqual(summary["claim_binding"], "complete")
+            self.assertEqual(summary["semantic_coverage"], "unknown")
+            self.assertEqual(summary["evidence_provenance"]["baseline"], "operator-sealed")
+            self.assertEqual(
+                summary["evidence_provenance"]["change_contract"], "operator-sealed"
+            )
+            self.assertEqual(summary["evidence_provenance"]["verification_claims"], "self-declared")
+            self.assertTrue(summary["hash_chain"]["valid"])
+            self.assertEqual(summary["process_convergence"], "complete")
+            self.assertTrue(summary["detached_descendant_possible"])
+            self.assertEqual(summary["isolation"], "process-group-only")
+            self.assertTrue(summary["review_manifest"]["valid"])
+            self.assertEqual(summary["exit_policy"], "bundle")
+            self.assertEqual(summary["process_exit_code"], 0)
             self.assertEqual(summary["changed_files"], ["app.py"])
             self.assertEqual(summary["risk"], "medium")
             self.assertTrue(summary["risk_assessment"]["risk_was_raised"])
@@ -604,12 +722,13 @@ class EngineeringChangeTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(completed.returncode, 1, completed.stderr)
+            self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((root / "run" / "summary.json").read_text())
             self.assertTrue(summary["commands_passed"])
             self.assertTrue(summary["capture_preserved"])
+            self.assertEqual(summary["claim_binding"], "partial")
             self.assertEqual(summary["verification_coverage"], "partial")
-            self.assertEqual(summary["quality_status"], "UNVERIFIED")
+            self.assertEqual(summary["quality_status"], "COMMANDS_PASSED")
             self.assertFalse(summary["passed"])
 
     def test_advisory_finalizer_does_not_block_without_governed_evidence(self) -> None:
@@ -641,10 +760,221 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertTrue(summary["commands_passed"])
             self.assertEqual(summary["verification_coverage"], "unverified")
             self.assertEqual(summary["quality_status"], "UNVERIFIED")
+            self.assertEqual(summary["claim_binding"], "unverified")
             self.assertFalse(summary["baseline"]["required"])
             self.assertFalse(summary["baseline"]["provided"])
             self.assertFalse(summary["change_contract"]["required"])
             self.assertFalse(summary["passed"])
+
+    def test_require_verified_returns_quality_exit_for_unverified_advisory(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--task",
+                    "change product behavior",
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                    "--require-verified",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 4, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["exit_policy"], "quality")
+            self.assertEqual(summary["process_exit_code"], 4)
+            self.assertEqual(summary["quality_status"], "UNVERIFIED")
+
+    def test_quality_exit_policy_distinguishes_no_change(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--allow-no-change",
+                    "--exit-policy",
+                    "quality",
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 3, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "NO_CHANGE")
+            self.assertEqual(summary["process_exit_code"], 3)
+
+    def test_self_declared_strict_evidence_is_mechanically_verified_not_passed(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            baseline = root / "baseline.json"
+            analyzed = self.analyze(repo, "--task", "change product behavior", "--write-baseline", str(baseline))
+            self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
+            contract = root / "contract.json"
+            command = f"{sys.executable} -c 'assert True'"
+            baseline_payload = json.loads(baseline.read_text(encoding="ascii"))
+            payload = {
+                "format": "rootloom-change-contract-v1",
+                "run_id": baseline_payload["run_id"],
+                "nonce": baseline_payload["nonce"],
+                "baseline_sha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
+                "task_sha256": baseline_payload["task_sha256"],
+                "allowed_paths": ["**"],
+                "forbidden_paths": [],
+                "root_cause_alignment": "PASS",
+                "verification_commands": {"verify-1": command},
+                "verification_claims": {
+                    claim: ["verify-1"] for claim in self.ALL_CLAIM_IDS
+                },
+            }
+            payload["contract_sha256"] = self.contract_sha256(payload)
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--task",
+                    "change product behavior",
+                    "--baseline",
+                    str(baseline),
+                    "--change-contract",
+                    str(contract),
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "MECHANICALLY_VERIFIED")
+            self.assertFalse(summary["passed"])
+            self.assertEqual(summary["evidence_provenance"]["baseline"], "self-declared")
+            self.assertEqual(summary["evidence_provenance"]["change_contract"], "self-declared")
+            self.assertFalse(summary["review_manifest"]["valid"])
+
+    def test_symlinked_baseline_is_rejected_before_hashing(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            target = root / "target-baseline.json"
+            target.write_text("{}", encoding="ascii")
+            baseline = root / "baseline-link.json"
+            try:
+                baseline.symlink_to(target)
+            except OSError as exc:
+                self.skipTest(f"symlink creation is unavailable: {exc}")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--task",
+                    "change product behavior",
+                    "--strict",
+                    "--baseline",
+                    str(baseline),
+                    "--change-contract",
+                    str(root / "missing-contract.json"),
+                    "--verify",
+                    f"{sys.executable} -c 'assert True'",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("baseline must not be a symlink", completed.stderr)
+            self.assertFalse((root / "run" / "summary.json").exists())
+
+    def test_structured_claim_binding_requires_target_in_command(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            baseline = root / "baseline.json"
+            analyzed = self.analyze(repo, "--task", "change product behavior", "--write-baseline", str(baseline))
+            self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
+            baseline_payload = json.loads(baseline.read_text(encoding="ascii"))
+            payload = {
+                "format": "rootloom-change-contract-v1",
+                "run_id": baseline_payload["run_id"],
+                "nonce": baseline_payload["nonce"],
+                "baseline_sha256": hashlib.sha256(baseline.read_bytes()).hexdigest(),
+                "task_sha256": baseline_payload["task_sha256"],
+                "allowed_paths": ["**"],
+                "forbidden_paths": [],
+                "root_cause_alignment": "PASS",
+                "verification_commands": {
+                    "verify-1": f"{sys.executable} -m unittest tests.test_engineering_change"
+                },
+                "verification_claims": {
+                    "primary": [
+                        {
+                            "id": "primary-behavior",
+                            "command_ids": ["verify-1"],
+                            "target": "tests/test_missing.py::test_missing",
+                            "expected_evidence": "targeted regression executes",
+                            "evidence_kind": "regression-test",
+                        }
+                    ]
+                },
+            }
+            payload["contract_sha256"] = self.contract_sha256(payload)
+            contract = root / "contract.json"
+            contract.write_text(json.dumps(payload), encoding="utf-8")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    "--task",
+                    "change product behavior",
+                    "--baseline",
+                    str(baseline),
+                    "--change-contract",
+                    str(contract),
+                    "--verify",
+                    payload["verification_commands"]["verify-1"],
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("target is not present", completed.stderr)
 
     def test_strict_finalizer_requires_governed_evidence(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -727,7 +1057,8 @@ class EngineeringChangeTests(unittest.TestCase):
             governed = self.prepare_governed_change(
                 root, repo, command=command, name="ignored-secret"
             )
-            baseline = json.loads((root / "ignored-secret-baseline.json").read_text())
+            baseline_path = root / "ignored-secret-review" / "baseline.json"
+            baseline = json.loads(baseline_path.read_text())
             metadata = next(
                 item
                 for item in baseline["snapshot"]["sensitive_paths"]
@@ -735,7 +1066,7 @@ class EngineeringChangeTests(unittest.TestCase):
             )
             self.assertFalse(metadata["content_read"])
             self.assertNotIn("sha256", metadata)
-            self.assertNotIn("never-read", (root / "ignored-secret-baseline.json").read_text())
+            self.assertNotIn("never-read", baseline_path.read_text())
             secret.unlink()
             (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
             completed = subprocess.run(
@@ -971,6 +1302,7 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(allowed.returncode, 0, allowed.stderr)
             summary = json.loads((root / "empty" / "summary.json").read_text())
             self.assertEqual(summary["quality_status"], "NO_CHANGE")
+            self.assertEqual(summary["process_exit_code"], 0)
             self.assertFalse(summary["passed"])
             self.assertTrue((root / "empty" / ".rootloom-engineering-bundle.json").is_file())
 

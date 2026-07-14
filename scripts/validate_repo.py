@@ -197,6 +197,12 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "--write-baseline",
             "tracked_patch",
         ),
+        SKILLS / "engineering-change" / "scripts" / "begin_review.py": (
+            "rootloom-review-run-v1",
+            "os.mkdir",
+            "baseline_sha256",
+            "contract_sha256",
+        ),
         SKILLS / "engineering-change" / "scripts" / "runner" / "intelligence.py": (
             "rootloom-change-assessment-v1",
             "dependency-supply-chain",
@@ -205,12 +211,16 @@ def validate_personal_contracts(errors: list[str]) -> None:
         ),
         SKILLS / "engineering-change" / "scripts" / "runner" / "baseline.py": (
             "rootloom-change-baseline-v1",
+            "rootloom-change-baseline-v2",
+            "run_id",
+            "task_sha256",
             "sensitive_preservation",
             "write_new_baseline",
         ),
         SKILLS / "engineering-change" / "scripts" / "runner" / "change_contract.py": (
             "rootloom-change-contract-v1",
             "allowed_paths",
+            "verification_claim_bindings",
             "verification_coverage",
         ),
         SKILLS / "engineering-change" / "scripts" / "runner" / "process.py": (
@@ -226,8 +236,12 @@ def validate_personal_contracts(errors: list[str]) -> None:
             '"verification_plan"',
             '"quality_status"',
             '"verification_coverage"',
+            '"claim_binding"',
+            '"evidence_provenance"',
+            '"exit_policy"',
             '"mode"',
             "--strict",
+            "--require-verified",
             "output directory must be outside",
             "--max-patch-bytes",
             "DANGEROUS_DELETE_EXIT",
@@ -299,13 +313,18 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "intelligence.py",
             "risk_assessment",
             "relevant entries",
-            "rootloom-change-baseline-v1",
+            "rootloom-change-baseline-v2",
         ),
         ROOT / "docs" / "architecture.zh-CN.md": (
             "intelligence.py",
             "risk_assessment",
             "相关性选择",
-            "rootloom-change-baseline-v1",
+            "rootloom-change-baseline-v2",
+        ),
+        ROOT / "docs" / "releases" / "2.2.0.md": (
+            "Status: published",
+            "7018c317e59a6e44081e07c1d68d277c469f0cfb",
+            "RE_kwDOTVQo6M4VEtd1",
         ),
         ROOT / "docs" / "diagram" / "architecture.svg": (
             "PERSONAL CORE 2.1",

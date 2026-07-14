@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
+import hashlib
 import json
 import os
 from pathlib import Path
 import stat
 from typing import Any
+
+from .baseline import canonical_json_bytes
 
 
 CHANGE_CONTRACT_FORMAT = "rootloom-change-contract-v1"
@@ -21,6 +24,22 @@ CLAIM_ALIASES = {
     "adjacent": "adjacent-path",
 }
 ROOT_CAUSE_VALUES = {"PASS", "NOT_APPLICABLE"}
+EVIDENCE_KINDS = {
+    "regression-test",
+    "unit-test",
+    "integration-test",
+    "contract-test",
+    "manual-review",
+    "static-check",
+    "build",
+    "other",
+}
+
+
+def contract_sha256(payload: dict[str, Any]) -> str:
+    normalized = dict(payload)
+    normalized.pop("contract_sha256", None)
+    return hashlib.sha256(canonical_json_bytes(normalized)).hexdigest()
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -90,6 +109,14 @@ def load_change_contract(path: Path) -> dict[str, Any]:
     payload = _read_json(path)
     if payload.get("format") != CHANGE_CONTRACT_FORMAT:
         raise ValueError(f"change contract format must be {CHANGE_CONTRACT_FORMAT}")
+    actual_sha256 = contract_sha256(payload)
+    declared_sha256 = payload.get("contract_sha256")
+    if declared_sha256 is not None and declared_sha256 != actual_sha256:
+        raise ValueError("change contract contract_sha256 does not match content")
+    for field in ("baseline_sha256", "task_sha256", "run_id", "nonce"):
+        value = payload.get(field)
+        if value is not None and (not isinstance(value, str) or not value.strip()):
+            raise ValueError(f"change contract {field} must be a nonempty string")
     allowed = _string_list(payload, "allowed_paths", required=True)
     forbidden = _string_list(payload, "forbidden_paths", required=False)
     alignment = payload.get("root_cause_alignment")
@@ -115,26 +142,74 @@ def load_change_contract(path: Path) -> dict[str, Any]:
     if not isinstance(claims, dict) or not claims:
         raise ValueError("change contract verification_claims must not be empty")
     normalized_claims: dict[str, list[str]] = {}
+    normalized_bindings: dict[str, list[dict[str, Any]]] = {}
     for raw_claim, references in claims.items():
         if not isinstance(raw_claim, str) or not raw_claim.strip():
             raise ValueError("change contract claim IDs must be nonempty strings")
-        if not isinstance(references, list) or not references or any(
-            not isinstance(item, str) or not item.strip() for item in references
-        ):
+        claim_id = CLAIM_ALIASES.get(raw_claim, raw_claim)
+        if not isinstance(references, list) or not references:
             raise ValueError("change contract claims must contain verification IDs")
-        missing = sorted(set(references) - set(commands))
+        command_ids: list[str] = []
+        bindings: list[dict[str, Any]] = []
+        for item in references:
+            if isinstance(item, str):
+                if not item.strip():
+                    raise ValueError("change contract claims must contain verification IDs")
+                command_ids.append(item)
+                continue
+            if not isinstance(item, dict):
+                raise ValueError("change contract claim bindings must be strings or objects")
+            raw_commands = item.get("command_ids")
+            if not isinstance(raw_commands, list) or not raw_commands or any(
+                not isinstance(command_id, str) or not command_id.strip()
+                for command_id in raw_commands
+            ):
+                raise ValueError("change contract claim binding command_ids must be nonempty")
+            target = item.get("target")
+            expected = item.get("expected_evidence")
+            evidence_kind = item.get("evidence_kind")
+            if not isinstance(target, str) or not target.strip():
+                raise ValueError("change contract claim binding target must be nonempty")
+            if not isinstance(expected, str) or not expected.strip():
+                raise ValueError(
+                    "change contract claim binding expected_evidence must be nonempty"
+                )
+            if evidence_kind not in EVIDENCE_KINDS:
+                raise ValueError("change contract claim binding evidence_kind is invalid")
+            command_ids.extend(raw_commands)
+            bindings.append(
+                {
+                    "id": str(item.get("id") or claim_id),
+                    "command_ids": list(raw_commands),
+                    "target": target,
+                    "expected_evidence": expected,
+                    "evidence_kind": evidence_kind,
+                }
+            )
+        missing = sorted(set(command_ids) - set(commands))
         if missing:
             raise ValueError(
                 f"change contract claim {raw_claim} references unknown verifications: "
                 + ", ".join(missing)
             )
-        normalized_claims[CLAIM_ALIASES.get(raw_claim, raw_claim)] = list(references)
+        for binding in bindings:
+            for command_id in binding["command_ids"]:
+                command = commands[command_id]
+                if binding["target"] not in command:
+                    raise ValueError(
+                        f"change contract claim {raw_claim} target is not present in "
+                        f"verification command {command_id}"
+                    )
+        normalized_claims[claim_id] = list(command_ids)
+        normalized_bindings[claim_id] = bindings
     return {
         **payload,
         "allowed_paths": allowed,
         "forbidden_paths": forbidden,
         "verification_commands": dict(commands),
         "verification_claims": normalized_claims,
+        "verification_claim_bindings": normalized_bindings,
+        "actual_contract_sha256": actual_sha256,
     }
 
 
