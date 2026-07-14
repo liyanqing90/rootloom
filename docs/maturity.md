@@ -11,12 +11,13 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 - explicit install/upgrade/status/rollback behavior for the personal setup targets, with installed-hash drift refusal;
 - ordinary local lock serialization and per-file atomic replacement;
 - drift-refusing backup restoration;
-- no-shell verification command execution with streaming output ceilings and descendant-process cleanup;
+- all-command preflight parsing followed by no-shell execution, streaming output ceilings, and descendant-process cleanup;
 - out-of-repository, ownership-marked review bundles with bounded status, patch, fingerprints, command count, and aggregate log;
-- opt-in pre-change sensitive/ignored baselines and strict Tier 1/2 path/verification contracts;
-- ordinary untracked content fingerprints and bounded text patches, with metadata-only sensitive capture;
+- opt-in atomic no-replace pre-change baselines plus explicit draft-to-sealed strict Tier 1/2 contracts;
+- two-pass stable repository capture, strict evidence JSON, segment-aware scope globs, and unchanged HEAD/ref/index binding;
+- ordinary untracked content fingerprints, applyable bounded text patches, and tracked/untracked risk signals, with recursive metadata-observed sensitive capture and sensitive-change quarantine;
 - exact dangerous-path deletion confirmation;
-- explainable static risk floors over task, path, tracked diff, operation, and active-memory signals;
+- explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and active-memory signals;
 - risk-specific verification recommendations kept separate from executed test evidence;
 - bounded, relevant, stale-aware project-memory context plus locked explicit updates and one shared strict reader contract;
 - repository validation, unit tests, and an offline Codex compatibility smoke.
@@ -38,7 +39,7 @@ Skills guide these decisions; current repository and runtime evidence must verif
 
 ## Personal safety boundary
 
-The personal artifact bundle is mutable and local. The setup lock is cooperative and ordinary. Setup is atomic per file but not across the complete target set. Backup/rollback is designed for normal local mistakes, not power-loss recovery, hostile same-user races, signed approval, immutable audit, regulated retention, or multi-operator environments.
+The personal artifact bundle is mutable and local. Verification commands are trusted operator input, not sandboxed workloads; argv and output are retained verbatim and must not carry credentials. Capture does not cover non-sensitive ignored files, Git administrative files, external state, detached managers, or a secret copied to an ordinary path without an observable change at its sensitive source. The setup lock is cooperative and ordinary. Setup is atomic per file but not across the complete target set. Backup/rollback is designed for normal local mistakes, not power-loss recovery, hostile same-user races, signed approval, immutable audit, regulated retention, or multi-operator environments.
 
 Those assurance mechanisms remain on `codex/enterprise-assurance`; they are not implied by Personal Core.
 
@@ -50,4 +51,4 @@ Personal Core 2.0 intentionally breaks the 1.2.19 high-assurance Skill, strict R
 
 Personal Core 2.1 keeps `rootloom-project-memory-v1` envelopes and legacy entries readable. New ID, evidence, status, path, and expiry fields are additive. The existing `rootloom-engineering-summary-v1` fields remain; `risk_assessment` and `verification_plan` are additive, and old `--risk low|medium|high` calls still work. A supplied risk can no longer lower the static detected floor.
 
-Personal Core 2.2 retains the summary format name and old CLI flags while separating truth from enforcement. `passed` is true only for `VERIFIED_CHANGE`, and new fields separate `commands_passed`, `capture_preserved`, `verification_coverage`, and `quality_status`. Default advisory finalization does not block on absent governed evidence: stable passing commands can exit zero while quality remains `UNVERIFIED`. Explicit `--strict` requires a pre-change baseline and `rootloom-change-contract-v1` for Tier 1/2 and returns nonzero on incomplete coverage. Pure verification requires `--allow-no-change`.
+Personal Core 2.2 retains the summary format name while revision 3 tightens explicit governed evidence. Advisory finalization remains non-blocking by default. Strict review uses a draft → seal lifecycle, stable two-pass capture, strict JSON, post-verification evidence/base revalidation, reference-aware sensitive-change quarantine, worktree plus Git-common-directory containment, unchanged HEAD/ref/index, and structured sealed claims. It defaults to quality exit codes; `--strict-bundle-only` preserves an explicit non-blocking strict bundle. `semantic_coverage: reviewed` is an operator assertion, not machine proof. Unknown semantics can reach at most `MECHANICALLY_VERIFIED`, and only sealed mechanical evidence plus that assertion yields `VERIFIED_CHANGE`/`passed: true`. Pure verification requires `--allow-no-change`, but invalid evidence and process/capture failures take priority over `NO_CHANGE`.

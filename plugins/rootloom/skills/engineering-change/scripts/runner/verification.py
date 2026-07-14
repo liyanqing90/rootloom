@@ -33,17 +33,18 @@ def verify(
     timeout: int,
     max_output_bytes: int,
 ) -> tuple[list[VerificationResult], bytes]:
+    parsed_commands = [(raw, split_command(raw)) for raw in commands]
     results: list[VerificationResult] = []
     chunks: list[bytes] = []
     remaining_output = max_output_bytes
-    for raw in commands:
+    for raw, argv in parsed_commands:
         header = (f"$ {raw}\n").encode("utf-8")
         separator_size = 1 if chunks else 0
         available = remaining_output - separator_size
         if available <= len(header) + 1:
             results.append(
                 VerificationResult(
-                    command=split_command(raw),
+                    command=argv,
                     exit_code=125,
                     duration_seconds=0.0,
                     passed=False,
@@ -53,7 +54,6 @@ def verify(
             if available > 0:
                 chunks.append(notice[:available])
             break
-        argv = split_command(raw)
         result, output = run_command(
             argv,
             cwd=repo,

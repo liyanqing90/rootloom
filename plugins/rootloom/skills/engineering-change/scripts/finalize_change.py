@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict
 from datetime import UTC, datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -19,12 +20,18 @@ PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_paths import is_protected_deletion_path, normalize_repo_path
 
-from runner.baseline import read_baseline_with_hash, sensitive_preservation, task_sha256
+from runner.baseline import (
+    read_baseline_with_hash,
+    repository_identity,
+    sensitive_preservation,
+    task_sha256,
+)
 from runner.change_contract import (
     claimed_commands,
     load_change_contract,
     parse_cli_claim,
     scope_violations,
+    structured_contract_claimed_commands,
     verification_coverage,
 )
 from runner.contracts import (
@@ -34,9 +41,24 @@ from runner.contracts import (
     SUMMARY_SCHEMA_REVISION,
 )
 from runner.errors import DangerousDeletionError
+from runner.evidence_paths import (
+    validate_no_symlink_chain,
+    validate_outside_repository_storage,
+)
 from runner.intelligence import analyze_change
-from runner.state import repository_snapshot, snapshot_identity, tracked_patch
-from runner.verification import verify
+from runner.review_run import (
+    read_json_no_follow,
+    validate_contract_seal,
+    validate_review_manifest,
+)
+from runner.state import (
+    discover_sensitive_paths,
+    git_identity,
+    metadata_only,
+    snapshot_identity,
+    stable_repository_capture,
+)
+from runner.verification import split_command, verify
 
 
 DEFAULT_MAX_PATCH_BYTES = 16 * 1024 * 1024
@@ -46,6 +68,7 @@ MAX_REMAINING_RISKS = 20
 MAX_REMAINING_RISK_CHARS = 4096
 QUALITY_EXIT_CODES = {
     "VERIFIED_CHANGE": 0,
+    "SEMANTICALLY_REVIEWED": 4,
     "MECHANICALLY_VERIFIED": 4,
     "COMMANDS_PASSED": 4,
     "NO_CHANGE": 3,
@@ -55,52 +78,12 @@ QUALITY_EXIT_CODES = {
 BUNDLE_MARKER = ".rootloom-engineering-bundle.json"
 BUNDLE_MARKER_FORMAT = "rootloom-engineering-bundle-owner-v1"
 BUNDLE_FILES = {BUNDLE_MARKER, "diff.patch", "test.log", "summary.json"}
+MAX_BUNDLE_DIRECTORY_ENTRIES = len(BUNDLE_FILES) + 1
 REVIEW_MANIFEST = "review.json"
-MAX_REVIEW_MANIFEST_BYTES = 256 * 1024
+CONTRACT_SEAL = "contract.seal.json"
 
 
-def absolute_lexical_path(path: Path) -> Path:
-    expanded = path.expanduser()
-    if expanded.is_absolute():
-        return expanded
-    return Path.cwd() / expanded
-
-
-def read_review_manifest(path: Path) -> dict[str, Any]:
-    if path.is_symlink():
-        raise ValueError("review manifest must not be a symlink")
-    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
-    descriptor = os.open(path, flags)
-    try:
-        opened = os.fstat(descriptor)
-        if not stat.S_ISREG(opened.st_mode):
-            raise ValueError("review manifest must be a regular file")
-        raw = bytearray()
-        while len(raw) <= MAX_REVIEW_MANIFEST_BYTES:
-            chunk = os.read(
-                descriptor,
-                min(64 * 1024, MAX_REVIEW_MANIFEST_BYTES + 1 - len(raw)),
-            )
-            if not chunk:
-                break
-            raw.extend(chunk)
-        after = os.fstat(descriptor)
-        if (
-            (opened.st_dev, opened.st_ino, opened.st_size)
-            != (after.st_dev, after.st_ino, after.st_size)
-        ):
-            raise ValueError("review manifest changed during read")
-        if len(raw) > MAX_REVIEW_MANIFEST_BYTES or after.st_size > MAX_REVIEW_MANIFEST_BYTES:
-            raise ValueError("review manifest exceeds byte budget")
-    finally:
-        os.close(descriptor)
-    payload = json.loads(bytes(raw).decode("ascii"))
-    if not isinstance(payload, dict):
-        raise ValueError("review manifest must be a JSON object")
-    return payload
-
-
-def load_review_manifest(
+def load_review_run(
     baseline_path: Path,
     contract_path: Path | None,
     *,
@@ -111,41 +94,142 @@ def load_review_manifest(
     detail: dict[str, Any] = {
         "provided": False,
         "path": None,
+        "contract_seal_path": None,
         "valid": False,
         "errors": [],
     }
     if contract_path is None or baseline_path.parent != contract_path.parent:
         detail["errors"].append("baseline and change contract are not in one review run directory")
         return False, detail
-    manifest_path = baseline_path.parent / REVIEW_MANIFEST
-    detail["path"] = str(manifest_path)
-    try:
-        payload = read_review_manifest(manifest_path)
-    except FileNotFoundError:
-        detail["errors"].append("review manifest is missing")
+    if baseline_path.name != "baseline.json" or contract_path.name != "change-contract.json":
+        detail["errors"].append("review run uses unexpected baseline or contract filename")
         return False, detail
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
-        detail["errors"].append(f"review manifest is invalid: {exc}")
+    manifest_path = baseline_path.parent / REVIEW_MANIFEST
+    seal_path = baseline_path.parent / CONTRACT_SEAL
+    detail["path"] = str(manifest_path)
+    detail["contract_seal_path"] = str(seal_path)
+    try:
+        payload, manifest_raw = read_json_no_follow(
+            manifest_path, label="review manifest"
+        )
+        validate_review_manifest(
+            payload,
+            baseline_name=baseline_path.name,
+            baseline_sha256=baseline_sha256 or "",
+            baseline=baseline,
+        )
+        seal, seal_raw = read_json_no_follow(seal_path, label="contract seal")
+        validate_contract_seal(
+            seal,
+            baseline=baseline,
+            baseline_sha256=baseline_sha256 or "",
+            review_manifest_sha256=hashlib.sha256(manifest_raw).hexdigest(),
+            contract_sha256=contract.get("actual_contract_sha256") if contract else "",
+            contract_file_sha256=(
+                contract.get("actual_contract_file_sha256") if contract else ""
+            ),
+        )
+    except FileNotFoundError:
+        detail["errors"].append("review manifest or contract seal is missing")
+        return False, detail
+    except (OSError, ValueError) as exc:
+        detail["errors"].append(f"review run is invalid: {exc}")
         return False, detail
     detail["provided"] = True
-    if not isinstance(payload, dict) or payload.get("format") != "rootloom-review-run-v1":
-        detail["errors"].append("review manifest format is invalid")
-        return False, detail
-    expected = {
-        "run_id": baseline.get("run_id"),
-        "nonce": baseline.get("nonce"),
-        "task_sha256": baseline.get("task_sha256"),
-        "baseline": baseline_path.name,
-        "baseline_sha256": baseline_sha256,
-        "change_contract": contract_path.name,
-        "change_contract_sha256": contract.get("contract_sha256") if contract else None,
-    }
-    for field, value in expected.items():
-        if payload.get(field) != value:
-            detail["errors"].append(f"review manifest {field} does not match")
-    valid = not detail["errors"]
-    detail["valid"] = valid
-    return valid, detail
+    detail["valid"] = True
+    detail["contract_sha256"] = contract.get("actual_contract_sha256") if contract else None
+    detail["manifest_file_sha256"] = hashlib.sha256(manifest_raw).hexdigest()
+    detail["contract_seal_file_sha256"] = hashlib.sha256(seal_raw).hexdigest()
+    return True, detail
+
+
+def validated_external_evidence_path(
+    path: Path,
+    *,
+    repo: Path,
+    label: str,
+) -> Path:
+    lexical = validate_no_symlink_chain(
+        path,
+        label=label,
+        leaf_may_be_missing=False,
+    )
+    identity = repository_identity(repo)
+    validate_outside_repository_storage(
+        lexical,
+        repository_roots=(
+            Path(identity["worktree"]),
+            Path(identity["git_common_dir"]),
+        ),
+        label=label,
+    )
+    return lexical
+
+
+def revalidate_evidence_inputs(
+    repo: Path,
+    *,
+    baseline_path: Path | None,
+    baseline: dict[str, Any] | None,
+    baseline_sha256: str | None,
+    contract_path: Path | None,
+    contract: dict[str, Any] | None,
+    review_detail: dict[str, Any],
+) -> tuple[bool, list[str]]:
+    errors: list[str] = []
+    expected_review_detail = review_detail
+    observed_baseline = baseline
+    observed_baseline_sha256 = baseline_sha256
+    observed_contract = contract
+    try:
+        if baseline_path is not None:
+            baseline_path = validated_external_evidence_path(
+                baseline_path,
+                repo=repo,
+                label="baseline path",
+            )
+            observed_baseline, observed_baseline_sha256 = read_baseline_with_hash(
+                baseline_path, repo
+            )
+            if observed_baseline_sha256 != baseline_sha256:
+                errors.append("baseline bytes changed during verification")
+        if contract_path is not None:
+            contract_path = validated_external_evidence_path(
+                contract_path,
+                repo=repo,
+                label="change contract path",
+            )
+            observed_contract = load_change_contract(contract_path)
+            if contract is None or (
+                observed_contract["actual_contract_file_sha256"]
+                != contract.get("actual_contract_file_sha256")
+            ):
+                errors.append("change contract bytes changed during verification")
+        if review_detail.get("valid") and baseline_path is not None:
+            review_valid, observed_review_detail = load_review_run(
+                baseline_path,
+                contract_path,
+                baseline=observed_baseline or {},
+                baseline_sha256=observed_baseline_sha256,
+                contract=observed_contract,
+            )
+            if not review_valid:
+                errors.extend(
+                    f"review evidence changed during verification: {item}"
+                    for item in observed_review_detail["errors"]
+                )
+            else:
+                for field, label in (
+                    ("manifest_file_sha256", "review manifest bytes"),
+                    ("contract_seal_file_sha256", "contract seal bytes"),
+                ):
+                    if observed_review_detail.get(field) != expected_review_detail.get(
+                        field
+                    ):
+                        errors.append(f"{label} changed during verification")
+    except (OSError, ValueError) as exc:
+        errors.append(f"evidence input changed during verification: {exc}")
+    return not errors, list(dict.fromkeys(errors))
 
 
 def dangerous_deletions(
@@ -166,6 +250,41 @@ def dangerous_deletions(
         ):
             dangerous.add(item["original_path"])
     return sorted(dangerous)
+
+
+def sensitive_path_changes(
+    repo: Path,
+    snapshot: dict[str, Any],
+    *,
+    extra_sensitive: set[str],
+) -> dict[str, list[str]]:
+    """Compare known sensitive metadata before any changed content is read."""
+
+    before: dict[str, dict[str, Any]] = {}
+    for item in snapshot.get("sensitive_paths", []):
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            continue
+        before[item["path"]] = item
+    current_paths = set(discover_sensitive_paths(repo, extra_sensitive)) | set(before)
+    after = {path: metadata_only(repo, path) for path in sorted(current_paths)}
+    changed = sorted(
+        path
+        for path, metadata in before.items()
+        if metadata.get("exists")
+        and after[path].get("exists")
+        and metadata != after[path]
+    )
+    missing = sorted(
+        path
+        for path, metadata in before.items()
+        if metadata.get("exists") and not after[path].get("exists")
+    )
+    added = sorted(
+        path
+        for path, metadata in after.items()
+        if metadata.get("exists") and not before.get(path, {}).get("exists")
+    )
+    return {"changed": changed, "missing": missing, "added": added}
 
 
 def atomic_write(path: Path, value: bytes) -> None:
@@ -191,13 +310,19 @@ def output_preflight(output: Path) -> None:
         return
     if not output.is_dir():
         raise ValueError("output path must be a directory")
-    entries = {item.name for item in output.iterdir()}
+    entries: set[str] = set()
+    for item in output.iterdir():
+        entries.add(item.name)
+        if len(entries) > MAX_BUNDLE_DIRECTORY_ENTRIES:
+            raise ValueError("Rootloom output directory exceeds the entry limit")
     if not entries:
         return
     marker = output / BUNDLE_MARKER
     try:
-        payload = json.loads(marker.read_text(encoding="ascii"))
-    except (FileNotFoundError, UnicodeDecodeError, json.JSONDecodeError):
+        payload, _marker_raw = read_json_no_follow(
+            marker, label="bundle ownership marker"
+        )
+    except (FileNotFoundError, OSError, ValueError):
         raise ValueError(
             "nonempty output directory requires a valid Rootloom ownership marker"
         ) from None
@@ -209,6 +334,21 @@ def output_preflight(output: Path) -> None:
             "Rootloom-owned output directory contains unexpected files: "
             + ", ".join(unexpected)
         )
+
+
+def invalidate_previous_summary(output: Path) -> None:
+    """Prevent an early failure from leaving an authoritative stale result."""
+
+    if not output.exists():
+        return
+    summary = output / "summary.json"
+    try:
+        info = summary.lstat()
+    except FileNotFoundError:
+        return
+    if stat.S_ISDIR(info.st_mode):
+        raise ValueError("existing bundle summary path must not be a directory")
+    summary.unlink()
 
 
 def write_bundle(output: Path, *, patch: bytes, log: bytes, summary: dict[str, Any]) -> None:
@@ -247,7 +387,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--remaining-risk", action="append", default=[])
     parser.add_argument("--confirm-dangerous-delete", action="append", default=[])
     parser.add_argument("--allow-no-change", action="store_true")
-    parser.add_argument("--exit-policy", choices=("bundle", "quality"), default="bundle")
+    parser.add_argument("--exit-policy", choices=("bundle", "quality"))
     parser.add_argument(
         "--require-verified",
         action="store_true",
@@ -264,6 +404,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="require governed Tier 1/2 evidence and fail on incomplete coverage",
     )
+    parser.add_argument(
+        "--strict-bundle-only",
+        action="store_true",
+        help="run strict evidence gates but return bundle-style status codes",
+    )
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--max-output-bytes", type=int, default=4 * 1024 * 1024)
     parser.add_argument("--max-patch-bytes", type=int, default=DEFAULT_MAX_PATCH_BYTES)
@@ -272,18 +417,50 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    if args.require_verified:
+    if args.strict_bundle_only and not args.strict:
+        raise SystemExit("--strict-bundle-only requires --strict")
+    if args.strict_bundle_only and args.require_verified:
+        raise SystemExit("--strict-bundle-only cannot be combined with --require-verified")
+    if args.strict_bundle_only and args.exit_policy == "quality":
+        raise SystemExit("--strict-bundle-only cannot use --exit-policy quality")
+    if args.strict and args.exit_policy == "bundle" and not args.strict_bundle_only:
+        raise SystemExit("use --strict-bundle-only for non-blocking strict bundle output")
+    if args.strict_bundle_only:
+        args.exit_policy = "bundle"
+    elif args.strict or args.require_verified:
         args.exit_policy = "quality"
+    elif args.exit_policy is None:
+        args.exit_policy = "bundle"
     repo = args.repo.expanduser().resolve()
-    output = args.output.expanduser().resolve()
+    try:
+        output_lexical = validate_no_symlink_chain(
+            args.output,
+            label="output directory",
+            leaf_may_be_missing=True,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     if not (repo / ".git").exists():
         raise SystemExit(f"not a Git repository: {repo}")
-    if output == repo or output.is_relative_to(repo):
-        raise SystemExit("output directory must be outside the repository being captured")
+    try:
+        identity = repository_identity(repo)
+        output = validate_outside_repository_storage(
+            output_lexical,
+            repository_roots=(
+                Path(identity["worktree"]),
+                Path(identity["git_common_dir"]),
+            ),
+            label="output directory",
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     if args.timeout <= 0 or args.max_output_bytes <= 0 or args.max_patch_bytes <= 0:
         raise SystemExit("timeout, output budget, and patch budget must be positive")
+    if args.max_baseline_age_seconds is not None and args.max_baseline_age_seconds < 0:
+        raise SystemExit("max baseline age must be nonnegative")
     try:
         output_preflight(output)
+        invalidate_previous_summary(output)
         cli_claims = [parse_cli_claim(value) for value in args.verify_claim]
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -295,6 +472,11 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(f"at most {MAX_VERIFY_COMMANDS} verification commands are supported")
     if any(len(command) > MAX_COMMAND_CHARS for command in commands):
         raise SystemExit(f"verification commands must be at most {MAX_COMMAND_CHARS} characters")
+    try:
+        for command in commands:
+            split_command(command)
+    except ValueError as exc:
+        raise SystemExit(f"invalid verification command: {exc}") from exc
     if len(args.remaining_risk) > MAX_REMAINING_RISKS or any(
         len(value) > MAX_REMAINING_RISK_CHARS for value in args.remaining_risk
     ):
@@ -308,44 +490,140 @@ def main(argv: list[str] | None = None) -> int:
     baseline_sha256: str | None = None
     baseline_extra: list[str] = []
     if args.baseline:
-        baseline_path = absolute_lexical_path(args.baseline)
         try:
+            baseline_path = validated_external_evidence_path(
+                args.baseline,
+                repo=repo,
+                label="baseline path",
+            )
             baseline, baseline_sha256 = read_baseline_with_hash(baseline_path, repo)
             baseline_extra = list(baseline["sensitive_paths"])
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
+    normalized_cli_sensitive = sorted(
+        {
+            normalize_repo_path(path, label="sensitive path")
+            for path in args.sensitive_path
+        }
+    )
+    if args.strict and baseline is not None:
+        baseline_sensitive_keys = {
+            path.casefold()
+            for path in [
+                *baseline_extra,
+                *[
+                    item["path"]
+                    for item in baseline["snapshot"]["sensitive_paths"]
+                    if isinstance(item, dict) and isinstance(item.get("path"), str)
+                ],
+            ]
+        }
+        undeclared_sensitive = sorted(
+            path
+            for path in normalized_cli_sensitive
+            if path.casefold() not in baseline_sensitive_keys
+        )
+        if undeclared_sensitive:
+            raise SystemExit(
+                "strict sensitive paths must be declared in the baseline intake: "
+                + ", ".join(undeclared_sensitive)
+            )
     extra_sensitive = sorted(
         {
             normalize_repo_path(path, label="sensitive path")
-            for path in [*args.sensitive_path, *baseline_extra]
+            for path in [*normalized_cli_sensitive, *baseline_extra]
         }
     )
+    confirmed = sorted(
+        {
+            normalize_repo_path(path, label="dangerous deletion confirmation")
+            for path in args.confirm_dangerous_delete
+        }
+    )
+    baseline_sensitive_preflight = {"changed": [], "missing": [], "added": []}
+    if baseline is not None:
+        try:
+            baseline_sensitive_preflight = sensitive_path_changes(
+                repo,
+                baseline["snapshot"],
+                extra_sensitive=set(extra_sensitive),
+            )
+        except (OSError, ValueError) as exc:
+            raise SystemExit(str(exc)) from exc
+    unconfirmed_baseline_missing = sorted(
+        set(baseline_sensitive_preflight["missing"]) - set(confirmed)
+    )
+    if unconfirmed_baseline_missing:
+        error = DangerousDeletionError(
+            "dangerous deletions require exact confirmation: "
+            + ", ".join(unconfirmed_baseline_missing)
+        )
+        print(str(error))
+        return DANGEROUS_DELETE_EXIT
+    sensitive_deletion_quarantine = bool(baseline_sensitive_preflight["missing"])
+    sensitive_change_quarantine = bool(
+        baseline_sensitive_preflight["changed"]
+        or baseline_sensitive_preflight["missing"]
+        or baseline_sensitive_preflight["added"]
+    )
     try:
-        snapshot_before, untracked_patch_before = repository_snapshot(
+        (
+            snapshot_before,
+            untracked_patch_before,
+            patch_before,
+            current_git,
+        ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
-            max_untracked_patch_bytes=args.max_patch_bytes,
-        )
-        sensitive_before = [
-            item["path"] for item in snapshot_before["sensitive_paths"]
-        ]
-        remaining_patch = args.max_patch_bytes - len(untracked_patch_before)
-        if remaining_patch <= 0:
-            raise ValueError("untracked patch exhausted the aggregate patch budget")
-        patch_before = tracked_patch(
-            repo,
-            max_bytes=remaining_patch,
-            sensitive_paths=sensitive_before,
+            reference_sensitive_metadata=(
+                baseline["snapshot"]["sensitive_paths"]
+                if baseline is not None
+                else None
+            ),
+            max_patch_bytes=args.max_patch_bytes,
+            protect_changed_paths=sensitive_change_quarantine,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
+    capture_sensitive_change_quarantine = bool(
+        snapshot_before["bounds"].get("sensitive_change_quarantine")
+    )
+    baseline_guard = (
+        sensitive_preservation(baseline, snapshot_before)
+        if baseline is not None
+        else {"preserved": True, "missing": [], "changed": [], "added": []}
+    )
+    git_change_paths = {
+        item.get(field)
+        for item in snapshot_before["changes"]
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    sensitive_task_changes = [
+        {"status": status, "path": path, "original_path": ""}
+        for status, paths in (
+            ("??", baseline_guard["added"]),
+            (" M", baseline_guard["changed"]),
+            (" D", baseline_guard["missing"]),
+        )
+        for path in paths
+        if path not in git_change_paths
+    ]
+    current_changes = [*snapshot_before["changes"], *sensitive_task_changes]
     assessment = analyze_change(
         repo,
         task=args.task,
         anticipated_paths=[],
-        changes=snapshot_before["changes"],
-        tracked_patch=patch_before,
+        changes=current_changes,
+        tracked_patch=(
+            patch_before
+            + (b"\n" if patch_before and untracked_patch_before else b"")
+            + untracked_patch_before
+        ),
         declared_risk=args.risk,
+        allow_repository_reads=not bool(
+            snapshot_before["bounds"].get("sensitive_change_quarantine")
+        ),
     )
     tier = int(assessment["minimum_tier"])
     if args.strict and tier >= 1 and baseline is None:
@@ -357,14 +635,70 @@ def main(argv: list[str] | None = None) -> int:
     contract_path: Path | None = None
     contract_sha256: str | None = None
     if args.change_contract:
-        contract_path = absolute_lexical_path(args.change_contract)
         try:
+            contract_path = validated_external_evidence_path(
+                args.change_contract,
+                repo=repo,
+                label="change contract path",
+            )
             contract = load_change_contract(contract_path)
             contract_sha256 = contract["actual_contract_sha256"]
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
+    preexisting_changes = (
+        list(baseline.get("preexisting_changes", [])) if baseline is not None else []
+    )
+    preexisting_keys = {
+        (item.get("status"), item.get("path"), item.get("original_path"))
+        for item in preexisting_changes
+        if isinstance(item, dict)
+    }
+    preexisting_paths = {
+        item.get(field)
+        for item in preexisting_changes
+        if isinstance(item, dict)
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    current_paths = {
+        item.get(field)
+        for item in current_changes
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    removed_preexisting_paths = sorted(preexisting_paths - current_paths)
+    task_changes = [
+        item
+        for item in current_changes
+        if (item.get("status"), item.get("path"), item.get("original_path"))
+        not in preexisting_keys
+    ]
+    baseline_state_changed = baseline is None or (
+        snapshot_before != baseline.get("snapshot")
+        or hashlib.sha256(patch_before).hexdigest()
+        != baseline.get("tracked_patch_sha256")
+    )
+    change_partition = "no-baseline" if baseline is None else "exact"
+    if (
+        baseline is not None
+        and baseline_state_changed
+        and preexisting_changes
+        and current_changes
+    ):
+        # A pre-existing tracked path can be edited again while retaining the
+        # same Git status tuple. Because v2 stores the bounded aggregate patch
+        # hash rather than per-path patch bytes, any changed dirty baseline has
+        # ambiguous overlap. Conservatively scope every current path so a second
+        # edit cannot hide behind another newly added task path.
+        task_changes = list(current_changes)
+        change_partition = "conservative-overlap"
+    if removed_preexisting_paths:
+        # Restoring or deleting pre-existing dirty work can leave no current Git
+        # record at all. It is neither a reviewable task patch nor pure
+        # verification, so fail closed instead of reporting NO_CHANGE.
+        change_partition = "preexisting-state-removed"
     scope = (
-        scope_violations(contract, snapshot_before["changes"])
+        scope_violations(contract, task_changes)
         if contract is not None
         else {"outside_allowed_paths": [], "forbidden_paths_changed": []}
     )
@@ -381,7 +715,6 @@ def main(argv: list[str] | None = None) -> int:
     baseline_freshness = "not-provided"
     baseline_operator_sealed = False
     contract_operator_sealed = False
-    review_manifest_valid = False
     review_manifest: dict[str, Any] = {"provided": False, "valid": False, "errors": []}
     hash_chain_errors: list[str] = []
     if baseline is not None:
@@ -389,11 +722,12 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(created_at, str):
             try:
                 created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
-                baseline_age_seconds = max(
-                    0,
-                    int((datetime.now(UTC) - created.astimezone(UTC)).total_seconds()),
+                baseline_age_seconds = int(
+                    (datetime.now(UTC) - created.astimezone(UTC)).total_seconds()
                 )
-                baseline_freshness = "fresh"
+                baseline_freshness = (
+                    "future-clock-skew" if baseline_age_seconds < 0 else "fresh"
+                )
                 if (
                     args.max_baseline_age_seconds is not None
                     and baseline_age_seconds > args.max_baseline_age_seconds
@@ -406,52 +740,53 @@ def main(argv: list[str] | None = None) -> int:
                 baseline_freshness = "unknown"
         if baseline.get("task_sha256") not in {None, expected_task_sha256}:
             hash_chain_errors.append("baseline task_sha256 does not match task")
-        if contract is not None and (
-            baseline_operator_sealed
-            or any(
-                contract.get(field) is not None
-                for field in ("baseline_sha256", "task_sha256", "run_id", "nonce")
-            )
-        ):
-            if contract.get("baseline_sha256") == baseline_sha256:
-                contract_operator_sealed = True
-            else:
+        if args.strict and baseline.get("format") == "rootloom-change-baseline-v2":
+            baseline_git = baseline.get("git", {})
+            if baseline_git.get("head") != current_git.get("head"):
+                hash_chain_errors.append("repository HEAD changed since baseline")
+            if baseline_git.get("head_ref") != current_git.get("head_ref"):
+                hash_chain_errors.append("repository HEAD ref changed since baseline")
+            if baseline_git.get("index_sha256") != current_git.get("index_sha256"):
+                hash_chain_errors.append("repository index changed since baseline")
+        if contract is not None:
+            if contract.get("baseline_sha256") != baseline_sha256:
                 hash_chain_errors.append("change contract baseline_sha256 does not match baseline")
             for field in ("task_sha256", "run_id", "nonce"):
                 baseline_value = expected_task_sha256 if field == "task_sha256" else baseline.get(field)
                 contract_value = contract.get(field)
                 if contract_value != baseline_value:
                     hash_chain_errors.append(f"change contract {field} does not match baseline")
-            contract_operator_sealed = contract_operator_sealed and not hash_chain_errors
-            review_manifest_valid, review_manifest = load_review_manifest(
+            review_run_valid, review_manifest = load_review_run(
                 baseline_path,
                 contract_path,
                 baseline=baseline,
                 baseline_sha256=baseline_sha256,
                 contract=contract,
             )
+            baseline_operator_sealed = (
+                baseline.get("format") == "rootloom-change-baseline-v2"
+                and baseline.get("evidence_provenance") == "operator-sealed"
+                and review_run_valid
+            )
+            contract_operator_sealed = (
+                baseline_operator_sealed
+                and bool(contract.get("declared_contract_sha256_valid"))
+                and not hash_chain_errors
+            )
             if (
-                baseline.get("evidence_provenance") == "operator-sealed"
-                and review_manifest_valid
+                args.strict
+                and baseline.get("evidence_provenance") == "operator-sealed"
+                and not review_run_valid
             ):
-                baseline_operator_sealed = True
-                contract_operator_sealed = contract_operator_sealed and True
-            else:
-                contract_operator_sealed = False
+                hash_chain_errors.extend(review_manifest["errors"])
+    if args.strict and contract is not None and not contract.get(
+        "declared_contract_sha256_valid"
+    ):
+        hash_chain_errors.append("change contract contract_sha256 is required in strict mode")
     if contract is not None and contract.get("task_sha256") not in {None, expected_task_sha256}:
         hash_chain_errors.append("change contract task_sha256 does not match task")
+    hash_chain_errors = list(dict.fromkeys(hash_chain_errors))
 
-    baseline_guard = (
-        sensitive_preservation(baseline, snapshot_before)
-        if baseline is not None
-        else {"preserved": True, "missing": [], "changed": []}
-    )
-    confirmed = sorted(
-        {
-            normalize_repo_path(path, label="dangerous deletion confirmation")
-            for path in args.confirm_dangerous_delete
-        }
-    )
     dangerous = set(
         dangerous_deletions(
             snapshot_before["changes"], extra_sensitive=set(extra_sensitive)
@@ -466,7 +801,14 @@ def main(argv: list[str] | None = None) -> int:
         print(str(error))
         return DANGEROUS_DELETE_EXIT
 
-    changed_files = sorted({item["path"] for item in snapshot_before["changes"]})
+    changed_files = sorted(
+        {
+            item[field]
+            for item in task_changes
+            for field in ("path", "original_path")
+            if item.get(field)
+        }
+    )
     has_change = bool(changed_files)
     gate_errors: list[str] = []
     if not contract_scope_valid:
@@ -477,6 +819,11 @@ def main(argv: list[str] | None = None) -> int:
         gate_errors.append("behavioral defect requires ROOT_CAUSE_ALIGNMENT: PASS")
     if baseline_guard["changed"]:
         gate_errors.append("sensitive metadata changed since the pre-change baseline")
+    if removed_preexisting_paths:
+        gate_errors.append(
+            "pre-existing dirty paths disappeared since the baseline: "
+            + ", ".join(removed_preexisting_paths)
+        )
     if not has_change and not args.allow_no_change:
         gate_errors.append("no repository change; use --allow-no-change for pure verification")
     if gate_errors:
@@ -491,22 +838,39 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     try:
-        snapshot_after, untracked_patch_after = repository_snapshot(
+        verification_sensitive_preflight = sensitive_path_changes(
+            repo,
+            snapshot_before,
+            extra_sensitive=set(extra_sensitive),
+        )
+        verification_sensitive_deletion_quarantine = bool(
+            verification_sensitive_preflight["missing"]
+        )
+        verification_sensitive_change_quarantine = bool(
+            verification_sensitive_preflight["changed"]
+            or verification_sensitive_preflight["missing"]
+            or verification_sensitive_preflight["added"]
+        )
+        (
+            snapshot_after,
+            untracked_patch_after,
+            patch_after,
+            current_git_after,
+        ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
-            max_untracked_patch_bytes=args.max_patch_bytes,
-        )
-        sensitive_after = [item["path"] for item in snapshot_after["sensitive_paths"]]
-        remaining_patch = args.max_patch_bytes - len(untracked_patch_after)
-        if remaining_patch <= 0:
-            raise ValueError("untracked patch exhausted the aggregate patch budget")
-        patch_after = tracked_patch(
-            repo,
-            max_bytes=remaining_patch,
-            sensitive_paths=sensitive_after,
+            reference_sensitive_metadata=snapshot_before["sensitive_paths"],
+            max_patch_bytes=args.max_patch_bytes,
+            protect_changed_paths=(
+                capture_sensitive_change_quarantine
+                or verification_sensitive_change_quarantine
+            ),
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
+    verification_capture_sensitive_change_quarantine = bool(
+        snapshot_after["bounds"].get("sensitive_change_quarantine")
+    )
     capture_preserved = (
         snapshot_after == snapshot_before
         and untracked_patch_after == untracked_patch_before
@@ -517,6 +881,42 @@ def main(argv: list[str] | None = None) -> int:
             b"\nRootloom: verification changed the tracked patch or captured path/content set; "
             b"quality status is FAILED.\n"
         )
+    post_execution_errors: list[str] = []
+    repository_base_preserved = current_git_after == current_git
+    if not repository_base_preserved:
+        labels = {
+            "head": "HEAD",
+            "head_ref": "HEAD ref",
+            "index_sha256": "index",
+        }
+        for field, label in labels.items():
+            if current_git_after.get(field) != current_git.get(field):
+                post_execution_errors.append(
+                    f"repository {label} changed during verification"
+                )
+    evidence_files_preserved, evidence_preservation_errors = (
+        revalidate_evidence_inputs(
+            repo,
+            baseline_path=baseline_path,
+            baseline=baseline,
+            baseline_sha256=baseline_sha256,
+            contract_path=contract_path,
+            contract=contract,
+            review_detail=review_manifest,
+        )
+    )
+    post_execution_errors.extend(evidence_preservation_errors)
+    if not evidence_files_preserved:
+        baseline_operator_sealed = False
+        contract_operator_sealed = False
+    if post_execution_errors:
+        hash_chain_errors.extend(post_execution_errors)
+        hash_chain_errors = list(dict.fromkeys(hash_chain_errors))
+        log += (
+            "\nRootloom: post-verification trust inputs changed: "
+            + "; ".join(post_execution_errors)
+            + "; quality status is FAILED.\n"
+        ).encode("utf-8")
     verification_sensitive = sensitive_preservation(
         {"snapshot": snapshot_before}, snapshot_after
     )
@@ -541,10 +941,17 @@ def main(argv: list[str] | None = None) -> int:
         for index, result in enumerate(results)
         if result.passed and index < len(commands)
     }
-    claims = claimed_commands(contract, cli_claims)
+    declared_claims = claimed_commands(contract, cli_claims)
+    declared_claim_binding, declared_coverage_detail = verification_coverage(
+        assessment["verification_plan"]["required_behaviors"],
+        declared_claims,
+        passed_commands,
+        tier=tier,
+    )
+    structured_claims = structured_contract_claimed_commands(contract)
     claim_binding, coverage_detail = verification_coverage(
         assessment["verification_plan"]["required_behaviors"],
-        claims,
+        structured_claims if tier >= 1 else declared_claims,
         passed_commands,
         tier=tier,
     )
@@ -566,20 +973,27 @@ def main(argv: list[str] | None = None) -> int:
         and contract_operator_sealed
         and not hash_chain_errors
     )
-    if not has_change:
-        quality_status = "NO_CHANGE"
-    elif gate_errors or not commands_passed or not capture_preserved:
+    if (
+        gate_errors
+        or post_execution_errors
+        or not commands_passed
+        or not capture_preserved
+    ):
         quality_status = "FAILED"
+    elif not has_change:
+        quality_status = "NO_CHANGE"
     elif process_convergence != "complete":
         quality_status = "UNVERIFIED"
     elif not governed_evidence_complete or claim_binding == "unverified":
         quality_status = "UNVERIFIED"
     elif claim_binding != "complete":
         quality_status = "COMMANDS_PASSED"
-    elif not operator_sealed_evidence:
-        quality_status = "MECHANICALLY_VERIFIED"
-    else:
+    elif operator_sealed_evidence and args.semantic_coverage == "reviewed":
         quality_status = "VERIFIED_CHANGE"
+    elif args.semantic_coverage == "reviewed":
+        quality_status = "SEMANTICALLY_REVIEWED"
+    else:
+        quality_status = "MECHANICALLY_VERIFIED"
     patch = patch_after + (b"\n" if patch_after and untracked_patch_after else b"") + untracked_patch_after
     if len(patch) > args.max_patch_bytes:
         raise SystemExit(
@@ -602,16 +1016,39 @@ def main(argv: list[str] | None = None) -> int:
         "verification_claims": coverage_detail,
         "claim_binding": claim_binding,
         "verification_coverage": claim_binding,
+        "declared_verification_claims": declared_coverage_detail,
+        "declared_claim_binding": declared_claim_binding,
         "semantic_coverage": args.semantic_coverage,
         "mode": "strict" if args.strict else "advisory",
         "exit_policy": args.exit_policy,
         "commands_passed": commands_passed,
         "capture_preserved": capture_preserved,
         "verification_preserved_capture": capture_preserved,
+        "evidence_files_preserved": evidence_files_preserved,
+        "evidence_preservation_errors": evidence_preservation_errors,
+        "repository_base_preserved_during_verification": repository_base_preserved,
+        "post_execution_errors": post_execution_errors,
         "process_convergence": process_convergence,
         "detached_descendant_possible": True,
         "isolation": "process-group-only",
         "baseline_sensitive_preservation": baseline_guard,
+        "sensitive_integrity": "metadata-observed",
+        "sensitive_deletion_quarantine": sensitive_deletion_quarantine,
+        "sensitive_change_quarantine": capture_sensitive_change_quarantine,
+        "verification_sensitive_deletion_quarantine": (
+            verification_sensitive_deletion_quarantine
+        ),
+        "verification_sensitive_change_quarantine": (
+            verification_sensitive_change_quarantine
+            or (
+                verification_capture_sensitive_change_quarantine
+                and not capture_sensitive_change_quarantine
+            )
+        ),
+        "preexisting_changes": preexisting_changes,
+        "removed_preexisting_paths": removed_preexisting_paths,
+        "task_changes": task_changes,
+        "change_partition": change_partition,
         "baseline": {
             "required": bool(args.strict and tier >= 1),
             "provided": baseline is not None,
@@ -622,6 +1059,16 @@ def main(argv: list[str] | None = None) -> int:
             "task_sha256": baseline.get("task_sha256") if baseline is not None else None,
             "age_seconds": baseline_age_seconds,
             "freshness": baseline_freshness,
+            "git": baseline.get("git") if baseline is not None else None,
+            "current_git": current_git,
+            "verification_git": current_git_after,
+            "repository_base_stable": (
+                baseline is None
+                or (
+                    baseline.get("git") == current_git
+                    and baseline.get("git") == current_git_after
+                )
+            ),
         },
         "change_contract": {
             "required": bool(args.strict and tier >= 1),
@@ -645,7 +1092,14 @@ def main(argv: list[str] | None = None) -> int:
             "change_contract": (
                 "operator-sealed" if contract_operator_sealed else "self-declared"
             ),
-            "verification_claims": "self-declared",
+            "verification_claims": (
+                "operator-sealed"
+                if contract_operator_sealed and claim_binding == "complete"
+                else "self-declared"
+            ),
+            "semantic_review": (
+                "operator-asserted" if args.semantic_coverage == "reviewed" else "not-reviewed"
+            ),
         },
         "hash_chain": {
             "baseline_sha256": baseline_sha256,
@@ -673,6 +1127,26 @@ def main(argv: list[str] | None = None) -> int:
         if args.exit_policy == "bundle" and quality_status != "FAILED"
         else QUALITY_EXIT_CODES[quality_status]
     )
+    try:
+        output_rechecked = validate_no_symlink_chain(
+            output_lexical,
+            label="output directory",
+            leaf_may_be_missing=True,
+        )
+        current_identity = repository_identity(repo)
+        output_resolved_after = validate_outside_repository_storage(
+            output_rechecked,
+            repository_roots=(
+                Path(current_identity["worktree"]),
+                Path(current_identity["git_common_dir"]),
+            ),
+            label="output directory",
+        )
+        if output_resolved_after != output:
+            raise ValueError("output directory target changed during verification")
+        output_preflight(output_resolved_after)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"output path changed during verification: {exc}") from exc
     write_bundle(output, patch=patch, log=log, summary=summary)
     print(json.dumps(summary, ensure_ascii=True, sort_keys=True))
     return int(summary["process_exit_code"])

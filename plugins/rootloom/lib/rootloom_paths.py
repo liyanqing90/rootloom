@@ -31,6 +31,7 @@ SENSITIVE_WORDS = {
     "tokens",
 }
 PROTECTED_STATE_WORDS = {"database", "databases", "db", "migration", "migrations"}
+PROTECTED_STATE_SUFFIXES = {".db", ".sqlite", ".sqlite3"}
 WORD_SPLIT = re.compile(r"[._-]+")
 
 
@@ -49,6 +50,19 @@ def normalize_repo_path(raw: str, *, label: str = "path") -> str:
     return parsed.as_posix()
 
 
+def validate_git_repo_path(raw: str, *, label: str = "Git path") -> str:
+    """Validate a Git-reported path without changing its byte-level meaning."""
+
+    if raw != raw.strip() or "\\" in raw:
+        raise ValueError(
+            f"{label} cannot be represented safely without changing the path: {raw!r}"
+        )
+    normalized = normalize_repo_path(raw, label=label)
+    if normalized != raw:
+        raise ValueError(f"{label} is not a canonical repository path: {raw!r}")
+    return normalized
+
+
 def path_words(path: str) -> set[str]:
     words: set[str] = set()
     for part in PurePosixPath(path).parts:
@@ -61,12 +75,18 @@ def path_words(path: str) -> set[str]:
 def is_sensitive_path(path: str, *, extra_sensitive: set[str] | None = None) -> bool:
     normalized = normalize_repo_path(path)
     lowered = normalized.lower()
-    name = PurePosixPath(lowered).name
-    if extra_sensitive and normalized in extra_sensitive:
-        return True
-    if name in SENSITIVE_EXACT_NAMES or name.startswith(".env."):
-        return True
-    if PurePosixPath(name).suffix in SENSITIVE_SUFFIXES:
+    parts = PurePosixPath(lowered).parts
+    if extra_sensitive:
+        for raw_root in extra_sensitive:
+            root = normalize_repo_path(raw_root, label="sensitive path").lower()
+            if lowered == root or lowered.startswith(root + "/"):
+                return True
+    if any(
+        part in SENSITIVE_EXACT_NAMES
+        or part.startswith(".env.")
+        or PurePosixPath(part).suffix in SENSITIVE_SUFFIXES
+        for part in parts
+    ):
         return True
     return bool(path_words(lowered) & SENSITIVE_WORDS)
 
@@ -75,8 +95,10 @@ def is_protected_deletion_path(
     path: str, *, extra_sensitive: set[str] | None = None
 ) -> bool:
     normalized = normalize_repo_path(path)
-    return is_sensitive_path(normalized, extra_sensitive=extra_sensitive) or bool(
-        path_words(normalized) & PROTECTED_STATE_WORDS
+    return (
+        is_sensitive_path(normalized, extra_sensitive=extra_sensitive)
+        or PurePosixPath(normalized).suffix.lower() in PROTECTED_STATE_SUFFIXES
+        or bool(path_words(normalized) & PROTECTED_STATE_WORDS)
     )
 
 
@@ -109,7 +131,12 @@ def sensitive_git_pathspecs() -> list[str]:
         "**/*.pem",
         "**/*.pfx",
     }
-    return [f":(glob){pattern}" for pattern in sorted(patterns)]
+    for name in SENSITIVE_EXACT_NAMES:
+        patterns.add(f"**/{name}/**")
+    for suffix in SENSITIVE_SUFFIXES:
+        patterns.add(f"**/*{suffix}/**")
+    patterns.add("**/.env.*/**")
+    return [f":(glob,icase){pattern}" for pattern in sorted(patterns)]
 
 
 def validate_nonsensitive_managed_targets(paths: list[str]) -> None:

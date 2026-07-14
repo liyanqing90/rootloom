@@ -32,7 +32,16 @@ python3 <skill-dir>/scripts/begin_review.py \
   --path src/anticipated-owner.py
 ```
 
-This uses exclusive creation for the run directory, baseline, and contract skeleton. It gives the baseline and contract the same `run_id`, `nonce`, `task_sha256`, and `baseline_sha256` chain so later finalization can distinguish operator-sealed evidence from self-declared evidence. Edit the generated `change-contract.json` before finalization.
+`begin_review.py` requires at least one `--path`; use `--allow-all-paths` only when whole-repository scope is intentional. It normally requires a clean worktree/index, while `--allow-dirty-baseline` explicitly records pre-existing changes. If that dirty state later changes, finalization conservatively scopes all current overlapping paths because the aggregate baseline patch cannot prove per-path attribution; a pre-existing dirty path that disappears fails closed. Intake creation uses a temporary-directory transaction followed by the platform's atomic no-replace rename, so capture/write failure leaves no final run and a concurrently created destination is never overwritten.
+
+The intake contains `baseline.json`, editable `change-contract.draft.json`, and immutable-input `review.json`. Edit only the draft, remove every `TODO`, and then seal it:
+
+```bash
+python3 <skill-dir>/scripts/seal_contract.py \
+  --review-dir /absolute/path/outside-repo/run
+```
+
+Sealing deeply validates and normalizes the draft, then exclusively creates `change-contract.json` and `contract.seal.json`. The seal binds the canonical contract hash, raw sealed-file hash, review-manifest byte hash, baseline hash, run ID, nonce, and task hash. Do not edit the sealed contract or manifest; finalization rejects post-seal drift.
 
 For an analyzer-only baseline, run it before editing and add the external baseline:
 
@@ -44,9 +53,9 @@ python3 <skill-dir>/scripts/analyze_change.py \
   --write-baseline /absolute/path/outside-repo/baseline.json
 ```
 
-The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. New baselines use `rootloom-change-baseline-v2` with `run_id`, `nonce`, `task_sha256`, producer version, repository identity, Git identity, and sensitive-policy hash. v1 baselines remain readable as self-declared compatibility input. Baselines capture bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Use repeatable `--sensitive-path` for additional metadata-only paths. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
+The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. New baselines use `rootloom-change-baseline-v2` with canonical `run_id`, nonce, timestamps and hashes plus repository/Git identity. A baseline is accepted only after two consecutive bounded captures agree; strict finalization binds current HEAD, symbolic HEAD ref, and index to it and rechecks the base after verification. v1 baselines remain readable as self-declared compatibility input. Baselines capture bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Built-in sensitive names/suffixes and repeatable `--sensitive-path` roots protect complete descendant trees. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
 
-Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
+Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked and non-sensitive untracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
 
 Then classify the request:
 
@@ -103,18 +112,31 @@ Minimal machine contract:
       "expected_evidence": "valid login creates a session",
       "evidence_kind": "regression-test"
     }],
-    "invariant": ["verify-invariant"],
-    "adjacent": ["verify-adjacent"]
+    "invariant": [{
+      "id": "owning-invariant",
+      "command_ids": ["verify-invariant"],
+      "target": "tests/test_auth.py::TokenTests",
+      "expected_evidence": "token invariants hold",
+      "evidence_kind": "unit-test"
+    }],
+    "adjacent": [{
+      "id": "adjacent-path",
+      "command_ids": ["verify-adjacent"],
+      "target": "tests/test_auth.py::AuthTests.test_expired",
+      "expected_evidence": "expired login remains rejected",
+      "evidence_kind": "regression-test"
+    }]
   },
   "baseline_sha256": "<sha256 of baseline.json>",
   "task_sha256": "<baseline task_sha256>",
   "run_id": "<baseline run_id>",
-  "nonce": "<baseline nonce>",
-  "contract_sha256": "<sha256 of canonical contract without this field>"
+  "nonce": "<baseline nonce>"
 }
 ```
 
-The contract never authorizes commands by itself. Every mapped command must still be passed through `--verify` or directly declared with `--verify-claim CLAIM:COMMAND`. Structured claim bindings are still self-declared semantic evidence, but the finalizer checks that each command ran, each command ID exists, and each structured `target` appears in the command line.
+This is the editable draft shape; `seal_contract.py` adds `contract_sha256` to the immutable final contract. The hash basis is canonical JSON without that field, and `contract.seal.json` additionally binds the final file bytes.
+
+The contract never authorizes commands by itself. Every mapped command must still be passed through `--verify`. Simple string claims and temporary `--verify-claim` values remain diagnostic declarations and cannot complete strict evidence. Only structured claims originating in the sealed contract qualify for strict claim completeness. A structured target check is still mechanical evidence, not proof that the test is semantically sufficient.
 
 ## 5. Implement once, in scope
 
@@ -153,14 +175,21 @@ For release or other explicitly governed work, add:
 ```text
 --strict \
 --baseline /absolute/path/outside-repo/baseline.json \
---change-contract /absolute/path/to/change-contract.json
+--change-contract /absolute/path/outside-repo/change-contract.json \
+--semantic-coverage reviewed
 ```
 
-The output directory must be outside the repository and must be absent, empty, or already carry Rootloom's ownership marker. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files. Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash; sensitive files remain metadata-only. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
+Strict mode defaults to quality exit semantics: only `VERIFIED_CHANGE` returns zero. Use explicit `--strict-bundle-only` when a non-blocking strict bundle is intentionally required. Evidence and output paths must be outside both the repository worktree and its resolved Git common directory, including for linked worktrees; output must also be absent, empty, or already carry Rootloom's ownership marker. A reused owned output invalidates its previous summary before the new run can exit early. Lexical path and parent checks reject symlink redirection before resolution. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files.
 
-Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. Personal Core reports `isolation: process-group-only`; it is not a sandbox for untrusted commands and cannot govern detached service managers, containers, or privileged background processes. The summary records observed/retained bytes, `process_convergence`, `commands_passed`, `capture_preserved`, `claim_binding`, compatibility `verification_coverage`, `semantic_coverage`, evidence provenance, hash chain, and authoritative `quality_status`. `passed` remains for compatibility but becomes true only for operator-sealed `VERIFIED_CHANGE`; it cannot turn an unrelated passing command into verified engineering evidence. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`.
+Ordinary untracked files receive streaming SHA-256 fingerprints and bounded applyable text patches; their non-sensitive text participates in risk analysis. Binary/large files receive type, size, and hash. Sensitive files remain content-unread and metadata-only, including device/inode or platform equivalents, link count, size, mode, modification time, and change time; symlink targets are represented only by byte length and SHA-256. Any sensitive metadata change before or during verification, including a newly discovered ignored addition relative to the reference capture, quarantines every changed endpoint before ordinary content capture, disables additional repository-memory/command discovery, and places ignored sensitive additions, changes, and deletions into scope. The summary reports `sensitive_integrity: metadata-observed`; this detects ordinary same-size rewrites but is not cryptographic content integrity. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
 
-`--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2 and refuses inconsistent operator-sealed hash chains. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
+Evidence JSON rejects duplicate keys, non-standard constants, and out-of-range numbers. Every verification command is parsed before the first command executes. Evidence files, seals, the Git base, and the output target are revalidated after command execution; trust-input drift forces `FAILED`.
+
+Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. Personal Core reports `isolation: process-group-only`; it is not a sandbox for untrusted commands and cannot govern detached service managers, containers, privileged background processes, non-sensitive ignored files, Git administrative state, or external state. Command argv and output are retained verbatim in the local bundle, so never place credentials in verification commands or print them. A secret copied to an ordinary path without an observable sensitive-source change is outside the path-classifier guarantee. The summary records observed/retained bytes, `process_convergence`, `commands_passed`, `capture_preserved`, structured `claim_binding`, broader `declared_claim_binding`, `semantic_coverage`, evidence provenance, hash chain, and authoritative `quality_status`.
+
+`semantic_coverage: reviewed` is an explicit operator assertion, not machine proof. `unknown` can reach at most `MECHANICALLY_VERIFIED`; `VERIFIED_CHANGE` requires both operator-sealed mechanical evidence and the semantic-review assertion. `passed` remains true only for `VERIFIED_CHANGE`. Pure verification requires `--allow-no-change` and reports `NO_CHANGE` only after more severe gate/process errors have been excluded.
+
+`--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2, refuses inconsistent seals/hash chains or moved HEAD/ref/index, and uses quality exit codes by default. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
 
 ## 7. Challenge and summarize
 
@@ -179,11 +208,12 @@ Finish with:
   "capture_preserved": true,
   "claim_binding": "complete",
   "verification_coverage": "complete",
-  "semantic_coverage": "unknown",
+  "semantic_coverage": "reviewed",
   "evidence_provenance": {
     "baseline": "operator-sealed",
     "change_contract": "operator-sealed",
-    "verification_claims": "self-declared"
+    "verification_claims": "operator-sealed",
+    "semantic_review": "operator-asserted"
   },
   "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []

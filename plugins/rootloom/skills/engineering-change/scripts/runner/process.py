@@ -168,6 +168,19 @@ def _posix_group_active(process: subprocess.Popen[bytes]) -> bool:
     return True
 
 
+def _controlled_tree_active(
+    process: subprocess.Popen[bytes], windows_job: _WindowsJob | None
+) -> bool | None:
+    if os.name != "nt":
+        return _posix_group_active(process)
+    if windows_job is not None and windows_job.supported:
+        return windows_job.active()
+    # Without Job Object support, taskkill remains the termination fallback.
+    # Parent liveness is still knowable; detached descendants remain covered by
+    # the documented process-group-only limitation.
+    return process.poll() is None
+
+
 def _wait_inactive(active, timeout: float) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -184,7 +197,9 @@ def _terminate_tree(
     process: subprocess.Popen[bytes], windows_job: _WindowsJob | None
 ) -> bool:
     if os.name == "nt":
-        if windows_job is None or not windows_job.terminate():
+        if windows_job is not None and windows_job.supported and windows_job.terminate():
+            return _wait_inactive(windows_job.active, KILL_GRACE_SECONDS)
+        else:
             try:
                 subprocess.run(
                     ["taskkill", "/PID", str(process.pid), "/T", "/F"],
@@ -195,7 +210,7 @@ def _terminate_tree(
                 )
             except (OSError, subprocess.TimeoutExpired):
                 return False
-        return _wait_inactive(windows_job.active, KILL_GRACE_SECONDS) if windows_job else False
+        return _wait_inactive(lambda: process.poll() is None, KILL_GRACE_SECONDS)
     try:
         os.killpg(process.pid, signal.SIGTERM)
     except ProcessLookupError:
@@ -285,11 +300,7 @@ def run_command(
                     exit_code = polled
                     parent_exit_observed = parent_exit_observed or now
                     if now - parent_exit_observed >= POST_EXIT_PIPE_GRACE_SECONDS:
-                        active = (
-                            windows_job.active()
-                            if windows_job is not None
-                            else _posix_group_active(process)
-                        )
+                        active = _controlled_tree_active(process, windows_job)
                         if active is not False:
                             leaked_descendant = True
                             converged = _terminate_tree(process, windows_job)
@@ -318,11 +329,7 @@ def run_command(
             except subprocess.TimeoutExpired:
                 converged = False
                 exit_code = 125
-        active = (
-            windows_job.active()
-            if windows_job is not None
-            else _posix_group_active(process)
-        )
+        active = _controlled_tree_active(process, windows_job)
         if active is not False:
             leaked_descendant = True
             converged = _terminate_tree(process, windows_job) and converged

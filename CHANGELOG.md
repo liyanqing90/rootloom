@@ -6,6 +6,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- Quarantine newly discovered ignored sensitive additions before ordinary content capture, including after verification, so values cannot enter review patches through simultaneously changed ordinary files.
+- Reject intake, baseline, seal, evidence, and bundle paths inside either the worktree or resolved Git common directory, preventing linked-worktree output from occupying Git refs or objects.
+
 ## [2.2.1] - 2026-07-14
 
 ### Fixed
