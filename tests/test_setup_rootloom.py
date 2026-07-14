@@ -129,6 +129,115 @@ class SetupRootloomTests(unittest.TestCase):
         self.assertEqual(all_result["status"], "rolled_back_all")
         self.assertFalse((self.codex_home / "AGENTS.md").exists())
 
+    def test_explicit_install_and_upgrade_preserve_selection(self) -> None:
+        installed = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+            operation="install",
+        )
+        self.assertEqual(installed["status"], "installed")
+        upgraded = setup.apply_plan(
+            self.codex_home,
+            replace_conflicts=False,
+            capabilities=setup.PRESETS["guidance"],
+            operation="upgrade",
+        )
+        self.assertEqual(upgraded["status"], "up_to_date")
+        self.assertEqual(upgraded["capabilities"], list(setup.PRESETS["guidance"]))
+        with self.assertRaisesRegex(RuntimeError, "already installed"):
+            setup.apply_plan(
+                self.codex_home,
+                replace_conflicts=False,
+                capabilities=setup.PRESETS["guidance"],
+                operation="install",
+            )
+
+    def test_version_only_upgrade_updates_state_without_backup(self) -> None:
+        setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="install"
+        )
+        state = setup.load_state(self.codex_home)
+        state["version"] = "2.0.0"
+        setup.atomic_write(
+            self.codex_home / setup.STATE_PATH,
+            (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        before_backup = state["backup"]
+        result = setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="upgrade"
+        )
+        self.assertEqual(result["status"], "upgraded")
+        self.assertEqual(result["previous_version"], "2.0.0")
+        current = setup.load_state(self.codex_home)
+        self.assertEqual(current["version"], setup.plugin_version(setup.plugin_root()))
+        self.assertEqual(current["backup"], before_backup)
+
+    def test_upgrade_refuses_post_install_drift_even_with_replace_flag(self) -> None:
+        setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="install"
+        )
+        agents = self.codex_home / "AGENTS.md"
+        edited = agents.read_text(encoding="utf-8") + "\n# personal edit\n"
+        agents.write_text(edited, encoding="utf-8")
+        status = setup.status_payload(self.codex_home)
+        self.assertEqual(status["drifted_paths"], ["AGENTS.md"])
+        with self.assertRaisesRegex(RuntimeError, "changed after installation"):
+            setup.apply_plan(
+                self.codex_home,
+                replace_conflicts=True,
+                operation="upgrade",
+            )
+        self.assertEqual(agents.read_text(encoding="utf-8"), edited)
+
+    def test_upgrade_removes_pristine_retired_target_and_rollback_restores_it(self) -> None:
+        setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="install"
+        )
+        retired = self.codex_home / "rules" / "retired.rules"
+        retired.write_bytes(b"retired managed content\n")
+        state = setup.load_state(self.codex_home)
+        state["files"]["rules/retired.rules"] = setup.sha256_bytes(
+            retired.read_bytes()
+        )
+        setup.atomic_write(
+            self.codex_home / setup.STATE_PATH,
+            (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+        )
+
+        upgraded = setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="upgrade"
+        )
+        self.assertEqual(upgraded["status"], "upgraded")
+        self.assertFalse(retired.exists())
+        self.assertIn(
+            "remove",
+            {
+                item["action"]
+                for item in upgraded["actions"]
+                if item["path"] == "rules/retired.rules"
+            },
+        )
+
+        rolled_back = setup.rollback(self.codex_home)
+        self.assertEqual(rolled_back["status"], "rolled_back_to_previous")
+        self.assertEqual(retired.read_bytes(), b"retired managed content\n")
+
+    def test_upgrade_rejects_unsafe_managed_state_path(self) -> None:
+        setup.apply_plan(
+            self.codex_home, replace_conflicts=False, operation="install"
+        )
+        state = setup.load_state(self.codex_home)
+        state["files"]["../outside"] = setup.sha256_bytes(b"outside")
+        setup.atomic_write(
+            self.codex_home / setup.STATE_PATH,
+            (json.dumps(state, indent=2, sort_keys=True) + "\n").encode(),
+        )
+        with self.assertRaisesRegex(ValueError, "normalized"):
+            setup.apply_plan(
+                self.codex_home, replace_conflicts=False, operation="upgrade"
+            )
+
     def test_skills_only_disables_hook_without_global_assets(self) -> None:
         result = setup.apply_plan(
             self.codex_home,

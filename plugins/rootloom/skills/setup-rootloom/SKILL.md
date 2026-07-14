@@ -22,13 +22,19 @@ python3 <skill-dir>/scripts/setup_rootloom.py list-components
 
 Exact capabilities are `global-policy`, `project-context`, and `command-safety`.
 
-## Inspect, then apply
+## Optional global layer
+
+`codex plugin add rootloom@rootloom` completes the plugin installation. It exposes Rootloom Skills without writing global guidance, command Rules, setup state, or review gates. Stop there for the lowest-cost experience.
+
+Only when the user explicitly wants cross-project guidance, the project-guidance Hook, or command Rules, inspect and install an optional preset:
 
 ```bash
 python3 <skill-dir>/scripts/setup_rootloom.py plan --preset personal
-python3 <skill-dir>/scripts/setup_rootloom.py apply --preset personal
+python3 <skill-dir>/scripts/setup_rootloom.py install --preset personal
 python3 <skill-dir>/scripts/setup_rootloom.py status
 ```
+
+`apply` remains a compatibility/expert command. Prefer `install` for the first setup and `upgrade` after the Codex plugin snapshot has been refreshed.
 
 The personal preset manages only:
 
@@ -50,6 +56,23 @@ When `command-safety` is selected, run `codex execpolicy check` for at least:
 - `git reset --hard` → forbidden.
 
 Start a new Codex task after setup or plugin update so assets and Hooks are rediscovered.
+
+## Upgrade
+
+Refresh and reinstall the plugin with Codex, then start a new task. That completes the normal plugin upgrade and does not run analyzers, contracts, finalizers, or setup validation:
+
+```bash
+codex plugin marketplace upgrade rootloom
+codex plugin add rootloom@rootloom
+```
+
+If the user previously installed the optional global layer and wants its copied assets refreshed, run one explicit command:
+
+```bash
+python3 <skill-dir>/scripts/setup_rootloom.py upgrade
+```
+
+Upgrade preserves the installed capability selection. It reports `up_to_date` for the same version, records a version-only upgrade without a redundant asset backup, and backs up changed managed assets before replacement. A pristine target retired by the new catalog is backed up and removed, so rollback restores it; a drifted retired target is refused. All installed target paths are revalidated before access. If any managed target drifted after setup, both `status` and `upgrade` expose/refuse it; restore the installed content or roll back instead of overwriting the edit. `--replace-conflicts` applies only to newly introduced user-owned targets after exact authorization, not post-install drift.
 
 ## Roll back or change preset
 

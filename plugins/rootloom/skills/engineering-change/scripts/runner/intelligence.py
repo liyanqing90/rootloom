@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 from datetime import date
-import hashlib
 import io
-import json
+import os
 from pathlib import Path, PurePosixPath
 import re
+import sys
 from typing import Any
 
 
+PLUGIN_LIB = Path(__file__).resolve().parents[4] / "lib"
+sys.path.insert(0, str(PLUGIN_LIB))
+import rootloom_memory as memory_contract
+from rootloom_paths import normalize_repo_path, path_words
+
+
 ASSESSMENT_FORMAT = "rootloom-change-assessment-v1"
-MEMORY_FORMAT = "rootloom-project-memory-v1"
 RISK_ORDER = {"low": 0, "medium": 1, "high": 2}
 TIER_FOR_RISK = {"low": 0, "medium": 1, "high": 2}
 MAX_PATCH_BYTES = 1024 * 1024
@@ -22,25 +27,27 @@ MAX_TASK_CHARS = 32 * 1024
 MAX_CHANGED_PATHS = 1000
 MAX_SIGNAL_PATHS = 20
 WORD = re.compile(r"[\w.-]+", re.UNICODE)
-DOC_SUFFIXES = {".md", ".mdx", ".rst", ".txt", ".png", ".svg", ".webp"}
-MEMORY_FILES = {
-    "failures": "failures.json",
-    "risks": "known-risks.json",
-    "decisions": "decisions.json",
-}
-MEMORY_IDENTITY_FIELDS = {
-    "failures": ("summary", "root_cause", "fix", "paths", "evidence", "expires"),
-    "risks": ("summary", "mitigation", "paths", "evidence", "expires"),
-    "decisions": ("summary", "record", "paths", "evidence", "expires"),
+DOC_SUFFIXES = {".md", ".mdx", ".rst", ".png", ".svg", ".webp"}
+DEPENDENCY_EXACT_NAMES = {
+    "cargo.lock",
+    "cargo.toml",
+    "gemfile",
+    "gemfile.lock",
+    "go.mod",
+    "go.sum",
+    "gradle.lockfile",
+    "package-lock.json",
+    "package.json",
+    "pnpm-lock.yaml",
+    "poetry.lock",
+    "pyproject.toml",
+    "uv.lock",
+    "yarn.lock",
 }
 
 
 def normalized_path(raw: str) -> str:
-    value = raw.strip().replace("\\", "/")
-    parsed = PurePosixPath(value)
-    if not value or parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
-        raise ValueError(f"analysis paths must be normalized repository-relative paths: {raw!r}")
-    return parsed.as_posix()
+    return normalize_repo_path(raw, label="analysis path")
 
 
 def tokens(value: str) -> set[str]:
@@ -59,7 +66,22 @@ def is_documentation_or_test(path: str) -> bool:
         return True
     if name.startswith(("readme", "changelog", "contributing", "license", "code_of_conduct")):
         return True
+    if is_dependency_path(path):
+        return False
     return parsed.suffix.lower() in DOC_SUFFIXES
+
+
+def is_dependency_path(path: str) -> bool:
+    name = PurePosixPath(path).name.lower()
+    if name in DEPENDENCY_EXACT_NAMES:
+        return True
+    return bool(
+        re.fullmatch(r"requirements(?:[._-][^/]*)?\.txt", name)
+        or re.fullmatch(r"constraints(?:[._-][^/]*)?\.txt", name)
+        or name.endswith("-lock.json")
+        or name.endswith("-lock.yaml")
+        or name.endswith("-lock.yml")
+    )
 
 
 def is_product_path(path: str) -> bool:
@@ -69,9 +91,7 @@ def is_product_path(path: str) -> bool:
 
 
 def path_has(path: str, values: set[str]) -> bool:
-    parts = set(path_parts(path))
-    stem = PurePosixPath(path).stem.lower()
-    return bool(parts & values) or stem in values
+    return bool(path_words(path) & values)
 
 
 def add_signal(
@@ -119,107 +139,46 @@ def semantic_match(text: str, english: set[str], localized: tuple[str, ...]) -> 
     return bool(tokens(lowered) & english) or any(value in text for value in localized)
 
 
-def fallback_memory_id(kind: str, entry: dict[str, Any]) -> str:
-    identity = {
-        field: entry.get(field, [] if field in {"paths", "evidence"} else "")
-        for field in MEMORY_IDENTITY_FIELDS[kind]
-    }
-    digest = hashlib.sha256(
-        json.dumps(
-            identity,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()[:16]
-    return f"{kind[:-1]}-{digest}"
-
-
 def related_path_score(candidate: str, requested: str) -> int:
-    try:
-        candidate = normalized_path(candidate)
-    except ValueError:
-        return 0
-    if candidate == requested:
-        return 100
-    left = PurePosixPath(candidate)
-    right = PurePosixPath(requested)
-    if left in right.parents or right in left.parents:
-        return 60
-    if left.name == right.name:
-        return 30
-    return 0
+    return memory_contract.path_score(candidate, requested)
 
 
 def load_memory_matches(
     repo: Path, *, paths: list[str], task: str
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[str]]:
     root = repo / ".project-memory"
-    query = tokens(task)
+    query = memory_contract.words(task)
     active: list[dict[str, Any]] = []
     stale: list[dict[str, Any]] = []
     warnings: list[str] = []
     today = date.today()
     if root.is_symlink():
         return [], [], ["ignored symlinked .project-memory directory"]
-    for kind, filename in MEMORY_FILES.items():
+    for kind, filename in memory_contract.MEMORY_FILES.items():
         path = root / filename
         if path.is_symlink():
             warnings.append(f"ignored symlinked memory file: {filename}")
             continue
         if not path.exists():
             continue
-        if path.stat().st_size > MAX_MEMORY_BYTES:
-            warnings.append(f"ignored oversized memory file: {filename}")
-            continue
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
-            warnings.append(f"ignored unreadable memory file: {filename}")
+            payload = memory_contract.load_collection(root, kind)
+        except (OSError, ValueError) as exc:
+            warnings.append(f"ignored invalid memory file {filename}: {exc}")
             continue
-        if (
-            not isinstance(payload, dict)
-            or payload.get("format") != MEMORY_FORMAT
-            or payload.get("kind") != kind
-            or not isinstance(payload.get("entries"), list)
-        ):
-            warnings.append(f"ignored unsupported memory file: {filename}")
-            continue
-        for entry in payload["entries"][:1000]:
-            if not isinstance(entry, dict) or not isinstance(entry.get("summary"), str):
-                continue
+        for entry in payload["entries"]:
             entry_paths = entry.get("paths", [])
-            if not isinstance(entry_paths, list) or any(not isinstance(item, str) for item in entry_paths):
-                continue
-            score = 0
-            for candidate in entry_paths:
-                for requested in paths:
-                    score = max(score, related_path_score(candidate, requested))
-            searchable = " ".join(
-                str(entry.get(field, ""))
-                for field in ("summary", "root_cause", "fix", "mitigation", "record", "evidence")
-            )
-            score += 5 * len(query & tokens(searchable))
+            score = memory_contract.relevance(kind, entry, paths, query)
             if score <= 0:
                 continue
             item = {
-                "id": entry.get("id") or fallback_memory_id(kind, entry),
+                "id": entry.get("id") or memory_contract.entry_identity(kind, entry),
                 "kind": kind,
                 "summary": entry["summary"],
                 "paths": entry_paths,
                 "score": score,
             }
-            status = entry.get("status", "active")
-            reason: str | None = None
-            if status != "active":
-                reason = str(status)
-            expires = entry.get("expires")
-            if not reason and isinstance(expires, str):
-                try:
-                    if date.fromisoformat(expires) < today:
-                        reason = f"expired:{expires}"
-                except ValueError:
-                    reason = "invalid-expiry"
+            reason = memory_contract.stale_reason(entry, today)
             if reason:
                 item["reason"] = reason
                 stale.append(item)
@@ -435,6 +394,16 @@ def analyze_change(
             paths=paths,
         )
 
+    dependency_paths = [path for path in paths if is_dependency_path(path)]
+    if dependency_paths:
+        add_signal(
+            signals,
+            "dependency-supply-chain",
+            risk="high",
+            reason="A dependency manifest or lockfile changes executable supply-chain inputs.",
+            paths=dependency_paths,
+        )
+
     auth_paths = [
         path
         for path in signal_paths
@@ -540,6 +509,18 @@ def analyze_change(
 
     patch_text, patch_text_truncated = changed_patch_text(tracked_patch, product_paths)
     semantic_text = f"{task}\n{patch_text}" if product_paths or not paths else ""
+    if product_paths and semantic_match(
+        task,
+        {"bug", "defect", "fix", "regression", "repair"},
+        ("修复", "缺陷", "回归", "故障"),
+    ):
+        add_signal(
+            signals,
+            "defect-repair",
+            risk="medium",
+            reason="The task describes a behavioral defect repair requiring root-cause alignment.",
+            paths=product_paths,
+        )
     if not paths and semantic_match(
         semantic_text,
         {"add", "build", "change", "fix", "implement", "refactor", "remove"},

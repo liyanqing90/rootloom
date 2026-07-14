@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -19,6 +20,8 @@ SCRIPT = (
     / "scripts"
     / "project_memory.py"
 )
+sys.path.insert(0, str(REPO_ROOT / "plugins" / "rootloom" / "lib"))
+import rootloom_memory
 
 
 class ProjectMemoryTests(unittest.TestCase):
@@ -145,6 +148,65 @@ class ProjectMemoryTests(unittest.TestCase):
                 (repo / ".project-memory" / "known-risks.json").read_text(encoding="utf-8")
             )
             self.assertEqual(len(payload["entries"]), 1)
+
+    def test_concurrent_writers_reload_under_lock_without_lost_updates(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-memory-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            initialized = self.run_memory(repo, "init")
+            self.assertEqual(initialized.returncode, 0, initialized.stderr)
+            processes = [
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--repo",
+                        str(repo),
+                        "record-risk",
+                        "--summary",
+                        f"risk {index}",
+                        "--mitigation",
+                        "serialize writer",
+                        "--path",
+                        f"src/module_{index}.py",
+                    ],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+                for index in range(12)
+            ]
+            results = [process.communicate(timeout=10) for process in processes]
+            self.assertEqual(
+                [process.returncode for process in processes],
+                [0] * len(processes),
+                results,
+            )
+            payload = json.loads(
+                (repo / ".project-memory" / "known-risks.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(len(payload["entries"]), len(processes))
+
+    def test_bounded_reader_detects_stat_to_read_size_drift(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-memory-", dir=Path.home()) as temporary:
+            path = Path(temporary) / "memory.json"
+            path.write_bytes(b"x" * (70 * 1024))
+            original_read = rootloom_memory.os.read
+            mutated = False
+
+            def racing_read(descriptor: int, size: int) -> bytes:
+                nonlocal mutated
+                chunk = original_read(descriptor, size)
+                if chunk and not mutated:
+                    mutated = True
+                    with path.open("ab") as handle:
+                        handle.write(b"drift")
+                return chunk
+
+            with mock.patch.object(rootloom_memory.os, "read", side_effect=racing_read):
+                with self.assertRaisesRegex(ValueError, "changed during read"):
+                    rootloom_memory.bounded_read(path, 128 * 1024)
 
     def test_stale_memory_is_warned_and_excluded_by_default(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-memory-", dir=Path.home()) as temporary:

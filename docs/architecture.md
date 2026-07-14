@@ -61,7 +61,7 @@ The result is advisory. Semantic judgment remains in Skills and the model and ma
 
 ## Engineering workflow
 
-`engineering-change` is an instruction workflow, not an autonomous multi-agent state machine. The active Codex agent owns evidence, diagnosis, scope, implementation, verification, and final acceptance.
+`engineering-change` is an opt-in instruction workflow, not an autonomous multi-agent state machine or an installation-time gate. The active Codex agent owns evidence, diagnosis, scope, implementation, verification, and final acceptance. Routine Tier 0/1 work uses repository evidence and proportional tests directly; installing Rootloom never starts the analyzer or finalizer.
 
 For defects, `ROOT_CAUSE_ALIGNMENT: PASS` requires the observed trigger, owning boundary, violated invariant, evidence-backed cause, and rejection of the strongest plausible alternative. For features and mechanical work, alignment is `NOT_APPLICABLE` and the intended invariant is explicit.
 
@@ -78,12 +78,18 @@ run/
 └── summary.json
 ```
 
-It captures tracked Git changes and lists untracked paths without reading their contents. Repositories without a first commit use Git's empty tree as the tracked baseline. Output must be outside the captured repository. The patch has a configurable 16 MiB default refusal ceiling; command count, command/risk text, and aggregate verification log are bounded. The helper computes risk automatically, keeps an optional higher human declaration, and adds `risk_assessment` plus `verification_plan` to the existing v1 summary fields. Verification commands must preserve the tracked patch and captured changed/untracked path set; otherwise the bundle is marked failed and dangerous deletions are checked again. Sensitive deletions require exact confirmation. This is a review bundle, not an immutable audit record.
+When strict Tier 1/2 evidence is explicitly requested, the analyzer writes `rootloom-change-baseline-v1` outside the repository before implementation. It binds bounded Git/untracked state and metadata-only ignored/secret-like state so the finalizer can detect an intake-sensitive deletion that Git status cannot see. Ordinary untracked regular files receive streaming hashes and bounded text patches; binary/large files receive type, size, and hash. Sensitive files, directories, and symlinks are never content-read.
+
+`rootloom-change-contract-v1` binds actual paths to allowed/forbidden globs, requires root-cause alignment for defect work, and maps primary/invariant/adjacent plus risk-specific claims to explicitly executed commands. Commands declared only in the contract are not execution authority. The v1 summary retains `risk_assessment` and separates command exit success, capture preservation, verification coverage, and `quality_status`; the compatibility `passed` field is true only for `VERIFIED_CHANGE`. Advisory mode may omit baseline/contract and exits successfully after stable passing commands while reporting `UNVERIFIED`; explicit `--strict` turns incomplete Tier 1/2 evidence into a blocking nonzero result.
+
+Status and Git diff are streamed through byte/path ceilings before retention. Verification output is consumed incrementally and timeout, output overflow, or leaked descendants terminates the controlled POSIX process group or Windows Job Object. Output must be outside the repository and absent, empty, or Rootloom-owned. The complete patch has a configurable 16 MiB default refusal ceiling. Sensitive deletions require exact confirmation. This remains a mutable review bundle, not an immutable audit record.
 
 Runner helpers are deliberately small:
 
 - `process.py` — bounded subprocess execution;
-- `state.py` — changed paths and tracked patch;
+- `state.py` — bounded Git state, untracked fingerprints, and patches;
+- `baseline.py` — pre-change sensitive/state producer-consumer contract;
+- `change_contract.py` — path scope and verification-claim enforcement;
 - `verification.py` — command parsing and ordered checks;
 - `intelligence.py` — advisory risk, memory matching, and verification planning;
 - `contracts.py` — summary/result formats;
@@ -93,13 +99,13 @@ Runner helpers are deliberately small:
 
 The project-guidance scanner writes reproducible facts to managed `AGENTS.md` blocks. `.project-memory/` stores optional reviewable architecture, risks, decision indexes, and failure lessons. `project_memory.py context` selects relevant entries lexically by task/path, bounds output, and separates expired/resolved/superseded matches from active context. New records have deterministic identity, evidence references, lifecycle state, and optional expiry; exact duplicates are suppressed. Memory is explicitly created/updated and never outranks current executable evidence.
 
-The persisted envelope remains `rootloom-project-memory-v1`. Legacy entries without identity or lifecycle metadata remain readable and context never rewrites them. Collections, architecture context, paths, and symlink boundaries are validated to keep this a small repository-owned file system rather than a database or indexing service.
+The persisted envelope remains `rootloom-project-memory-v1`. Legacy entries without identity or lifecycle metadata remain readable and context never rewrites them. The CLI and analyzer share one strict no-follow descriptor reader, schema, entry limit, legacy identity, relevance, status, and expiry contract; malformed or over-limit files are never silently truncated by one consumer. Explicit writers reload, deduplicate, and atomically replace while holding `.project-memory/memory.lock`.
 
 Accepted durable architecture and contract decisions still belong in repository decision records. The memory decision file is only a compact index.
 
 ## Setup and Hook boundary
 
-Personal setup manages global guidance, command Rules, the Hook policy, state, and backups. It is plan-first, conflict-refusing, serialized by a create-exclusive local lock, and atomic per target. Rollback preflights current hashes and backup hashes before writing and refuses post-setup edits.
+Plugin installation is complete after Codex adds the plugin: Skills become available, while global guidance, command Rules, Hook policy, and setup state remain absent. Optional Personal setup manages those copied global assets only after an explicit user request. Its `install` handles first setup; `upgrade` preserves the installed capability selection, records version-only changes without redundant asset backups, backs up changed assets, and safely retires pristine targets that disappear from the catalog. Both status and upgrade validate installed paths, compare targets with installed hashes, and refuse post-install drift. Compatibility `apply` remains available. Setup is plan-first, conflict-refusing, serialized by a create-exclusive local lock, and atomic per target.
 
 This design does not provide cross-file crash atomicity, hostile same-user protection, or recovery-journal replay. A partial interrupted apply is visible through `status`; backup contents remain inspectable.
 

@@ -1,6 +1,6 @@
 {
   "name": "rootloom",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "A personal engineering quality layer for Codex: risk-aware, root-cause-driven, and verifiable.",
   "author": {
     "name": "liyanqing",
@@ -27,7 +27,7 @@
   "interface": {
     "displayName": "Rootloom",
     "shortDescription": "Reliable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom helps an individual developer make Codex choose the right level of care with explainable static signals, diagnose the owning cause, keep changes scoped, plan behavior-specific verification, and retrieve relevant project lessons. Personal Core is single-agent by default and keeps enterprise approval and audit machinery outside the main product.",
+    "longDescription": "Rootloom gives individual developers low-friction Codex engineering with optional explainable risk analysis, owning-cause diagnosis, bounded review artifacts, behavior-specific verification, and relevant project lessons. Installation stays lightweight; deep review is explicit, single-agent, and separate from enterprise approval or audit machinery.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [
@@ -44,7 +44,7 @@
     "defaultPrompt": [
       "Classify and execute a task with the right Rootloom workflow tier.",
       "Seed and refine AGENTS.md guidance for this repository.",
-      "Analyze and run a personal engineering change with a compact verified summary."
+      "Run an opt-in deep engineering review with a compact evidence summary."
     ]
   }
 }

@@ -6,6 +6,38 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-07-14
+
+### Added
+
+- Add opt-in `rootloom-change-baseline-v1` pre-change snapshots for strict Tier 1/2 review, including bounded ordinary-untracked fingerprints/text patches and metadata-only ignored, secret-like, user-sensitive, directory, and symlink state.
+- Add `rootloom-change-contract-v1` allowed/forbidden path enforcement, root-cause alignment, verification command/claim mapping, explicit `verification_coverage`, and `quality_status`.
+- Add explicit setup `install` and `upgrade` operations while retaining compatibility `apply`.
+
+### Changed
+
+- Stream Git status/diff and verification output through execution-time budgets; terminate controlled process trees on timeout, output overflow, or leaked descendants and record observed/retained bytes plus convergence.
+- Share strict Engineering Memory schema, bounds, legacy identity, relevance, lifecycle, and no-follow descriptor reads between the CLI and analyzer. Serialize explicit writers through `.project-memory/memory.lock`.
+- Treat dependency manifests/lockfiles as supply-chain inputs and split `_`, `-`, and `.` path stems for risk signals.
+- Require external output directories to be absent, empty, or Rootloom-owned; distinguish `VERIFIED_CHANGE`, `NO_CHANGE`, `FAILED`, and `UNVERIFIED`; serialize non-UTF-8 paths safely.
+- Make setup upgrades preserve the installed preset, record version-only updates without redundant backups, refuse post-install drift, and backup/remove pristine targets retired by a new catalog so rollback can restore them.
+- Make plugin install/upgrade complete without global setup or automatic analyzer/baseline/contract/finalizer runs. The optional global policy explicitly keeps deep review out of routine Tier 0/1 work.
+
+### Fixed
+
+- Detect same-path untracked rewrites during verification and include bounded ordinary text additions in the review patch; hash binary/large files without treating them as text.
+- Protect ignored `.env` and broader secret-like paths with metadata-only intake baselines, shared path rules, and exact dangerous-deletion confirmation without reading sensitive content.
+- Separate command success, capture preservation, verification coverage, and quality status so an unrelated passing command cannot set compatibility `passed: true`.
+- Enforce allowed/forbidden paths and root-cause alignment when a machine change contract is supplied; explicit `--strict` makes incomplete Tier 1/2 evidence blocking.
+- Classify dependency manifests and lockfiles as supply-chain inputs and split `_`, `-`, and `.` path stems for domain signals.
+- Stream Git and verification output through execution-time limits, terminate leaked/timeout/overflow process trees, and record observed versus retained bytes.
+- Serialize Engineering Memory writers, share one strict schema/reader/relevance contract, and close no-follow descriptor races.
+- Refuse unsafe review output reuse, distinguish `NO_CHANGE`, and serialize non-UTF-8 Git paths safely.
+
+### Compatibility
+
+- Keep the existing summary format name, artifact filenames, `--verify`, `--risk`, and compatibility `passed` field. Default advisory mode remains non-blocking when commands pass and capture is stable, but incomplete evidence stays `UNVERIFIED` with `passed: false`. Strict Tier 1/2 callers add `--strict`, a pre-change baseline, machine change contract, and verification claims. Pure verification requires `--allow-no-change`.
+
 ## [2.1.0] - 2026-07-14
 
 ### Added

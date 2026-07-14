@@ -8,6 +8,7 @@ from dataclasses import dataclass
 SUMMARY_FORMAT = "rootloom-engineering-summary-v1"
 RISK_LEVELS = ("low", "medium", "high")
 DANGEROUS_DELETE_EXIT = 10
+QUALITY_STATUSES = ("VERIFIED_CHANGE", "NO_CHANGE", "FAILED", "UNVERIFIED")
 
 
 @dataclass(frozen=True)
@@ -16,3 +17,8 @@ class VerificationResult:
     exit_code: int
     duration_seconds: float
     passed: bool
+    timed_out: bool = False
+    output_bytes_observed: int = 0
+    output_bytes_retained: int = 0
+    output_limit_exceeded: bool = False
+    process_tree_converged: bool = True

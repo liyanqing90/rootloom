@@ -1,17 +1,19 @@
 ---
 name: engineering-change
-description: Execute a personal, single-agent engineering change from risk classification through evidence, root-cause diagnosis, a scoped change contract, implementation, intelligent verification, and a final review summary. Use for non-trivial repository changes when the user wants Rootloom's everyday quality loop without enterprise approval or audit machinery.
+description: Run an opt-in deep, single-agent engineering review with risk analysis, bounded capture, verification claims, and a machine summary. Use when the user explicitly requests this Skill, a machine review bundle, or strict evidence for a high-risk/release change. Do not invoke automatically for routine repository work merely because Rootloom is installed.
 ---
 
 # Engineering change
 
 Run one focused engineering loop. Stay single-agent unless the user explicitly asks for delegation.
 
+This Skill is opt-in. Plugin installation and ordinary Tier 0/1 implementation do not trigger it, and they do not require its analyzer, baseline, contract, or finalizer. Use repository evidence and proportional tests directly unless the user, repository guidance, or a high-risk/release workflow calls for the deeper bundle.
+
 Default sequence: Evidence → Diagnosis → Change Contract → Implementation → Verification → Final Review Summary.
 
 ## 1. Route the task
 
-Run the deterministic advisory scanner before editing. Include anticipated paths when known; task-only analysis is valid before ownership is located:
+For an advisory assessment, run the deterministic scanner without creating a baseline:
 
 ```bash
 python3 <skill-dir>/scripts/analyze_change.py \
@@ -19,6 +21,18 @@ python3 <skill-dir>/scripts/analyze_change.py \
   --task 'Describe the requested behavior' \
   --path src/anticipated-owner.py
 ```
+
+For strict governed evidence, run it before editing and add the external baseline:
+
+```bash
+python3 <skill-dir>/scripts/analyze_change.py \
+  --repo /absolute/path/to/repository \
+  --task 'Describe the requested behavior' \
+  --path src/anticipated-owner.py \
+  --write-baseline /absolute/path/outside-repo/baseline.json
+```
+
+The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. It captures bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Use repeatable `--sensitive-path` for additional metadata-only paths. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
 
 Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
 
@@ -48,13 +62,36 @@ For a feature or mechanical change, use `ROOT_CAUSE_ALIGNMENT: NOT_APPLICABLE` a
 
 ## 4. Form the change contract
 
-Keep an internal contract for ordinary work and expose it for Tier 2 or when asked. It must name:
+Tier 0 may keep an internal contract. Advisory finalization may omit a machine contract. Strict Tier 1/2 finalization must provide `rootloom-change-contract-v1` and name:
 
 - allowed files or module boundary;
 - forbidden or explicitly excluded scope;
 - public/persisted compatibility expectations;
 - required verification for the original path, owning invariant, and an adjacent path;
 - rollback and remaining risk.
+
+Minimal machine contract:
+
+```json
+{
+  "format": "rootloom-change-contract-v1",
+  "allowed_paths": ["src/auth/**", "tests/auth/**"],
+  "forbidden_paths": ["src/billing/**"],
+  "root_cause_alignment": "PASS",
+  "verification_commands": {
+    "verify-primary": "python3 -m unittest tests.test_auth.AuthTests.test_login",
+    "verify-invariant": "python3 -m unittest tests.test_auth.TokenTests",
+    "verify-adjacent": "python3 -m unittest tests.test_auth.AuthTests.test_expired"
+  },
+  "verification_claims": {
+    "primary": ["verify-primary"],
+    "invariant": ["verify-invariant"],
+    "adjacent": ["verify-adjacent"]
+  }
+}
+```
+
+The contract never authorizes commands by itself. Every mapped command must still be passed through `--verify` or directly declared with `--verify-claim CLAIM:COMMAND`.
 
 ## 5. Implement once, in scope
 
@@ -75,7 +112,7 @@ Run repository-owned commands and observe their exit status. Classify failures a
 
 Use the analyzer's `verification_plan.required_behaviors` as a checklist, not evidence. Its `suggested_commands` are repository-derived suggestions and are never executed automatically. Record only commands actually run under `tests`.
 
-For a machine-readable local summary, run:
+For a non-blocking machine-readable local summary, run:
 
 ```bash
 python3 <skill-dir>/scripts/finalize_change.py \
@@ -86,7 +123,21 @@ python3 <skill-dir>/scripts/finalize_change.py \
   --remaining-risk 'Describe only a material remaining risk'
 ```
 
-The output directory must be outside the repository being captured so the helper cannot create uncaptured worktree changes. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files. `--risk low|medium|high` remains optional for explicit judgment; it can raise but never lower the detected risk floor. The tracked patch defaults to a 16 MiB refusal ceiling; up to 20 verification commands share one bounded log budget. Verification commands must preserve the tracked patch and captured changed/untracked path set; drift makes the bundle fail, and dangerous deletions are checked again. It refuses sensitive deletions unless every exact path is repeated with `--confirm-dangerous-delete` after the user has confirmed it.
+Advisory mode exits successfully when the explicit commands pass and capture remains stable, even if no baseline/contract proves complete coverage. It reports `quality_status: UNVERIFIED` and keeps compatibility `passed: false`; exit zero means the bundle operation succeeded, not that engineering sufficiency was proven.
+
+For release or other explicitly governed work, add:
+
+```text
+--strict \
+--baseline /absolute/path/outside-repo/baseline.json \
+--change-contract /absolute/path/to/change-contract.json
+```
+
+The output directory must be outside the repository and must be absent, empty, or already carry Rootloom's ownership marker. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files. Ordinary untracked files receive streaming SHA-256 fingerprints and bounded text patches; binary/large files receive type, size, and hash; sensitive files remain metadata-only. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
+
+Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. The summary records observed/retained bytes, process convergence, `commands_passed`, `capture_preserved`, `verification_coverage`, and authoritative `quality_status`. `passed` remains for compatibility but becomes true only for `VERIFIED_CHANGE`; it cannot turn an unrelated passing command into verified engineering evidence. Pure verification requires `--allow-no-change` and reports `NO_CHANGE`.
+
+`--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2 and returns nonzero when governed evidence is incomplete. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
 
 ## 7. Challenge and summarize
 
@@ -101,7 +152,10 @@ Finish with:
   "risk_assessment": {"minimum_tier": 0, "signals": []},
   "tests": [],
   "verification_plan": {"status": "suggested-not-executed"},
-  "verification_preserved_capture": true,
+  "commands_passed": true,
+  "capture_preserved": true,
+  "verification_coverage": "complete",
+  "quality_status": "VERIFIED_CHANGE",
   "remaining_risks": []
 }
 ```

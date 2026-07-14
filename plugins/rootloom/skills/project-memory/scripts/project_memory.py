@@ -4,40 +4,34 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from datetime import date
-import hashlib
 import json
 import os
-from pathlib import Path, PurePosixPath
-import re
+from pathlib import Path
+import sys
 import tempfile
+import time
 from typing import Any
 
 
+PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
+sys.path.insert(0, str(PLUGIN_LIB))
+import rootloom_memory as memory_contract
+from rootloom_lock import LockBusyError, LockFileError, simple_lock
+from rootloom_paths import normalize_repo_path
+
+
 MEMORY_DIR = ".project-memory"
-FILES = {
-    "failures": "failures.json",
-    "risks": "known-risks.json",
-    "decisions": "decisions.json",
-}
-FORMAT = "rootloom-project-memory-v1"
+FILES = memory_contract.MEMORY_FILES
+FORMAT = memory_contract.MEMORY_FORMAT
 CONTEXT_FORMAT = "rootloom-project-context-v1"
-STATUSES = ("active", "resolved", "superseded")
-MAX_COLLECTION_BYTES = 1024 * 1024
-MAX_ARCHITECTURE_BYTES = 64 * 1024
-MAX_ENTRIES = 1000
+STATUSES = memory_contract.MEMORY_STATUSES
+MAX_COLLECTION_BYTES = memory_contract.MAX_COLLECTION_BYTES
+MAX_ARCHITECTURE_BYTES = memory_contract.MAX_ARCHITECTURE_BYTES
+MAX_ENTRIES = memory_contract.MAX_ENTRIES
 DEFAULT_CONTEXT_LIMIT = 20
-TOKEN = re.compile(r"[\w.-]+", re.UNICODE)
-IDENTITY_FIELDS = {
-    "failures": ("summary", "root_cause", "fix", "paths", "evidence", "expires"),
-    "risks": ("summary", "mitigation", "paths", "evidence", "expires"),
-    "decisions": ("summary", "record", "paths", "evidence", "expires"),
-}
-REQUIRED_FIELDS = {
-    "failures": ("summary", "root_cause", "fix"),
-    "risks": ("summary", "mitigation"),
-    "decisions": ("summary", "record"),
-}
+MEMORY_LOCK_TIMEOUT_SECONDS = 5.0
 
 
 def atomic_write(path: Path, value: bytes) -> None:
@@ -67,40 +61,19 @@ def memory_root(repo: Path) -> Path:
 
 
 def bounded_text(path: Path, limit: int) -> tuple[str, bool]:
-    if path.is_symlink():
-        raise ValueError(f"project-memory files must not be symlinks: {path}")
-    try:
-        size = path.stat().st_size
-    except FileNotFoundError:
-        return "", False
-    if size > limit:
-        with path.open("rb") as handle:
-            raw = handle.read(limit)
-        return raw.decode("utf-8", errors="replace"), True
-    return path.read_text(encoding="utf-8"), False
+    return memory_contract.bounded_text(path, limit, allow_truncate=True)
 
 
 def default_collection(kind: str) -> dict[str, Any]:
-    return {"format": FORMAT, "kind": kind, "entries": []}
+    return memory_contract.default_collection(kind)
 
 
 def parse_iso_date(value: Any, *, field: str, path: Path | None = None) -> date:
-    if not isinstance(value, str):
-        raise ValueError(f"project-memory {field} must be an ISO date{f': {path}' if path else ''}")
-    try:
-        return date.fromisoformat(value)
-    except ValueError as exc:
-        raise ValueError(
-            f"project-memory {field} must be an ISO date{f': {path}' if path else ''}"
-        ) from exc
+    return memory_contract.parse_iso_date(value, field=field, path=path)
 
 
 def normalize_path(raw: str) -> str:
-    value = raw.strip().replace("\\", "/")
-    parsed = PurePosixPath(value)
-    if not value or parsed.is_absolute() or any(part in {"", ".", ".."} for part in parsed.parts):
-        raise ValueError(f"memory paths must be normalized repository-relative paths: {raw!r}")
-    return parsed.as_posix()
+    return normalize_repo_path(raw, label="memory path")
 
 
 def clean_text(value: str, *, field: str) -> str:
@@ -115,49 +88,11 @@ def normalized_strings(values: list[str], *, field: str) -> list[str]:
 
 
 def validate_entry(kind: str, entry: Any, *, path: Path) -> dict[str, Any]:
-    if not isinstance(entry, dict):
-        raise ValueError(f"project-memory entries must be objects: {path}")
-    for field in REQUIRED_FIELDS[kind]:
-        if not isinstance(entry.get(field), str) or not entry[field].strip():
-            raise ValueError(f"project-memory {kind}.{field} must be a nonempty string: {path}")
-    if "date" in entry:
-        parse_iso_date(entry["date"], field="date", path=path)
-    if "expires" in entry:
-        parse_iso_date(entry["expires"], field="expires", path=path)
-    if entry.get("status", "active") not in STATUSES:
-        raise ValueError(f"project-memory status must be one of {', '.join(STATUSES)}: {path}")
-    for field in ("paths", "evidence"):
-        values = entry.get(field, [])
-        if not isinstance(values, list) or any(not isinstance(value, str) for value in values):
-            raise ValueError(f"project-memory {field} must be a string list: {path}")
-        if field == "paths" and "id" in entry:
-            for value in values:
-                normalize_path(value)
-    if "id" in entry and (not isinstance(entry["id"], str) or not entry["id"].strip()):
-        raise ValueError(f"project-memory id must be a nonempty string: {path}")
-    return entry
+    return memory_contract.validate_entry(kind, entry, path=path)
 
 
 def load_collection(root: Path, kind: str) -> dict[str, Any]:
-    path = root / FILES[kind]
-    if path.is_symlink():
-        raise ValueError(f"project-memory files must not be symlinks: {path}")
-    if not path.exists():
-        return default_collection(kind)
-    raw, truncated = bounded_text(path, MAX_COLLECTION_BYTES)
-    if truncated:
-        raise ValueError(f"project-memory file exceeds {MAX_COLLECTION_BYTES} bytes: {path}")
-    payload = json.loads(raw)
-    if not isinstance(payload, dict) or payload.get("format") != FORMAT or payload.get("kind") != kind:
-        raise ValueError(f"unsupported project-memory file: {path}")
-    entries = payload.get("entries")
-    if not isinstance(entries, list):
-        raise ValueError(f"project-memory entries must be a list: {path}")
-    if len(entries) > MAX_ENTRIES:
-        raise ValueError(f"project-memory entries exceed {MAX_ENTRIES}: {path}")
-    for entry in entries:
-        validate_entry(kind, entry, path=path)
-    return payload
+    return memory_contract.load_collection(root, kind)
 
 
 def save_collection(root: Path, kind: str, payload: dict[str, Any]) -> None:
@@ -169,7 +104,27 @@ def save_collection(root: Path, kind: str, payload: dict[str, Any]) -> None:
     atomic_write(root / FILES[kind], encoded)
 
 
-def initialize(root: Path) -> None:
+@contextmanager
+def memory_lock(root: Path):
+    if root.is_symlink():
+        raise ValueError(f"project-memory directory must not be a symlink: {root}")
+    root.mkdir(parents=True, exist_ok=True)
+    lock_path = root / "memory.lock"
+    deadline = time.monotonic() + MEMORY_LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            with simple_lock(lock_path):
+                yield
+                return
+        except LockBusyError as exc:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f"project-memory lock remained busy: {lock_path}") from exc
+            time.sleep(0.025)
+        except LockFileError as exc:
+            raise ValueError(f"project-memory lock could not be used: {exc}") from exc
+
+
+def _initialize_unlocked(root: Path) -> None:
     root.mkdir(parents=True, exist_ok=True)
     architecture = root / "architecture.md"
     if architecture.is_symlink():
@@ -204,69 +159,44 @@ def initialize(root: Path) -> None:
             save_collection(root, kind, default_collection(kind))
 
 
+def initialize(root: Path) -> None:
+    with memory_lock(root):
+        _initialize_unlocked(root)
+
+
 def entry_identity(kind: str, entry: dict[str, Any]) -> str:
-    identity = {field: entry.get(field, [] if field in {"paths", "evidence"} else "") for field in IDENTITY_FIELDS[kind]}
-    digest = hashlib.sha256(
-        json.dumps(identity, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-            "utf-8"
-        )
-    ).hexdigest()[:16]
-    return f"{kind[:-1]}-{digest}"
+    return memory_contract.entry_identity(kind, entry)
 
 
 def append_entry(root: Path, kind: str, entry: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    initialize(root)
-    payload = load_collection(root, kind)
-    entry["id"] = entry_identity(kind, entry)
-    for existing in payload["entries"]:
-        if existing.get("id", entry_identity(kind, existing)) == entry["id"]:
-            return existing, True
-    if len(payload["entries"]) >= MAX_ENTRIES:
-        raise ValueError(f"project-memory entries exceed {MAX_ENTRIES}")
-    payload["entries"].append(entry)
-    save_collection(root, kind, payload)
-    return entry, False
+    with memory_lock(root):
+        _initialize_unlocked(root)
+        payload = load_collection(root, kind)
+        entry["id"] = entry_identity(kind, entry)
+        for existing in payload["entries"]:
+            if existing.get("id", entry_identity(kind, existing)) == entry["id"]:
+                return existing, True
+        if len(payload["entries"]) >= MAX_ENTRIES:
+            raise ValueError(f"project-memory entries exceed {MAX_ENTRIES}")
+        payload["entries"].append(entry)
+        save_collection(root, kind, payload)
+        return entry, False
 
 
 def words(value: str) -> set[str]:
-    return {token.lower() for token in TOKEN.findall(value) if len(token) > 1}
+    return memory_contract.words(value)
 
 
 def path_score(candidate: str, requested: str) -> int:
-    if candidate == requested:
-        return 100
-    candidate_path = PurePosixPath(candidate)
-    requested_path = PurePosixPath(requested)
-    if candidate_path in requested_path.parents or requested_path in candidate_path.parents:
-        return 60
-    if candidate_path.name == requested_path.name:
-        return 30
-    return 0
+    return memory_contract.path_score(candidate, requested)
 
 
 def relevance(kind: str, entry: dict[str, Any], paths: list[str], query_terms: set[str]) -> int:
-    if not paths and not query_terms:
-        return 1
-    score = 0
-    for candidate in entry.get("paths", []):
-        for requested in paths:
-            score = max(score, path_score(candidate, requested))
-    searchable = " ".join(
-        str(entry.get(field, ""))
-        for field in (*REQUIRED_FIELDS[kind], "paths", "evidence")
-    )
-    score += 5 * len(query_terms & words(searchable))
-    return score
+    return memory_contract.relevance(kind, entry, paths, query_terms)
 
 
 def stale_reason(entry: dict[str, Any], today: date) -> str | None:
-    status = entry.get("status", "active")
-    if status != "active":
-        return status
-    expires = entry.get("expires")
-    if expires and parse_iso_date(expires, field="expires") < today:
-        return f"expired:{expires}"
-    return None
+    return memory_contract.stale_reason(entry, today)
 
 
 def context_payload(
@@ -337,21 +267,22 @@ def set_status(
         raise ValueError("superseded status requires --superseded-by")
     if status != "superseded" and superseded_by:
         raise ValueError("--superseded-by is valid only with superseded status")
-    payload = load_collection(root, kind)
-    for entry in payload["entries"]:
-        existing_id = entry.get("id", entry_identity(kind, entry))
-        if existing_id != entry_id:
-            continue
-        entry["id"] = existing_id
-        entry["status"] = status
-        entry["updated"] = date.today().isoformat()
-        if superseded_by:
-            entry["superseded_by"] = superseded_by
-        else:
-            entry.pop("superseded_by", None)
-        save_collection(root, kind, payload)
-        return entry
-    raise ValueError(f"project-memory entry not found: {kind}/{entry_id}")
+    with memory_lock(root):
+        payload = load_collection(root, kind)
+        for entry in payload["entries"]:
+            existing_id = entry.get("id", entry_identity(kind, entry))
+            if existing_id != entry_id:
+                continue
+            entry["id"] = existing_id
+            entry["status"] = status
+            entry["updated"] = date.today().isoformat()
+            if superseded_by:
+                entry["superseded_by"] = superseded_by
+            else:
+                entry.pop("superseded_by", None)
+            save_collection(root, kind, payload)
+            return entry
+        raise ValueError(f"project-memory entry not found: {kind}/{entry_id}")
 
 
 def add_record_options(parser: argparse.ArgumentParser, *, paths: bool = True) -> None:
