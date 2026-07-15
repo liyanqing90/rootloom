@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: implementation and local review complete; publication in progress
+- State: finalizing publication record
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: privacy, public CLI/JSON contract, resource-governance defect repair, and release
@@ -125,7 +125,11 @@ Completion requires focused regressions, the repository contract gate, the full 
 - `make compatibility-smoke` passed with `codex-cli 0.144.2`; it reported no plugin-install side effects or managed leftovers after rollback.
 - `make validate` and `git diff --check` passed.
 - Fresh challenge review found and corrected three post-implementation gaps before publication: Finalizer preflight now consumes the same capture deadline as its stable passes; security material such as API/Service Account keys always reaches a high-risk signal; and domain descriptors such as token schemas/policies or secret managers remain reviewable instead of being treated as material.
-- Pending release evidence: exact-commit strict replay, release-PR CI, merged-main CI, tag/Release facts, publication record CI, and installed-version/drift verification.
+- A clean temporary-clone strict replay returned summary revision 5, `REVIEW_EVIDENCE_COMPLETE`, `evidence_complete: true`, `passed: true`, `change_partition: exact`, complete claim binding, and a valid hash chain for the exact 27-path release patch; measured capture time was 0.325201 seconds.
+- Release PR run `29390214510` passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs. PR #7 merged as `61c1d8202350442721644345678e1525461c7d08`; merged-main run `29390437387` independently passed the same seven jobs.
+- Annotated tag object `72091416819a5b16436f2be0b7862dc965856f49` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VHOPs` was published at 2026-07-15T05:07:33Z.
+- Local `rootloom@rootloom` and the managed personal preset upgraded from 2.4.0 to 3.0.0; setup reports no drift or pending upgrade. Installed Rules allow representative routine/high-risk argv and forbid catastrophic root deletion.
+- Pending release evidence: publication-record CI and its final factual record.
 
 ## Risks
 
@@ -150,4 +154,4 @@ Completion requires focused regressions, the repository contract gate, the full 
 
 ## Durable decision records
 
-- Planned: `docs/decisions/2026-07-15-sensitive-material-and-capture-bounds.md`.
+- Sensitive material and capture bounds: `docs/decisions/2026-07-15-sensitive-material-and-capture-bounds.md`.
