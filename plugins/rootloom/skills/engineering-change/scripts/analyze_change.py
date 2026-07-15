@@ -96,6 +96,7 @@ def main(argv: list[str] | None = None) -> int:
                 patch,
                 captured_git,
                 _capture_duration_seconds,
+                _reviewable_metadata,
             ) = stable_repository_capture(
                 repo,
                 extra_sensitive=args.sensitive_path,

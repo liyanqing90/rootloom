@@ -6,6 +6,21 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.2.0] - 2026-07-15
+
+### Fixed
+
+- Reject ignored and Git-index-suppressed `--reviewable-path` declarations before Intake publication and during every stable capture, normalize accepted declarations to Git's actual repository spelling, and disclose the sealed exception plus captured identity/link metadata in Summary revision 5.
+- Treat `.der` as ambiguous sensitive material rather than a certificate-specific public format, and make common `key.pem`, client/server/host/SSH/identity key names non-overridable.
+
+### Security
+
+- Require every reviewable target to be a single-link regular non-symlink file without `assume-unchanged` or `skip-worktree` at Intake and capture time so hardlink aliases and Index-suppressed changes cannot bypass `diff.patch`.
+
+### Compatibility
+
+- Keep default baseline v3 and the published baseline-v4 schema unchanged. Baseline v2/v3/v4 schemas remain readable and sealable while unsafe reviewable declarations fail closed instead of silently changing v4 capture semantics. The additive `reviewability_policy` Summary field makes the aggregate release impact Minor.
+
 ## [3.1.0] - 2026-07-15
 
 ### Added
@@ -628,7 +643,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/liyanqing90/rootloom/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/liyanqing90/rootloom/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...v3.0.0
 [2.4.0]: https://github.com/liyanqing90/rootloom/compare/v2.3.0...v2.4.0

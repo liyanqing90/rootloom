@@ -27,7 +27,6 @@ SENSITIVE_MATERIAL_EXACT_NAMES = {
 PUBLIC_CERTIFICATE_SUFFIXES = {
     ".cer",
     ".crt",
-    ".der",
     ".p7b",
     ".p7c",
 }
@@ -39,7 +38,7 @@ STRONG_SENSITIVE_MATERIAL_SUFFIXES = {
     ".pfx",
     ".ppk",
 }
-AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES = {".pem"}
+AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES = {".der", ".pem"}
 SENSITIVE_MATERIAL_SUFFIXES = (
     STRONG_SENSITIVE_MATERIAL_SUFFIXES | AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES
 )
@@ -133,6 +132,13 @@ SENSITIVE_MATERIAL_CONTEXTS = (
     frozenset({"client", "keystore"}),
     frozenset({"server", "keystore"}),
     frozenset({"app", "keystore"}),
+)
+AMBIGUOUS_STRONG_KEY_CONTEXTS = (
+    frozenset({"client", "key"}),
+    frozenset({"server", "key"}),
+    frozenset({"host", "key"}),
+    frozenset({"ssh", "key"}),
+    frozenset({"identity", "key"}),
 )
 SENSITIVE_MATERIAL_ENVIRONMENTS = {
     "dev",
@@ -332,8 +338,13 @@ def _material_policy(normalized: str) -> tuple[bool, bool]:
     ) or any(
         context.issubset(name_words) and "certificate" not in context
         for context in SENSITIVE_MATERIAL_CONTEXTS
+    ) or (
+        ambiguous_suffix
+        and any(context.issubset(name_words) for context in AMBIGUOUS_STRONG_KEY_CONTEXTS)
     )
-    if ambiguous_suffix and stem in SENSITIVE_MATERIAL_EXACT_NAMES:
+    if ambiguous_suffix and (
+        stem in SENSITIVE_MATERIAL_EXACT_NAMES or stem == "key"
+    ):
         return True, True
     if (
         suffix
@@ -389,18 +400,11 @@ def validate_reviewable_paths(
 ) -> list[str]:
     """Validate exact existing regular files without reading their contents."""
 
-    normalized = [
-        normalize_repo_path(path, label="reviewable path") for path in paths
-    ]
-    if max_paths is not None and len(normalized) > max_paths:
-        raise ValueError(
-            f"reviewable paths exceed configured {max_paths}-path budget"
-        )
-    if any(any(character in path for character in "*?[") for path in normalized):
-        raise ValueError("reviewable path must be one exact file path, not a glob")
-    folded = [path.casefold() for path in normalized]
-    if len(folded) != len(set(folded)):
-        raise ValueError("reviewable paths must not contain case-insensitive duplicates")
+    normalized = normalize_reviewable_paths(
+        paths,
+        extra_sensitive=extra_sensitive,
+        max_paths=max_paths,
+    )
     for path in normalized:
         current = repo
         parts = PurePosixPath(path).parts
@@ -429,7 +433,32 @@ def validate_reviewable_paths(
                 )
         if not stat.S_ISREG(info.st_mode):
             raise ValueError(f"reviewable path must name a regular file: {path}")
+        if info.st_nlink != 1:
+            raise ValueError(
+                f"reviewable path must have link count one: {path}"
+            )
+    return normalized
+
+
+def normalize_reviewable_paths(
+    paths: list[str],
+    *,
+    extra_sensitive: set[str] | None = None,
+    max_paths: int | None = None,
+) -> list[str]:
+    """Validate path-only declarations before repository spelling is resolved."""
+
+    normalized = [
         validate_reviewable_policy_path(path, extra_sensitive=extra_sensitive)
+        for path in paths
+    ]
+    if max_paths is not None and len(normalized) > max_paths:
+        raise ValueError(
+            f"reviewable paths exceed configured {max_paths}-path budget"
+        )
+    folded = [path.casefold() for path in normalized]
+    if len(folded) != len(set(folded)):
+        raise ValueError("reviewable paths must not contain case-insensitive duplicates")
     return sorted(normalized)
 
 
