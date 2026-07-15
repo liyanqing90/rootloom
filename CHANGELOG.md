@@ -6,6 +6,31 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-07-15
+
+### Added
+
+- Add finite-positive `--max-capture-seconds` to analyzer, intake, and finalizer entry points. Each stable capture uses one 90-second default monotonic deadline across both consistency passes while retaining the independent per-Git-command ceiling.
+- Add stable `evidence_complete` capability output plus capture limit and duration evidence to revision-5 summaries.
+- Add `rootloom-change-baseline-v3` with identity-neutral `intake-sealed` provenance while retaining baseline-v2 read/seal compatibility.
+
+### Changed
+
+- Split secret-material privacy classification from security-domain risk classification. Security source remains patch-readable and raises risk; secret material alone drives metadata-only capture and Sensitive Quarantine.
+- Add CamelCase identifier tokenization and targeted material discovery for `clientSecret.json`, `apiToken.json`, `serviceAccountKey.json`, certificate, private-key, and keystore forms.
+- Advance `rootloom-engineering-summary-v1` to revision 5 and replace identity-suggesting provenance outputs with `intake-sealed` for the baseline and `workflow-sealed` for sealed contracts/claims.
+- Define public JSON/CLI SemVer governance: additive capabilities are Minor, compatible semantic corrections are Patch, and removed fields, changed enum/exit semantics, or incompatible reinterpretations are Major.
+
+### Fixed
+
+- Keep ordinary security-domain source such as `src/auth/token.py`, `src/credential_store.ts`, and `internal/secret_manager.go` out of privacy redaction and dangerous-deletion confirmation while preserving high-risk verification signals.
+- Detect common CamelCase secret material that targeted Git discovery previously found but the Python classifier discarded.
+- Bound aggregate stable-capture time instead of resetting the full time budget for every Git child.
+
+### Compatibility
+
+- This is a Major release because revision-5 `evidence_provenance` enum values and the newly produced baseline format intentionally change public/persisted contracts. Existing revision-4 summaries are not rewritten, baseline v2 remains readable/sealable, and valid legacy sealed v2 intakes normalize to the new provenance names when finalized by 3.0.0. `quality_status`, quality exits, artifact names, and the 2.4.0 tag remain unchanged.
+
 ## [2.4.0] - 2026-07-15
 
 ### Added
@@ -584,7 +609,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...v3.0.0
 [2.4.0]: https://github.com/liyanqing90/rootloom/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/liyanqing90/rootloom/compare/v2.2.2...v2.3.0
 [2.2.2]: https://github.com/liyanqing90/rootloom/compare/v2.2.1...v2.2.2

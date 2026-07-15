@@ -102,3 +102,7 @@ Both owners remain Python-standard-library-only, local, network-free, and single
 - a safe platform-native command planner can separate discovery, authorization, execution, and evidence better;
 - exact-key summary consumers require an explicit summary format version transition;
 - Personal Core begins to require server, team, compliance, approval, or immutable-audit semantics, which belong on the separate Assurance product line.
+
+## Follow-up
+
+Summary revision 5, baseline v3, identity-neutral provenance, the secret-material/security-domain classifier split, and the aggregate stable-capture deadline are governed by [Separate secret material from security code and bound stable capture](2026-07-15-sensitive-material-and-capture-bounds.md). This record retains the historical revision-3 and revision-4 terminology; new artifacts do not emit `operator-sealed`.

@@ -15,7 +15,7 @@ from typing import Any
 PLUGIN_LIB = Path(__file__).resolve().parents[4] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 import rootloom_memory as memory_contract
-from rootloom_paths import normalize_repo_path, path_words
+from rootloom_paths import is_security_domain_path, normalize_repo_path, path_words
 
 
 ASSESSMENT_FORMAT = "rootloom-change-assessment-v1"
@@ -473,9 +473,12 @@ def analyze_change(
             paths=dependency_paths,
         )
 
+    security_domain_paths = [
+        path for path in signal_paths if is_security_domain_path(path)
+    ]
     auth_paths = [
         path
-        for path in signal_paths
+        for path in security_domain_paths
         if path_has(path, {"auth", "authentication", "authorization", "oauth", "permission", "permissions", "token", "tokens"})
     ]
     if auth_paths:
@@ -486,7 +489,22 @@ def analyze_change(
             reason="Authentication, authorization, permission, or token behavior is in scope.",
             paths=auth_paths,
         )
-    security_paths = [path for path in signal_paths if path_has(path, {"security", "crypto", "credential", "credentials", "secret", "secrets"})]
+    security_paths = [
+        path
+        for path in security_domain_paths
+        if path not in auth_paths
+        or path_has(
+            path,
+            {
+                "security",
+                "crypto",
+                "credential",
+                "credentials",
+                "secret",
+                "secrets",
+            },
+        )
+    ]
     if security_paths:
         add_signal(
             signals,

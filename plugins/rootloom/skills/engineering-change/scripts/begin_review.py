@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create an operator-sealed Rootloom review intake directory."""
+"""Create an intake-sealed Rootloom review directory."""
 
 from __future__ import annotations
 
@@ -30,6 +30,7 @@ from runner.review_run import (
     write_new_json,
 )
 from runner.state import (
+    DEFAULT_MAX_CAPTURE_SECONDS,
     DEFAULT_MAX_GIT_SECONDS,
     DEFAULT_MAX_SENSITIVE_PATHS,
     stable_repository_capture,
@@ -54,6 +55,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--sensitive-path", action="append", default=[])
     parser.add_argument(
+        "--max-capture-seconds",
+        type=float,
+        default=DEFAULT_MAX_CAPTURE_SECONDS,
+    )
+    parser.add_argument(
         "--max-git-seconds",
         type=float,
         default=DEFAULT_MAX_GIT_SECONDS,
@@ -68,6 +74,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.max_capture_seconds) or args.max_capture_seconds <= 0:
+        raise SystemExit("capture time budget must be finite and positive")
     if not math.isfinite(args.max_git_seconds) or args.max_git_seconds <= 0:
         raise SystemExit("Git time budget must be finite and positive")
     if args.max_sensitive_paths <= 0:
@@ -107,9 +115,16 @@ def main(argv: list[str] | None = None) -> int:
     if not output.parent.is_dir():
         raise SystemExit(f"review output parent does not exist: {output.parent}")
     try:
-        snapshot, _untracked_patch, patch, captured_git = stable_repository_capture(
+        (
+            snapshot,
+            _untracked_patch,
+            patch,
+            captured_git,
+            _capture_duration_seconds,
+        ) = stable_repository_capture(
             repo,
             extra_sensitive=args.sensitive_path,
+            max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
         )
@@ -126,7 +141,7 @@ def main(argv: list[str] | None = None) -> int:
         tracked_patch=patch,
         extra_sensitive=args.sensitive_path,
         task=args.task,
-        provenance="operator-sealed",
+        provenance="intake-sealed",
         allow_dirty_baseline=args.allow_dirty_baseline,
         captured_git=captured_git,
         max_git_seconds=args.max_git_seconds,

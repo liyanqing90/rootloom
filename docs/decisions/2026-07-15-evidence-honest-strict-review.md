@@ -80,3 +80,7 @@ Dirty-baseline attribution uses the strongest evidence already stored by baselin
 - measured repositories regularly exceed either the targeted-candidate or classified-result ceilings despite ordinary caches no longer being enumerated;
 - Git process control can move to a stronger platform-native sandbox or a single total capture deadline without harming Personal Core portability;
 - exact-value consumers require a new top-level summary format rather than schema-revision evolution.
+
+## Follow-up
+
+Summary revision 5, baseline v3, identity-neutral provenance, the secret-material/security-domain classifier split, and the aggregate stable-capture deadline are governed by [Separate secret material from security code and bound stable capture](2026-07-15-sensitive-material-and-capture-bounds.md). This record remains the historical owner of revision-4 status honesty and redaction-cap semantics.

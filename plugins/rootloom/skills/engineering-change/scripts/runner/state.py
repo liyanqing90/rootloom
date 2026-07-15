@@ -9,15 +9,16 @@ import os
 from pathlib import Path, PurePosixPath
 import stat
 import sys
+import time
 from typing import Any
 
 
 PLUGIN_LIB = Path(__file__).resolve().parents[4] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_paths import (
-    is_sensitive_path,
+    is_sensitive_material_path,
     normalize_repo_path,
-    sensitive_git_pathspecs,
+    sensitive_material_git_pathspecs,
     validate_git_repo_path,
 )
 
@@ -26,6 +27,7 @@ from .process import run_command
 
 DEFAULT_MAX_GIT_BYTES = 16 * 1024 * 1024
 DEFAULT_MAX_GIT_SECONDS = 30.0
+DEFAULT_MAX_CAPTURE_SECONDS = 90.0
 DEFAULT_MAX_STATUS_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_STATUS_PATHS = 10_000
 DEFAULT_MAX_SENSITIVE_PATHS = 10_000
@@ -35,25 +37,62 @@ DEFAULT_MAX_FINGERPRINT_TOTAL_BYTES = 1024 * 1024 * 1024
 DEFAULT_MAX_TEXT_PATCH_FILE_BYTES = 256 * 1024
 
 
+class CaptureDeadline:
+    """One monotonic budget shared by every phase of a repository capture."""
+
+    def __init__(self, max_seconds: float) -> None:
+        if not math.isfinite(max_seconds) or max_seconds <= 0:
+            raise ValueError("capture time budget must be finite and positive")
+        self.max_seconds = float(max_seconds)
+        self.started_at = time.monotonic()
+
+    def elapsed_seconds(self) -> float:
+        return max(0.0, time.monotonic() - self.started_at)
+
+    def remaining_seconds(self) -> float:
+        remaining = self.max_seconds - self.elapsed_seconds()
+        if remaining <= 0:
+            raise ValueError(
+                "Repository capture exceeded configured "
+                f"{self.max_seconds:g}-second aggregate budget"
+            )
+        return remaining
+
+    def checkpoint(self) -> None:
+        self.remaining_seconds()
+
+
 def _git_result(
     repo: Path,
     *args: str,
     max_bytes: int,
     max_git_seconds: float,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[int, bytes]:
     if max_bytes <= 0:
         raise ValueError("Git capture budget must be positive")
     if not math.isfinite(max_git_seconds) or max_git_seconds <= 0:
         raise ValueError("Git time budget must be finite and positive")
+    timeout = max_git_seconds
+    deadline_limited = False
+    if capture_deadline is not None:
+        remaining = capture_deadline.remaining_seconds()
+        deadline_limited = remaining < timeout
+        timeout = min(timeout, remaining)
     result, output = run_command(
         ["git", "--no-pager", *args],
         cwd=repo,
-        timeout=max_git_seconds,
+        timeout=timeout,
         max_output_bytes=max_bytes,
         inherit_stdin=False,
     )
     command = "git " + " ".join(args)
     if result.timed_out:
+        if deadline_limited:
+            raise ValueError(
+                "Repository capture exceeded configured "
+                f"{capture_deadline.max_seconds:g}-second aggregate budget"
+            )
         raise ValueError(
             f"Git command exceeded configured {max_git_seconds:g}-second budget: {command}"
         )
@@ -63,6 +102,8 @@ def _git_result(
         )
     if not result.process_tree_converged:
         raise ValueError(f"Git process tree did not converge: {command}")
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     return result.exit_code, output
 
 
@@ -70,6 +111,7 @@ def git_identity(
     repo: Path,
     *,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> dict[str, str]:
     """Return the commit/ref/index identity that bounds a worktree capture."""
 
@@ -81,6 +123,7 @@ def git_identity(
         "HEAD",
         max_bytes=4096,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     if head_code == 0:
         head = head_output.decode("utf-8", errors="surrogateescape").strip()
@@ -93,6 +136,7 @@ def git_identity(
         "HEAD",
         max_bytes=4096,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     if ref_code == 0:
         head_ref = ref_output.decode("utf-8", errors="surrogateescape").strip()
@@ -108,6 +152,7 @@ def git_identity(
         "write-tree",
         max_bytes=4096,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     ).decode("ascii").strip()
     return {"head": head, "head_ref": head_ref, "index_sha256": index_sha256}
 
@@ -118,12 +163,14 @@ def git_bounded(
     max_bytes: int,
     accepted_codes: tuple[int, ...] = (0,),
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> bytes:
     returncode, output = _git_result(
         repo,
         *args,
         max_bytes=max_bytes,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     if returncode not in accepted_codes:
         reason = output.decode("utf-8", errors="replace").strip()
@@ -137,6 +184,7 @@ def repository_changes(
     max_bytes: int = DEFAULT_MAX_STATUS_BYTES,
     max_paths: int = DEFAULT_MAX_STATUS_PATHS,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[list[dict[str, str]], list[str]]:
     raw = git_bounded(
         repo,
@@ -146,12 +194,15 @@ def repository_changes(
         "--untracked-files=all",
         max_bytes=max_bytes,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     records = raw.split(b"\0")
     changes: list[dict[str, str]] = []
     untracked: list[str] = []
     index = 0
     while index < len(records):
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
         record = records[index]
         index += 1
         if not record:
@@ -183,21 +234,27 @@ def git_list_paths(
     max_bytes: int = DEFAULT_MAX_STATUS_BYTES,
     max_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> list[str]:
     raw = git_bounded(
         repo,
         *args,
         max_bytes=max_bytes,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
-    values = [
-        validate_git_repo_path(
-            item.decode("utf-8", errors="surrogateescape"),
-            label="Git listed path",
+    values: list[str] = []
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        values.append(
+            validate_git_repo_path(
+                item.decode("utf-8", errors="surrogateescape"),
+                label="Git listed path",
+            )
         )
-        for item in raw.split(b"\0")
-        if item
-    ]
     if len(values) > max_paths:
         raise ValueError(f"Git path listing exceeds configured {max_paths}-path budget")
     return sorted(set(values))
@@ -210,6 +267,7 @@ def discover_sensitive_paths(
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
     max_candidate_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> list[str]:
     if max_sensitive_paths <= 0:
         raise ValueError("sensitive path budget must be positive")
@@ -226,7 +284,7 @@ def discover_sensitive_paths(
     # vendor/cache paths are not enumerated while sensitive-looking matches are
     # never silently excluded.
     pathspecs = [
-        *sensitive_git_pathspecs(),
+        *sensitive_material_git_pathspecs(),
         *(f":(icase,literal){path}" for path in sorted(extra_sensitive)),
     ]
     tracked = git_list_paths(
@@ -234,6 +292,7 @@ def discover_sensitive_paths(
         ["ls-files", "-z", "--", *pathspecs],
         max_paths=max_candidate_paths,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     ignored = git_list_paths(
         repo,
@@ -248,6 +307,7 @@ def discover_sensitive_paths(
         ],
         max_paths=max_candidate_paths,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     candidates = set(tracked) | set(ignored)
     if len(candidates) > max_candidate_paths:
@@ -255,11 +315,12 @@ def discover_sensitive_paths(
             "sensitive candidate discovery exceeds configured "
             f"{max_candidate_paths}-path budget"
         )
-    classified = {
-        path
-        for path in candidates
-        if is_sensitive_path(path, extra_sensitive=extra_sensitive)
-    }
+    classified: set[str] = set()
+    for path in candidates:
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        if is_sensitive_material_path(path, extra_sensitive=extra_sensitive):
+            classified.add(path)
     result = sorted(classified | set(extra_sensitive))
     if len(result) > max_sensitive_paths:
         raise ValueError(
@@ -273,6 +334,7 @@ def _empty_tree(
     repo: Path,
     *,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> str:
     return git_bounded(
         repo,
@@ -282,6 +344,7 @@ def _empty_tree(
         "--stdin",
         max_bytes=1024,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     ).decode("ascii").strip()
 
 
@@ -291,6 +354,7 @@ def tracked_patch(
     max_bytes: int = DEFAULT_MAX_GIT_BYTES,
     sensitive_paths: list[str] | None = None,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> bytes:
     head_code, head_output = _git_result(
         repo,
@@ -300,6 +364,7 @@ def tracked_patch(
         "HEAD",
         max_bytes=4096,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     if head_code == 0:
         baseline = "HEAD"
@@ -311,11 +376,16 @@ def tracked_patch(
             "HEAD",
             max_bytes=4096,
             max_git_seconds=max_git_seconds,
+            capture_deadline=capture_deadline,
         )
         if symbolic_code != 0:
             reason = head_output.decode("utf-8", errors="replace").strip()
             raise ValueError(f"git HEAD is invalid: {reason or 'not an unborn branch'}")
-        baseline = _empty_tree(repo, max_git_seconds=max_git_seconds)
+        baseline = _empty_tree(
+            repo,
+            max_git_seconds=max_git_seconds,
+            capture_deadline=capture_deadline,
+        )
     exclusions = [f":(exclude,literal){path}" for path in sorted(sensitive_paths or [])]
     return git_bounded(
         repo,
@@ -329,6 +399,7 @@ def tracked_patch(
         *exclusions,
         max_bytes=max_bytes,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
 
 
@@ -363,11 +434,21 @@ def _lstat_repo_entry(repo: Path, path: str) -> os.stat_result | None:
         return None
 
 
-def metadata_only(repo: Path, path: str, *, sensitive: bool = True) -> dict[str, Any]:
+def metadata_only(
+    repo: Path,
+    path: str,
+    *,
+    sensitive: bool = True,
+    capture_deadline: CaptureDeadline | None = None,
+) -> dict[str, Any]:
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     normalized = normalize_repo_path(path)
     candidate = repo / normalized
     info = _lstat_repo_entry(repo, normalized)
     if info is None:
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
         return _metadata_for_missing(normalized, sensitive=sensitive)
     result: dict[str, Any] = {
         "path": normalized,
@@ -413,6 +494,8 @@ def metadata_only(repo: Path, path: str, *, sensitive: bool = True) -> dict[str,
         result["kind"] = "file"
     else:
         result["kind"] = "other"
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     return result
 
 
@@ -423,7 +506,10 @@ def _regular_file_fingerprint(
     remaining_total: int,
     max_file_bytes: int,
     max_text_patch_file_bytes: int,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[dict[str, Any], bytes | None, int]:
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     candidate = repo / path
     before = _lstat_repo_entry(repo, path)
     if before is None:
@@ -460,6 +546,8 @@ def _regular_file_fingerprint(
         if identity != expected or not stat.S_ISREG(opened.st_mode):
             raise ValueError(f"untracked file identity changed before fingerprint: {path}")
         while True:
+            if capture_deadline is not None:
+                capture_deadline.checkpoint()
             chunk = os.read(descriptor, 64 * 1024)
             if not chunk:
                 break
@@ -504,6 +592,8 @@ def _regular_file_fingerprint(
         "content_read": True,
         "text_patch": "included" if is_text else "not-text-or-over-limit",
     }
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     return result, content if is_text else None, observed
 
 
@@ -585,19 +675,24 @@ def repository_snapshot(
     protect_changed_paths: bool = False,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[dict[str, Any], bytes]:
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     normalized_extra = {
         normalize_repo_path(path, label="sensitive path") for path in extra_sensitive or []
     }
     changes, untracked = repository_changes(
         repo,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     sensitive_paths = discover_sensitive_paths(
         repo,
         normalized_extra,
         max_sensitive_paths=max_sensitive_paths,
         max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
     )
     reference_by_path: dict[str, dict[str, Any]] | None = None
     reference_paths: set[str] = set()
@@ -618,7 +713,8 @@ def repository_snapshot(
             f"{max_sensitive_paths}-path budget"
         )
     initial_sensitive_metadata = [
-        metadata_only(repo, path) for path in sorted(sensitive_set)
+        metadata_only(repo, path, capture_deadline=capture_deadline)
+        for path in sorted(sensitive_set)
     ]
     current_sensitive_by_path = {
         item["path"]: item for item in initial_sensitive_metadata
@@ -628,7 +724,7 @@ def repository_snapshot(
         and current_sensitive_by_path != reference_by_path
     )
     sensitive_change_observed = any(
-        is_sensitive_path(path, extra_sensitive=normalized_extra)
+        is_sensitive_material_path(path, extra_sensitive=normalized_extra)
         for item in changes
         for path in (item.get("path", ""), item.get("original_path", ""))
         if path
@@ -643,11 +739,11 @@ def repository_snapshot(
         original = item.get("original_path", "")
         current_sensitive = bool(current) and (
             quarantine_changed_paths
-            or is_sensitive_path(current, extra_sensitive=normalized_extra)
+            or is_sensitive_material_path(current, extra_sensitive=normalized_extra)
         )
         original_sensitive = bool(original) and (
             quarantine_changed_paths
-            or is_sensitive_path(original, extra_sensitive=normalized_extra)
+            or is_sensitive_material_path(original, extra_sensitive=normalized_extra)
         )
         if current_sensitive or original_sensitive:
             if current:
@@ -664,7 +760,9 @@ def repository_snapshot(
     patch_bytes = 0
     hashed_bytes = 0
     for path in sorted(untracked):
-        sensitive = path in sensitive_set or is_sensitive_path(
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        sensitive = path in sensitive_set or is_sensitive_material_path(
             path, extra_sensitive=normalized_extra
         )
         if sensitive:
@@ -674,7 +772,14 @@ def repository_snapshot(
         if info is None:
             raise ValueError(f"untracked path disappeared during capture: {path}")
         if sensitive or not stat.S_ISREG(info.st_mode):
-            fingerprints.append(metadata_only(repo, path, sensitive=sensitive))
+            fingerprints.append(
+                metadata_only(
+                    repo,
+                    path,
+                    sensitive=sensitive,
+                    capture_deadline=capture_deadline,
+                )
+            )
             continue
         fingerprint, content, observed = _regular_file_fingerprint(
             repo,
@@ -682,6 +787,7 @@ def repository_snapshot(
             remaining_total=max_fingerprint_total_bytes - hashed_bytes,
             max_file_bytes=max_fingerprint_file_bytes,
             max_text_patch_file_bytes=max_text_patch_file_bytes,
+            capture_deadline=capture_deadline,
         )
         hashed_bytes += observed
         fingerprints.append(fingerprint)
@@ -693,7 +799,12 @@ def repository_snapshot(
                 )
             patch_parts.append(part)
             patch_bytes += len(part)
-    sensitive_metadata = [metadata_only(repo, path) for path in sorted(sensitive_set)]
+    sensitive_metadata = [
+        metadata_only(repo, path, capture_deadline=capture_deadline)
+        for path in sorted(sensitive_set)
+    ]
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     return (
         {
             "changes": changes,
@@ -724,12 +835,21 @@ def stable_repository_capture(
     max_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     protect_changed_paths: bool = False,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    max_capture_seconds: float = DEFAULT_MAX_CAPTURE_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
-) -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
+    capture_deadline: CaptureDeadline | None = None,
+) -> tuple[dict[str, Any], bytes, bytes, dict[str, str], float]:
     """Require two identical bounded captures before trusting repository state."""
 
+    deadline = capture_deadline or CaptureDeadline(max_capture_seconds)
+
     def capture_once() -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
-        git_before = git_identity(repo, max_git_seconds=max_git_seconds)
+        deadline.checkpoint()
+        git_before = git_identity(
+            repo,
+            max_git_seconds=max_git_seconds,
+            capture_deadline=deadline,
+        )
         snapshot, untracked_patch = repository_snapshot(
             repo,
             extra_sensitive=extra_sensitive,
@@ -738,6 +858,7 @@ def stable_repository_capture(
             protect_changed_paths=protect_changed_paths,
             max_git_seconds=max_git_seconds,
             max_sensitive_paths=max_sensitive_paths,
+            capture_deadline=deadline,
         )
         remaining_patch = max_patch_bytes - len(untracked_patch)
         if remaining_patch <= 0:
@@ -748,8 +869,13 @@ def stable_repository_capture(
             max_bytes=remaining_patch,
             sensitive_paths=sensitive,
             max_git_seconds=max_git_seconds,
+            capture_deadline=deadline,
         )
-        git_after = git_identity(repo, max_git_seconds=max_git_seconds)
+        git_after = git_identity(
+            repo,
+            max_git_seconds=max_git_seconds,
+            capture_deadline=deadline,
+        )
         if git_after != git_before:
             raise ValueError("repository Git base changed during capture")
         return snapshot, untracked_patch, patch, git_after
@@ -758,4 +884,5 @@ def stable_repository_capture(
     second = capture_once()
     if first != second:
         raise ValueError("repository state did not stabilize across bounded captures")
-    return second
+    deadline.checkpoint()
+    return (*second, deadline.elapsed_seconds())

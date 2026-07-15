@@ -20,14 +20,15 @@ from .strict_json import parse_json_object
 
 BASELINE_FORMAT = "rootloom-change-baseline-v1"
 BASELINE_FORMAT_V2 = "rootloom-change-baseline-v2"
+BASELINE_FORMAT_V3 = "rootloom-change-baseline-v3"
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
-PRODUCER_VERSION = "2.4.0"
+PRODUCER_VERSION = "3.0.0"
 MAX_FUTURE_CLOCK_SKEW_SECONDS = 300
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OBJECT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
 NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
 EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
-BASELINE_V2_FIELDS = {
+VERSIONED_BASELINE_FIELDS = {
     "format",
     "run_id",
     "nonce",
@@ -149,8 +150,8 @@ def baseline_payload(
     captured_git: dict[str, str] | None = None,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> dict[str, Any]:
-    if provenance not in {"self-declared", "operator-sealed"}:
-        raise ValueError("baseline provenance must be self-declared or operator-sealed")
+    if provenance not in {"self-declared", "intake-sealed"}:
+        raise ValueError("baseline provenance must be self-declared or intake-sealed")
     run_id = str(uuid.uuid4())
     nonce = uuid.uuid4().hex
     normalized_sensitive = sorted(
@@ -164,7 +165,7 @@ def baseline_payload(
         "snapshot_sensitive_paths": snapshot.get("sensitive_paths", []),
     }
     return {
-        "format": BASELINE_FORMAT_V2,
+        "format": BASELINE_FORMAT_V3,
         "run_id": run_id,
         "nonce": nonce,
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -190,7 +191,17 @@ def write_new_baseline(path: Path, payload: dict[str, Any]) -> None:
     if not isinstance(payload, dict):
         raise ValueError("baseline must be a JSON object")
     if payload.get("format") == BASELINE_FORMAT_V2:
-        _validate_v2_baseline(payload)
+        _validate_versioned_baseline(
+            payload,
+            version=2,
+            sealed_provenance="operator-sealed",
+        )
+    elif payload.get("format") == BASELINE_FORMAT_V3:
+        _validate_versioned_baseline(
+            payload,
+            version=3,
+            sealed_provenance="intake-sealed",
+        )
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() or path.is_symlink():
         raise ValueError(f"baseline output already exists: {path}")
@@ -328,9 +339,14 @@ def _validate_snapshot_record(
         raise ValueError("baseline sensitive metadata must remain content-unread")
 
 
-def _validate_v2_baseline(payload: dict[str, Any]) -> None:
-    if set(payload) != BASELINE_V2_FIELDS:
-        raise ValueError("baseline v2 has unexpected or missing fields")
+def _validate_versioned_baseline(
+    payload: dict[str, Any],
+    *,
+    version: int,
+    sealed_provenance: str,
+) -> None:
+    if set(payload) != VERSIONED_BASELINE_FIELDS:
+        raise ValueError(f"baseline v{version} has unexpected or missing fields")
     run_id = payload.get("run_id")
     try:
         parsed_run_id = uuid.UUID(str(run_id))
@@ -477,7 +493,7 @@ def _validate_v2_baseline(payload: dict[str, Any]) -> None:
     if payload_sha256(sensitive_policy) != payload["sensitive_policy_sha256"]:
         raise ValueError("baseline sensitive_policy_sha256 does not match content")
     provenance = payload.get("evidence_provenance")
-    if provenance not in {"self-declared", "operator-sealed"}:
+    if provenance not in {"self-declared", sealed_provenance}:
         raise ValueError("baseline evidence_provenance is malformed")
 
 
@@ -488,10 +504,24 @@ def read_baseline_payload_with_hash(path: Path) -> tuple[dict[str, Any], str]:
     if payload.get("format") not in {
         BASELINE_FORMAT,
         BASELINE_FORMAT_V2,
+        BASELINE_FORMAT_V3,
     }:
-        raise ValueError(f"baseline format must be {BASELINE_FORMAT} or {BASELINE_FORMAT_V2}")
+        raise ValueError(
+            "baseline format must be one of "
+            f"{BASELINE_FORMAT}, {BASELINE_FORMAT_V2}, or {BASELINE_FORMAT_V3}"
+        )
     if payload.get("format") == BASELINE_FORMAT_V2:
-        _validate_v2_baseline(payload)
+        _validate_versioned_baseline(
+            payload,
+            version=2,
+            sealed_provenance="operator-sealed",
+        )
+    elif payload.get("format") == BASELINE_FORMAT_V3:
+        _validate_versioned_baseline(
+            payload,
+            version=3,
+            sealed_provenance="intake-sealed",
+        )
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict) or not isinstance(
         snapshot.get("sensitive_paths"), list

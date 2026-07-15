@@ -83,6 +83,18 @@ make smoke
 
 该测试依赖已登录的 Codex，并会执行一次真实模型回合，因此不能进入普通 CI。Hook 信任只在可丢弃测试目录中绕过。
 
+## 公共契约版本规则
+
+Rootloom 对可观察 JSON、CLI、持久证据、Setup 与插件行为执行 Semantic Versioning，而不只针对 Python API：
+
+- Patch：修复实现缺陷，但不改变既有字段、枚举、Flag、退出码或持久格式的公开语义。
+- Minor：新增旧 Consumer 可以忽略的可选字段、Flag 或兼容格式/行为，并允许新旧 Producer/Consumer 共存。只有枚举被明确声明为开放集合、且未知值可被安全忽略时，新增枚举值才属于 Minor。
+- Major：删除或重命名字段/Flag、替换枚举值、向封闭/穷尽枚举新增值、改变退出语义、对既有值作不兼容重解释，或在没有兼容 Reader 时强制新的持久格式。
+
+即使顶层 `format` 不变，Schema Revision 变化也不自动等于 Minor；必须评估真实 Producer/Consumer 契约与混合版本行为。自动化优先读取 `evidence_complete` 等稳定能力字段，把详细状态枚举视为诊断展示；不得为了兼容而保留具有误导性的权威状态别名。
+
+已经发布的 Tag 与 Release 保持不可变。发布后的普通修复使用新版本，不能移动或删除原 Tag。
+
 ## Pull Request
 
 PR 应说明：
