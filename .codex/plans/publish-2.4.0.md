@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: finalizing publication record
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: governed defect repair, public contract release, and local upgrade
@@ -110,7 +110,10 @@ Success requires fail-before/pass-after regressions for every reported trigger, 
 - `make compatibility-smoke` returned `passed: true` with no failed commands, managed rollback leftovers, or plugin-install side effects.
 - The original sealed intake finalized with exit 0, summary revision 4, `REVIEW_EVIDENCE_COMPLETE`, `passed: true`, `change_partition: exact`, complete claim binding, and a valid hash chain.
 - The unrelated image stayed in `preexisting_changes`, outside task changes and patch headers; its SHA-256 remains `55ea78b17ac40b85cf347b478799dbda629ba8f4d52e7cea5044734c6ec1c0a6`.
-- PR CI run `29382878992` passed six jobs and exposed a Windows-only Job Object accounting race: short-lived Git descendants could still appear active immediately after pipe EOF and be falsely terminated. The process owner now gives post-exit accounting a bounded convergence grace and has a focused synthetic regression; publication remains blocked until the full replacement CI passes.
+- PR CI run `29382878992` passed six jobs and exposed a Windows-only Job Object accounting race: short-lived Git descendants could still appear active immediately after pipe EOF and be falsely terminated. The process owner now gives post-exit accounting a bounded convergence grace and has a focused synthetic regression.
+- Replacement PR CI run `29383392662` passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs. PR #6 merged as `e434654958109ef6f6a3878ef8a3db36226cec54`; merged-main run `29383564033` independently passed the same seven jobs.
+- Annotated tag object `df0bb82d8253724b362988a8540e099e903df627` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VHEQf` was published at 2026-07-15T02:36:50Z.
+- Local `rootloom@rootloom` and the managed personal preset are installed at 2.4.0; setup reports no drift or pending upgrade. Installed Rules preserve allow decisions for representative authorized commands and forbid catastrophic root deletion.
 
 ## Risks
 
