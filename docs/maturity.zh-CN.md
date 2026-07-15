@@ -59,3 +59,5 @@ Summary Revision 4 有意把最高状态的精确值从 `VERIFIED_CHANGE` 改为
 Personal Core 3.0 把同一 Summary Format 升级到 Revision 5，并将暗示身份的 `operator-sealed` Provenance 枚举改为 `intake-sealed` / `workflow-sealed`。新 Intake 生成 `rootloom-change-baseline-v3`，Baseline v2 继续可读、可 Seal。`evidence_complete` 是稳定自动化能力字段，详细 Quality Status 保持诊断用途。秘密材料隐私与安全领域源码风险由两个分类器分别负责：安全源码保留 Patch，CamelCase 材料保持 Metadata-only。每次稳定两轮 Capture 还增加默认 90 秒的单一总 Monotonic Deadline，并继续保留默认 30 秒的逐 Git 上限。这些公共/持久契约变化使 3.0 成为 Major Release；历史 Revision 4 与 Baseline v2 Artifact 不会被重写。
 
 Personal Core 3.1 在不改变 Summary Revision 5 的前提下收窄秘密材料命名。环境模板与公共证书格式保留可审查 Patch，并作为安全领域证据提高风险；无关 `.env*` 名称恢复为普通路径。默认 Intake 输出仍是 Baseline v3。新增的 Intake-only `--reviewable-path` 只有被使用时才生成 Baseline v4，把精确声明密封进 Policy Hash，既可固定默认已可审查的 Artifact，也可降级歧义材料，并拒绝强秘密或显式声明的 Sensitive Root。Baseline v2/v3/v4 Reader 与 Sealer 共存；未采用新参数的 Consumer 继续取得既有 v3 契约。
+
+Personal Core 3.2 保持 v3/v4 Wire Format，但拒绝 Ignored 或被 Git Index 标志隐藏的 Reviewable Target、Hardlink、大小写歧义和常见私钥名称。DER 与 PEM 一样默认属于 Metadata-only 歧义材料，因为两种编码都可能包含私钥。Summary Revision 5 以附加字段披露密封的 Reviewability Policy 与捕获的文件身份元数据；按仓库 SemVer 规则，该可选字段使 3.2 成为 Minor Release。

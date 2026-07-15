@@ -260,6 +260,55 @@ def git_list_paths(
     return sorted(set(values))
 
 
+def git_index_path_tags(
+    repo: Path,
+    pathspecs: list[str],
+    *,
+    max_bytes: int = DEFAULT_MAX_STATUS_BYTES,
+    max_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
+) -> dict[str, set[str]]:
+    """Return NUL-safe `git ls-files -v` tags for exact tracked candidates."""
+
+    raw = git_bounded(
+        repo,
+        "ls-files",
+        "-v",
+        "-z",
+        "--cached",
+        "--",
+        *pathspecs,
+        max_bytes=max_bytes,
+        max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
+    )
+    tagged: dict[str, set[str]] = {}
+    records = 0
+    for item in raw.split(b"\0"):
+        if not item:
+            continue
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        if len(item) < 3 or item[1:2] != b" ":
+            raise ValueError("Git index path listing is malformed")
+        try:
+            tag = item[:1].decode("ascii")
+        except UnicodeDecodeError as exc:
+            raise ValueError("Git index path tag is malformed") from exc
+        path = validate_git_repo_path(
+            item[2:].decode("utf-8", errors="surrogateescape"),
+            label="Git indexed path",
+        )
+        tagged.setdefault(path, set()).add(tag)
+        records += 1
+        if records > max_paths:
+            raise ValueError(
+                f"Git index path listing exceeds configured {max_paths}-path budget"
+            )
+    return tagged
+
+
 def discover_sensitive_paths(
     repo: Path,
     extra_sensitive: set[str],
@@ -437,6 +486,199 @@ def _lstat_repo_entry(repo: Path, path: str) -> os.stat_result | None:
         return (repo / path).lstat()
     except FileNotFoundError:
         return None
+
+
+def _lstat_reviewable_entry(repo: Path, path: str) -> os.stat_result | None:
+    """Preserve reviewability-specific parent diagnostics during Git resolution."""
+
+    current = repo
+    parts = PurePosixPath(path).parts
+    for index, part in enumerate(parts):
+        current /= part
+        try:
+            info = current.lstat()
+        except FileNotFoundError:
+            return None
+        if index < len(parts) - 1 and stat.S_ISLNK(info.st_mode):
+            component = current.relative_to(repo).as_posix()
+            raise ValueError(
+                "reviewable path parent component must not be a symlink: "
+                + component
+            )
+        if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
+            raise ValueError(
+                f"reviewable path parent must be a directory: {path}"
+            )
+    return info
+
+
+def canonical_reviewable_paths(
+    repo: Path,
+    paths: list[str] | set[str],
+    *,
+    allowed_missing: set[str] | None = None,
+    max_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    capture_deadline: CaptureDeadline | None = None,
+) -> list[str]:
+    """Resolve exact declarations to Git's spelling and refuse ignored files."""
+
+    normalized = sorted(
+        {normalize_repo_path(path, label="reviewable path") for path in paths}
+    )
+    if len(normalized) > max_paths:
+        raise ValueError(
+            f"reviewable paths exceed configured {max_paths}-path budget"
+        )
+    if not normalized:
+        return []
+    pathspecs = [f":(icase,literal){path}" for path in normalized]
+    visible = git_list_paths(
+        repo,
+        [
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            *pathspecs,
+        ],
+        max_paths=max_paths,
+        max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
+    )
+    ignored = git_list_paths(
+        repo,
+        [
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            *pathspecs,
+        ],
+        max_paths=max_paths,
+        max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
+    )
+    index_tags = git_index_path_tags(
+        repo,
+        pathspecs,
+        max_paths=max_paths,
+        max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
+    )
+    index_suppressed = {
+        path
+        for path, tags in index_tags.items()
+        if any(tag.islower() or tag == "S" for tag in tags)
+    }
+    visible_set = set(visible)
+    ignored_set = set(ignored)
+    candidates = visible_set | ignored_set
+    candidates_by_fold: dict[str, list[str]] = {}
+    for candidate in sorted(candidates):
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        candidates_by_fold.setdefault(candidate.casefold(), []).append(candidate)
+    normalized_allowed_missing = {
+        normalize_repo_path(path, label="allowed missing reviewable path")
+        for path in allowed_missing or set()
+    }
+    canonical: list[str] = []
+    for path in normalized:
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        matches = candidates_by_fold.get(path.casefold(), [])
+        if len(matches) > 1:
+            raise ValueError(
+                "reviewable path has case-insensitive repository ambiguity: "
+                + path
+            )
+        if matches:
+            actual = matches[0]
+            if actual in index_suppressed:
+                raise ValueError(
+                    "reviewable path is hidden by Git index flags and cannot be "
+                    "captured reliably: "
+                    + actual
+                )
+            if actual in ignored_set and actual not in visible_set:
+                raise ValueError(
+                    "reviewable path is ignored and cannot be captured reliably: "
+                    + actual
+                )
+            canonical.append(actual)
+            continue
+        info = _lstat_reviewable_entry(repo, path)
+        if info is not None and not stat.S_ISREG(info.st_mode):
+            raise ValueError(
+                f"reviewable path must name a regular file: {path}"
+            )
+        if path in normalized_allowed_missing and info is None:
+            canonical.append(path)
+            continue
+        if info is None:
+            raise ValueError(
+                f"reviewable path must name an existing regular file: {path}"
+            )
+        raise ValueError(
+            "reviewable path is not Git-visible and cannot be captured reliably: "
+            + path
+        )
+    folded = [path.casefold() for path in canonical]
+    if len(folded) != len(set(folded)):
+        raise ValueError(
+            "reviewable paths resolve to case-insensitive repository duplicates"
+        )
+    return sorted(canonical)
+
+
+def reviewable_path_metadata(
+    repo: Path,
+    paths: list[str] | set[str],
+    *,
+    capture_deadline: CaptureDeadline | None = None,
+) -> list[dict[str, Any]]:
+    """Capture bounded file identity while refusing aliases and type changes."""
+
+    captured: list[dict[str, Any]] = []
+    for path in sorted(
+        {normalize_repo_path(path, label="reviewable path") for path in paths}
+    ):
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
+        info = _lstat_reviewable_entry(repo, path)
+        if info is None:
+            captured.append({"path": path, "kind": "missing", "exists": False})
+            continue
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(
+                "reviewable path must remain a regular file or be deleted: " + path
+            )
+        if info.st_nlink != 1:
+            raise ValueError(
+                f"reviewable path must have link count one: {path}"
+            )
+        captured.append(
+            {
+                "path": path,
+                "kind": "file",
+                "exists": True,
+                "device": info.st_dev,
+                "inode": info.st_ino,
+                "link_count": info.st_nlink,
+                "size": info.st_size,
+                "mode": stat.S_IMODE(info.st_mode),
+                "mtime_ns": info.st_mtime_ns,
+                "ctime_ns": info.st_ctime_ns,
+            }
+        )
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
+    return captured
 
 
 def metadata_only(
@@ -673,6 +915,7 @@ def repository_snapshot(
     *,
     extra_sensitive: list[str] | None = None,
     reviewable_paths: list[str] | None = None,
+    allowed_missing_reviewable_paths: set[str] | None = None,
     reference_sensitive_metadata: list[dict[str, Any]] | None = None,
     max_untracked_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     max_fingerprint_file_bytes: int = DEFAULT_MAX_FINGERPRINT_FILE_BYTES,
@@ -692,13 +935,23 @@ def repository_snapshot(
         normalize_repo_path(path, label="reviewable path")
         for path in reviewable_paths or []
     }
-    for path in sorted(normalized_reviewable):
-        info = _lstat_repo_entry(repo, path)
-        if info is not None and not stat.S_ISREG(info.st_mode):
-            raise ValueError(
-                "reviewable path must remain a regular file or be deleted: "
-                + path
-            )
+    canonical_reviewable = canonical_reviewable_paths(
+        repo,
+        normalized_reviewable,
+        allowed_missing=allowed_missing_reviewable_paths,
+        max_paths=max_sensitive_paths,
+        max_git_seconds=max_git_seconds,
+        capture_deadline=capture_deadline,
+    )
+    if canonical_reviewable != sorted(normalized_reviewable):
+        raise ValueError(
+            "reviewable path no longer matches its sealed repository spelling"
+        )
+    reviewable_path_metadata(
+        repo,
+        normalized_reviewable,
+        capture_deadline=capture_deadline,
+    )
     changes, untracked = repository_changes(
         repo,
         max_git_seconds=max_git_seconds,
@@ -864,6 +1117,7 @@ def stable_repository_capture(
     *,
     extra_sensitive: list[str] | None = None,
     reviewable_paths: list[str] | None = None,
+    allowed_missing_reviewable_paths: set[str] | None = None,
     reference_sensitive_metadata: list[dict[str, Any]] | None = None,
     max_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     protect_changed_paths: bool = False,
@@ -871,12 +1125,18 @@ def stable_repository_capture(
     max_capture_seconds: float = DEFAULT_MAX_CAPTURE_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
     capture_deadline: CaptureDeadline | None = None,
-) -> tuple[dict[str, Any], bytes, bytes, dict[str, str], float]:
+) -> tuple[dict[str, Any], bytes, bytes, dict[str, str], float, list[dict[str, Any]]]:
     """Require two identical bounded captures before trusting repository state."""
 
     deadline = capture_deadline or CaptureDeadline(max_capture_seconds)
 
-    def capture_once() -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
+    def capture_once() -> tuple[
+        dict[str, Any],
+        bytes,
+        bytes,
+        dict[str, str],
+        list[dict[str, Any]],
+    ]:
         deadline.checkpoint()
         git_before = git_identity(
             repo,
@@ -887,6 +1147,7 @@ def stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
             reviewable_paths=reviewable_paths,
+            allowed_missing_reviewable_paths=allowed_missing_reviewable_paths,
             reference_sensitive_metadata=reference_sensitive_metadata,
             max_untracked_patch_bytes=max_patch_bytes,
             protect_changed_paths=protect_changed_paths,
@@ -905,6 +1166,29 @@ def stable_repository_capture(
             max_git_seconds=max_git_seconds,
             capture_deadline=deadline,
         )
+        canonical_reviewable = canonical_reviewable_paths(
+            repo,
+            reviewable_paths or [],
+            allowed_missing=allowed_missing_reviewable_paths,
+            max_paths=max_sensitive_paths,
+            max_git_seconds=max_git_seconds,
+            capture_deadline=deadline,
+        )
+        expected_reviewable = sorted(
+            {
+                normalize_repo_path(path, label="reviewable path")
+                for path in reviewable_paths or []
+            }
+        )
+        if canonical_reviewable != expected_reviewable:
+            raise ValueError(
+                "reviewable path no longer matches its sealed repository spelling"
+            )
+        reviewable_metadata = reviewable_path_metadata(
+            repo,
+            expected_reviewable,
+            capture_deadline=deadline,
+        )
         git_after = git_identity(
             repo,
             max_git_seconds=max_git_seconds,
@@ -912,11 +1196,19 @@ def stable_repository_capture(
         )
         if git_after != git_before:
             raise ValueError("repository Git base changed during capture")
-        return snapshot, untracked_patch, patch, git_after
+        return snapshot, untracked_patch, patch, git_after, reviewable_metadata
 
     first = capture_once()
     second = capture_once()
     if first != second:
         raise ValueError("repository state did not stabilize across bounded captures")
     deadline.checkpoint()
-    return (*second, deadline.elapsed_seconds())
+    snapshot, untracked_patch, patch, git_after, reviewable_metadata = second
+    return (
+        snapshot,
+        untracked_patch,
+        patch,
+        git_after,
+        deadline.elapsed_seconds(),
+        reviewable_metadata,
+    )

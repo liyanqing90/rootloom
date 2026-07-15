@@ -734,6 +734,7 @@ def main(argv: list[str] | None = None) -> int:
     baseline_sha256: str | None = None
     baseline_extra: list[str] = []
     baseline_reviewable: list[str] = []
+    baseline_missing_reviewable: set[str] = set()
     if args.baseline:
         try:
             baseline_path = validated_external_evidence_path(
@@ -749,6 +750,17 @@ def main(argv: list[str] | None = None) -> int:
             )
             baseline_extra = list(baseline["sensitive_paths"])
             baseline_reviewable = list(baseline.get("reviewable_paths", []))
+            baseline_reviewable_set = set(baseline_reviewable)
+            baseline_missing_reviewable = {
+                item["path"]
+                for item in baseline["snapshot"]["untracked"]
+                if isinstance(item, dict)
+                and item.get("path") in baseline_reviewable_set
+                and item.get("kind") == "file"
+                and item.get("exists") is True
+                and item.get("sensitive") is False
+                and item.get("content_read") is True
+            }
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
     normalized_cli_sensitive = sorted(
@@ -829,10 +841,12 @@ def main(argv: list[str] | None = None) -> int:
             patch_before,
             current_git,
             capture_duration_before,
+            reviewable_metadata_before,
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
             reviewable_paths=baseline_reviewable,
+            allowed_missing_reviewable_paths=baseline_missing_reviewable,
             reference_sensitive_metadata=(
                 baseline["snapshot"]["sensitive_paths"]
                 if baseline is not None
@@ -1075,10 +1089,12 @@ def main(argv: list[str] | None = None) -> int:
             patch_after,
             current_git_after,
             capture_duration_after,
+            reviewable_metadata_after,
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
             reviewable_paths=baseline_reviewable,
+            allowed_missing_reviewable_paths=baseline_missing_reviewable,
             reference_sensitive_metadata=snapshot_before["sensitive_paths"],
             max_patch_bytes=args.max_patch_bytes,
             protect_changed_paths=(
@@ -1099,6 +1115,7 @@ def main(argv: list[str] | None = None) -> int:
         snapshot_after == snapshot_before
         and untracked_patch_after == untracked_patch_before
         and patch_after == patch_before
+        and reviewable_metadata_after == reviewable_metadata_before
     )
     if not capture_preserved:
         log += (
@@ -1264,7 +1281,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "3.1.0",
+        "producer_version": "3.2.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,
@@ -1317,6 +1334,17 @@ def main(argv: list[str] | None = None) -> int:
         "removed_preexisting_paths": removed_preexisting_paths,
         "task_changes": task_changes,
         "change_partition": change_partition,
+        "reviewability_policy": {
+            "enabled": bool(baseline_reviewable),
+            "paths": baseline_reviewable,
+            "source": "intake-sealed" if baseline_reviewable else None,
+            "policy_sha256": (
+                baseline.get("sensitive_policy_sha256")
+                if baseline is not None and baseline_reviewable
+                else None
+            ),
+            "captured_files": reviewable_metadata_after,
+        },
         "baseline": {
             "required": bool(args.strict and tier >= 1),
             "provided": baseline is not None,

@@ -30,12 +30,14 @@ from runner.review_run import (
     write_new_json,
 )
 from runner.state import (
+    CaptureDeadline,
     DEFAULT_MAX_CAPTURE_SECONDS,
     DEFAULT_MAX_GIT_SECONDS,
     DEFAULT_MAX_SENSITIVE_PATHS,
+    canonical_reviewable_paths,
     stable_repository_capture,
 )
-from rootloom_paths import validate_reviewable_paths
+from rootloom_paths import normalize_reviewable_paths, validate_reviewable_paths
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -126,10 +128,23 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--allow-all-paths cannot be combined with --path")
     if not output.parent.is_dir():
         raise SystemExit(f"review output parent does not exist: {output.parent}")
+    capture_deadline = CaptureDeadline(args.max_capture_seconds)
     try:
+        requested_reviewable_paths = normalize_reviewable_paths(
+            args.reviewable_path,
+            extra_sensitive=set(args.sensitive_path),
+            max_paths=args.max_sensitive_paths,
+        )
+        reviewable_paths = canonical_reviewable_paths(
+            repo,
+            requested_reviewable_paths,
+            max_paths=args.max_sensitive_paths,
+            max_git_seconds=args.max_git_seconds,
+            capture_deadline=capture_deadline,
+        )
         reviewable_paths = validate_reviewable_paths(
             repo,
-            args.reviewable_path,
+            reviewable_paths,
             extra_sensitive=set(args.sensitive_path),
             max_paths=args.max_sensitive_paths,
         )
@@ -142,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
             patch,
             captured_git,
             _capture_duration_seconds,
+            _reviewable_metadata,
         ) = stable_repository_capture(
             repo,
             extra_sensitive=args.sensitive_path,
@@ -149,6 +165,7 @@ def main(argv: list[str] | None = None) -> int:
             max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            capture_deadline=capture_deadline,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -170,9 +187,16 @@ def main(argv: list[str] | None = None) -> int:
         max_git_seconds=args.max_git_seconds,
     )
     try:
-        if validate_reviewable_paths(
+        recaptured_reviewable_paths = canonical_reviewable_paths(
             repo,
             reviewable_paths,
+            max_paths=args.max_sensitive_paths,
+            max_git_seconds=args.max_git_seconds,
+            capture_deadline=capture_deadline,
+        )
+        if recaptured_reviewable_paths != reviewable_paths or validate_reviewable_paths(
+            repo,
+            recaptured_reviewable_paths,
             extra_sensitive=set(args.sensitive_path),
             max_paths=args.max_sensitive_paths,
         ) != reviewable_paths:

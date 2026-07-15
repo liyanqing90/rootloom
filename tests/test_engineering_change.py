@@ -60,6 +60,7 @@ from runner.review_run import CONTRACT_DRAFT_SENTINEL
 from runner.state import (
     CaptureDeadline,
     _new_file_patch,
+    canonical_reviewable_paths,
     discover_sensitive_paths,
     filter_untracked_patch,
     git_bounded,
@@ -727,8 +728,17 @@ class EngineeringChangeTests(unittest.TestCase):
             certs.mkdir()
             public_crt = certs / "public-root.crt"
             public_crt.write_text("PUBLIC ROOT CERTIFICATE\n", encoding="utf-8")
+            public_der = certs / "public.der"
+            public_der.write_text("PUBLIC DER CERTIFICATE\n", encoding="utf-8")
             subprocess.run(
-                ["git", "add", public_pem.name, env_template.name, "certs/public-root.crt"],
+                [
+                    "git",
+                    "add",
+                    public_pem.name,
+                    env_template.name,
+                    "certs/public-root.crt",
+                    "certs/public.der",
+                ],
                 cwd=repo,
                 check=True,
             )
@@ -743,6 +753,7 @@ class EngineeringChangeTests(unittest.TestCase):
                     public_pem.name,
                     env_template.name,
                     "certs/public-root.crt",
+                    "certs/public.der",
                 ],
                 name="reviewable-pem",
             )
@@ -751,7 +762,12 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(baseline["format"], "rootloom-change-baseline-v4")
             self.assertEqual(
                 baseline["reviewable_paths"],
-                [env_template.name, "certs/public-root.crt", public_pem.name],
+                [
+                    env_template.name,
+                    "certs/public-root.crt",
+                    "certs/public.der",
+                    public_pem.name,
+                ],
             )
             self.assertNotIn(
                 public_pem.name,
@@ -790,6 +806,49 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(summary["baseline"]["format"], "rootloom-change-baseline-v4")
             self.assertEqual(summary["risk"], "high")
             self.assertFalse(summary["sensitive_change_quarantine"])
+            reviewability = summary["reviewability_policy"]
+            self.assertEqual(
+                set(reviewability),
+                {"captured_files", "enabled", "paths", "policy_sha256", "source"},
+            )
+            self.assertTrue(reviewability["enabled"])
+            self.assertEqual(reviewability["paths"], baseline["reviewable_paths"])
+            self.assertEqual(
+                reviewability["policy_sha256"],
+                baseline["sensitive_policy_sha256"],
+            )
+            self.assertEqual(reviewability["source"], "intake-sealed")
+            self.assertEqual(
+                [
+                    item["path"]
+                    for item in reviewability["captured_files"]
+                ],
+                baseline["reviewable_paths"],
+            )
+            self.assertTrue(
+                all(
+                    item["link_count"] == 1
+                    for item in reviewability["captured_files"]
+                )
+            )
+            self.assertTrue(
+                all(
+                    set(item)
+                    == {
+                        "path",
+                        "kind",
+                        "exists",
+                        "device",
+                        "inode",
+                        "link_count",
+                        "size",
+                        "mode",
+                        "mtime_ns",
+                        "ctime_ns",
+                    }
+                    for item in reviewability["captured_files"]
+                )
+            )
             self.assertNotIn(
                 public_pem.name,
                 {
@@ -830,6 +889,21 @@ class EngineeringChangeTests(unittest.TestCase):
             (repo / "public.pem").write_text("PUBLIC CERTIFICATE\n", encoding="utf-8")
             (repo / "private.key").write_text("synthetic-private-key\n", encoding="utf-8")
             (repo / "private-key.pem").write_text("synthetic-private-key\n", encoding="utf-8")
+            for name in (
+                "key.pem",
+                "key.der",
+                "server-key.pem",
+                "server-key.der",
+                "client-key.pem",
+                "client-key.der",
+                "host-key.pem",
+                "host-key.der",
+                "ssh-key.pem",
+                "ssh-key.der",
+                "identity-key.pem",
+                "identity-key.der",
+            ):
+                (repo / name).write_text("synthetic-private-key\n", encoding="utf-8")
             (repo / ".env").write_text("TOKEN=synthetic\n", encoding="utf-8")
             (repo / "public.crt").write_text("PUBLIC CERTIFICATE\n", encoding="utf-8")
             (repo / "material-dir").mkdir()
@@ -845,6 +919,27 @@ class EngineeringChangeTests(unittest.TestCase):
                     "strong-named-pem",
                     ["--reviewable-path", "private-key.pem"],
                     "strong sensitive material",
+                ),
+                *(
+                    (
+                        f"strong-{name}",
+                        ["--reviewable-path", name],
+                        "strong sensitive material",
+                    )
+                    for name in (
+                        "key.pem",
+                        "key.der",
+                        "server-key.pem",
+                        "server-key.der",
+                        "client-key.pem",
+                        "client-key.der",
+                        "host-key.pem",
+                        "host-key.der",
+                        "ssh-key.pem",
+                        "ssh-key.der",
+                        "identity-key.pem",
+                        "identity-key.der",
+                    )
                 ),
                 ("strong-env", ["--reviewable-path", ".env"], "strong sensitive material"),
                 (
@@ -900,6 +995,377 @@ class EngineeringChangeTests(unittest.TestCase):
                     )
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn(message, completed.stderr)
+
+    def test_begin_review_rejects_ignored_reviewable_paths_and_rechecks_visibility(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / ".gitignore").write_text("ignored-public.pem\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore public fixture"], cwd=repo, check=True)
+            (repo / "ignored-public.pem").write_text(
+                "PUBLIC CERTIFICATE\n",
+                encoding="utf-8",
+            )
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "review ignored public material",
+                    "--output",
+                    str(root / "ignored-review"),
+                    "--path",
+                    "app.py",
+                    "--reviewable-path",
+                    "ignored-public.pem",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn(
+                "reviewable path is ignored and cannot be captured reliably",
+                rejected.stderr,
+            )
+            self.assertFalse((root / "ignored-review").exists())
+
+            visible = repo / "visible-public.pem"
+            visible.write_text("PUBLIC CERTIFICATE V1\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=[".gitignore", visible.name],
+                reviewable_paths=[visible.name],
+                allow_dirty_baseline=True,
+                name="visible-reviewable",
+            )
+            with (repo / ".gitignore").open("a", encoding="utf-8") as handle:
+                handle.write(f"{visible.name}\n")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "ignored-after-intake"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "reviewable path is ignored and cannot be captured reliably",
+                completed.stderr,
+            )
+            self.assertFalse((root / "ignored-after-intake").exists())
+
+    def test_begin_review_rejects_index_suppressed_reviewable_paths_and_rechecks(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            public_pem = repo / "public.pem"
+            public_pem.write_text("PUBLIC CERTIFICATE V1\n", encoding="utf-8")
+            subprocess.run(["git", "add", public_pem.name], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add public certificate"], cwd=repo, check=True)
+
+            flag_cases = (
+                ("assume-unchanged", "--assume-unchanged", "--no-assume-unchanged", "h"),
+                ("skip-worktree", "--skip-worktree", "--no-skip-worktree", "S"),
+            )
+            for name, set_flag, clear_flag, expected_tag in flag_cases:
+                with self.subTest(name=name):
+                    subprocess.run(
+                        ["git", "update-index", set_flag, public_pem.name],
+                        cwd=repo,
+                        check=True,
+                    )
+                    index_state = subprocess.run(
+                        ["git", "ls-files", "-v", "--", public_pem.name],
+                        cwd=repo,
+                        capture_output=True,
+                        text=True,
+                        check=True,
+                    ).stdout
+                    self.assertTrue(index_state.startswith(expected_tag + " "))
+                    rejected = subprocess.run(
+                        [
+                            sys.executable,
+                            str(BEGIN_REVIEW),
+                            "--repo",
+                            str(repo),
+                            "--task",
+                            "review public certificate",
+                            "--output",
+                            str(root / f"index-{name}-review"),
+                            "--path",
+                            public_pem.name,
+                            "--reviewable-path",
+                            public_pem.name,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(rejected.returncode, 0)
+                    self.assertIn(
+                        "reviewable path is hidden by Git index flags "
+                        "and cannot be captured reliably",
+                        rejected.stderr,
+                    )
+                    self.assertFalse((root / f"index-{name}-review").exists())
+                subprocess.run(
+                    ["git", "update-index", clear_flag, public_pem.name],
+                    cwd=repo,
+                    check=True,
+                )
+
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["app.py", public_pem.name],
+                reviewable_paths=[public_pem.name],
+                name="index-suppression-recheck",
+            )
+            subprocess.run(
+                ["git", "update-index", "--assume-unchanged", public_pem.name],
+                cwd=repo,
+                check=True,
+            )
+            public_pem.write_text("SYNTHETIC PRIVATE MATERIAL V2\n", encoding="utf-8")
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "index-suppression-run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "reviewable path is hidden by Git index flags "
+                "and cannot be captured reliably",
+                completed.stderr,
+            )
+            self.assertFalse((root / "index-suppression-run").exists())
+
+    def test_begin_review_seals_repository_actual_reviewable_path_spelling(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            certificate_dir = repo / "Certs"
+            certificate_dir.mkdir()
+            certificate = certificate_dir / "Public.pem"
+            certificate.write_text("PUBLIC CERTIFICATE\n", encoding="utf-8")
+            subprocess.run(["git", "add", "Certs/Public.pem"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add mixed-case certificate"], cwd=repo, check=True)
+            output = root / "case-review"
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "review public certificate",
+                    "--output",
+                    str(output),
+                    "--path",
+                    "Certs/Public.pem",
+                    "--reviewable-path",
+                    "certs/public.pem",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            baseline = json.loads((output / "baseline.json").read_text(encoding="ascii"))
+            self.assertEqual(baseline["reviewable_paths"], ["Certs/Public.pem"])
+
+    def test_begin_review_rejects_casefold_ambiguous_repository_spelling(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            upper = repo / "Certs"
+            lower = repo / "certs"
+            upper.mkdir()
+            if lower.exists():
+                self.skipTest("filesystem does not support case-distinct paths")
+            lower.mkdir()
+            (upper / "Public.pem").write_text("PUBLIC CERTIFICATE A\n", encoding="utf-8")
+            (lower / "public.pem").write_text("PUBLIC CERTIFICATE B\n", encoding="utf-8")
+            subprocess.run(
+                ["git", "add", "Certs/Public.pem", "certs/public.pem"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "commit", "-qm", "add case-distinct certificates"], cwd=repo, check=True)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "review public certificate",
+                    "--output",
+                    str(root / "ambiguous-case-review"),
+                    "--path",
+                    "Certs/Public.pem",
+                    "--reviewable-path",
+                    "CERTS/PUBLIC.PEM",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(
+                "reviewable path has case-insensitive repository ambiguity",
+                completed.stderr,
+            )
+
+    def test_reviewable_spelling_resolver_rejects_casefold_ambiguity(self) -> None:
+        with (
+            mock.patch(
+                "runner.state.git_list_paths",
+                side_effect=[
+                    ["Certs/Public.pem", "certs/public.pem"],
+                    [],
+                ],
+            ),
+            mock.patch("runner.state.git_index_path_tags", return_value={}),
+        ):
+            with self.assertRaisesRegex(
+                ValueError,
+                "case-insensitive repository ambiguity",
+            ):
+                canonical_reviewable_paths(
+                    Path("/repository"),
+                    ["CERTS/PUBLIC.PEM"],
+                )
+
+    def test_reviewable_spelling_resolver_requires_prior_fingerprint_for_missing(self) -> None:
+        with (
+            mock.patch("runner.state.git_list_paths", side_effect=[[], []]),
+            mock.patch("runner.state.git_index_path_tags", return_value={}),
+            mock.patch("runner.state._lstat_reviewable_entry", return_value=None),
+        ):
+            with self.assertRaisesRegex(ValueError, "existing regular file"):
+                canonical_reviewable_paths(
+                    Path("/repository"),
+                    ["public.pem"],
+                )
+        with (
+            mock.patch("runner.state.git_list_paths", side_effect=[[], []]),
+            mock.patch("runner.state.git_index_path_tags", return_value={}),
+            mock.patch("runner.state._lstat_reviewable_entry", return_value=None),
+        ):
+            self.assertEqual(
+                canonical_reviewable_paths(
+                    Path("/repository"),
+                    ["public.pem"],
+                    allowed_missing={"public.pem"},
+                ),
+                ["public.pem"],
+            )
+
+    def test_reviewable_paths_reject_hardlinks_at_intake_and_capture(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            linked = repo / "linked-public.pem"
+            original = repo / "original-public.pem"
+            original.write_text("PUBLIC CERTIFICATE\n", encoding="utf-8")
+            try:
+                os.link(original, linked)
+            except OSError as exc:
+                self.skipTest(f"hardlinks are unavailable: {exc}")
+            subprocess.run(["git", "add", original.name, linked.name], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add hardlinked certificates"], cwd=repo, check=True)
+            rejected = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "review public certificate",
+                    "--output",
+                    str(root / "hardlink-review"),
+                    "--path",
+                    linked.name,
+                    "--reviewable-path",
+                    linked.name,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(rejected.returncode, 0)
+            self.assertIn("reviewable path must have link count one", rejected.stderr)
+
+            public_pem = repo / "public.pem"
+            public_pem.write_text("PUBLIC CERTIFICATE V1\n", encoding="utf-8")
+            subprocess.run(["git", "add", public_pem.name], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add standalone certificate"], cwd=repo, check=True)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=[public_pem.name],
+                reviewable_paths=[public_pem.name],
+                name="hardlink-replacement",
+            )
+            outside_key = root / "outside-private-key"
+            outside_key.write_text("SYNTHETIC PRIVATE KEY\n", encoding="utf-8")
+            public_pem.unlink()
+            os.link(outside_key, public_pem)
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "hardlink-run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("reviewable path must have link count one", completed.stderr)
+            self.assertFalse((root / "hardlink-run").exists())
 
     def test_reviewable_path_option_exists_only_at_intake(self) -> None:
         begin_help = subprocess.run(
@@ -2009,6 +2475,16 @@ class EngineeringChangeTests(unittest.TestCase):
             )
             self.assertEqual(summary["evidence_provenance"]["semantic_review"], "operator-asserted")
             self.assertEqual(summary["sensitive_integrity"], "metadata-observed")
+            self.assertEqual(
+                summary["reviewability_policy"],
+                {
+                    "captured_files": [],
+                    "enabled": False,
+                    "paths": [],
+                    "policy_sha256": None,
+                    "source": None,
+                },
+            )
             self.assertTrue(summary["hash_chain"]["valid"])
             self.assertEqual(summary["process_convergence"], "complete")
             self.assertTrue(summary["detached_descendant_possible"])
@@ -3581,7 +4057,6 @@ class EngineeringChangeTests(unittest.TestCase):
         public_certificates = (
             "certs/public-root.crt",
             "certificates/public-chain.cer",
-            "trust/bundle.der",
             "trust/chain.p7b",
             "trust/chain.p7c",
             "trust/PUBLIC-ROOT.CRT",
@@ -3604,6 +4079,16 @@ class EngineeringChangeTests(unittest.TestCase):
             "trust/clientSecret.crt",
             "trust/private-key.cer",
             "trust/privateKey.cer",
+            "trust/bundle.der",
+            "trust/key.der",
+            "trust/server.der",
+            "trust/identity.der",
+            "keys/key.pem",
+            "keys/server-key.pem",
+            "keys/client-key.pem",
+            "keys/host-key.pem",
+            "keys/ssh-key.pem",
+            "keys/identity-key.pem",
         )
         for path in strong_material:
             with self.subTest(strong=path):
@@ -3613,6 +4098,21 @@ class EngineeringChangeTests(unittest.TestCase):
 
         self.assertTrue(is_sensitive_material_path("certs/public-chain.pem"))
         self.assertTrue(is_security_domain_path("certs/public-chain.pem"))
+        for reviewable_ambiguous in (
+            "certs/public.pem",
+            "certs/certificate.pem",
+            "certs/ca-chain.pem",
+            "certs/trust-bundle.pem",
+            "certs/public.der",
+        ):
+            with self.subTest(reviewable_ambiguous=reviewable_ambiguous):
+                self.assertTrue(is_sensitive_material_path(reviewable_ambiguous))
+                self.assertFalse(
+                    is_sensitive_material_path(
+                        reviewable_ambiguous,
+                        reviewable_paths={reviewable_ambiguous},
+                    )
+                )
 
     def test_reviewable_security_artifacts_stay_in_patch_and_raise_risk(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
