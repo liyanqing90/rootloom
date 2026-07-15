@@ -615,6 +615,14 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "29408654603",
             "29413872318",
         ),
+        ROOT / "docs" / "releases" / "3.2.0.md": (
+            "Status: published",
+            "9935bbd8f8ab80ae49f9e2e626a5c62e8e4ac51c",
+            "b2a6bfa043847d9462607a67a84c7ac5f8f96611",
+            "RE_kwDOTVQo6M4VIbQT",
+            "29426683030",
+            "29427110772",
+        ),
         ROOT / "docs" / "diagram" / "architecture-en.svg": (
             "Authorization Modes",
             "Single Action",

@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: published; publication-record CI pending
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: security defect repair and external release
@@ -92,6 +92,15 @@ Publish the complete Reviewable Capture/privacy closure as Rootloom Personal Cor
 - Adjacent path: normal tracked, visible untracked, ignored, hardlink, case canonicalization, deletion, v2/v3/v4, default v3.
 - Full gates: `make check`; `make compatibility-smoke`; `git diff --check`; clean-clone replay.
 - Post-action: PR/main/final Actions, tag object/peeled commit, Release JSON, exact remote tree, image hash, and Enterprise ref.
+
+## Executed publication evidence
+
+- Candidate `e98b0871ac33f5533c3e39ebf97bc5107dccff03` passed local and clean-clone `make check` plus compatibility smoke; its tree is `91e51bd41647a5fbb1be7db0327249e8757e8940`.
+- Ready PR [#9](https://github.com/liyanqing90/rootloom/pull/9) passed all seven jobs in run [29426683030](https://github.com/liyanqing90/rootloom/actions/runs/29426683030) and was squash-merged under the repository's enabled merge policy.
+- Exact merged commit `9935bbd8f8ab80ae49f9e2e626a5c62e8e4ac51c` has the same tree and passed all seven jobs again in `main` run [29427110772](https://github.com/liyanqing90/rootloom/actions/runs/29427110772).
+- Annotated tag object `b2a6bfa043847d9462607a67a84c7ac5f8f96611` peels to that passing commit and is published as `v3.2.0`.
+- Public latest Release [Rootloom Personal Core 3.2.0](https://github.com/liyanqing90/rootloom/releases/tag/v3.2.0) is non-draft and non-prerelease with GitHub Release ID `RE_kwDOTVQo6M4VIbQT`.
+- Publication-record CI remains pending; the next transition is to add the observed run ID and close this plan only after all seven jobs pass.
 
 ## Risks
 
