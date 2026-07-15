@@ -32,16 +32,16 @@ python3 <skill-dir>/scripts/begin_review.py \
   --path src/anticipated-owner.py
 ```
 
-`begin_review.py` requires at least one `--path`; use `--allow-all-paths` only when whole-repository scope is intentional. It normally requires a clean worktree/index, while `--allow-dirty-baseline` explicitly records pre-existing changes. If that dirty state later changes, finalization conservatively scopes all current overlapping paths because the aggregate baseline patch cannot prove per-path attribution; a pre-existing dirty path that disappears fails closed. Intake creation uses a temporary-directory transaction followed by the platform's atomic no-replace rename, so capture/write failure leaves no final run and a concurrently created destination is never overwritten.
+`begin_review.py` requires at least one `--path`; use `--allow-all-paths` only when whole-repository scope is intentional. It normally requires a clean worktree/index, while `--allow-dirty-baseline` explicitly records pre-existing changes. If the aggregate tracked patch later changes, finalization conservatively scopes still-dirty tracked endpoints because the baseline cannot prove their per-path attribution; exact unchanged untracked fingerprints remain pre-existing and outside task scope, risk analysis, and `diff.patch`, while changed fingerprints remain conservatively attributed and a pre-existing dirty path that disappears fails closed. Intake creation uses a temporary-directory transaction followed by the platform's atomic no-replace rename, so capture/write failure leaves no final run and a concurrently created destination is never overwritten.
 
-The intake contains `baseline.json`, editable `change-contract.draft.json`, and immutable-input `review.json`. Edit only the draft, remove every `TODO`, and then seal it:
+The intake contains `baseline.json`, editable `change-contract.draft.json`, and immutable-input `review.json`. Edit only the draft, replace every exact Rootloom contract placeholder, and then seal it:
 
 ```bash
 python3 <skill-dir>/scripts/seal_contract.py \
   --review-dir /absolute/path/outside-repo/run
 ```
 
-Sealing deeply validates and normalizes the draft, then exclusively creates `change-contract.json` and `contract.seal.json`. The seal binds the canonical contract hash, raw sealed-file hash, review-manifest byte hash, baseline hash, run ID, nonce, and task hash. Do not edit the sealed contract or manifest; finalization rejects post-seal drift.
+Sealing deeply validates and normalizes the draft, then exclusively creates `change-contract.json` and `contract.seal.json`. The seal binds the canonical contract hash, raw sealed-file hash, review-manifest byte hash, baseline hash, run ID, nonce, and task hash. Do not edit the sealed contract or manifest; finalization rejects post-seal drift. If an interruption left an exact final contract without its seal, rerun with `--recover`; recovery validates the current baseline, manifest, draft-derived contract, and existing bytes and never overwrites mismatched evidence.
 
 For an analyzer-only baseline, run it before editing and add the external baseline:
 
@@ -53,7 +53,7 @@ python3 <skill-dir>/scripts/analyze_change.py \
   --write-baseline /absolute/path/outside-repo/baseline.json
 ```
 
-The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. New baselines use `rootloom-change-baseline-v2` with canonical `run_id`, nonce, timestamps and hashes plus repository/Git identity. A baseline is accepted only after two consecutive bounded captures agree; strict finalization binds current HEAD, symbolic HEAD ref, and index to it and rechecks the base after verification. v1 baselines remain readable as self-declared compatibility input. Baselines capture bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Built-in sensitive names/suffixes and repeatable `--sensitive-path` roots protect complete descendant trees. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
+The external baseline is mandatory only when the finalizer will run with `--strict` for Tier 1/2. New baselines use `rootloom-change-baseline-v2` with canonical `run_id`, nonce, timestamps and hashes plus repository/Git identity. A baseline is accepted only after two consecutive bounded captures agree; strict finalization binds current HEAD, symbolic HEAD ref, and index to it and rechecks the base after verification. v1 baselines remain readable as self-declared compatibility input. Baselines capture bounded tracked/untracked state plus metadata-only ignored, secret-like, symlink, and directory state. Built-in sensitive names/suffixes and repeatable `--sensitive-path` roots protect complete descendant trees. A finite-positive `--max-git-seconds` value (default 30) bounds every Git child through the controlled process-tree owner, and every Git child receives closed stdin. Targeted discovery has an independent bounded candidate ceiling; positive `--max-sensitive-paths` (default 10,000) limits only the classified sensitive-result union. Never recreate a missing intake baseline after implementation and present it as pre-change evidence.
 
 Inspect every reported signal. The scanner combines task text, paths and operations, bounded tracked and non-sensitive untracked diff signals, repository commands, and relevant active project memory. It reports a minimum Tier and verification plan; it cannot prove semantic risk. Raise the tier further when current evidence or unknown consumers require it.
 
@@ -179,15 +179,15 @@ For release or other explicitly governed work, add:
 --semantic-coverage reviewed
 ```
 
-Strict mode defaults to quality exit semantics: only `VERIFIED_CHANGE` returns zero. Use explicit `--strict-bundle-only` when a non-blocking strict bundle is intentionally required. Evidence and output paths must be outside both the repository worktree and its resolved Git common directory, including for linked worktrees; output must also be absent, empty, or already carry Rootloom's ownership marker. A reused owned output invalidates its previous summary before the new run can exit early. Lexical path and parent checks reject symlink redirection before resolution. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files.
+Strict mode defaults to quality exit semantics: only `REVIEW_EVIDENCE_COMPLETE` returns zero. Use explicit `--strict-bundle-only` when a non-blocking strict bundle is intentionally required. Evidence and output paths must be outside both the repository worktree and its resolved Git common directory, including for linked worktrees; output must also be absent, empty, or already carry Rootloom's ownership marker. A reused owned output invalidates its previous summary before the new run can exit early. Lexical path and parent checks reject symlink redirection before resolution. The helper recomputes the assessment, does not run a shell, and writes ordinary `diff.patch`, `test.log`, and `summary.json` files.
 
-Ordinary untracked files receive streaming SHA-256 fingerprints and bounded applyable text patches; their non-sensitive text participates in risk analysis. Binary/large files receive type, size, and hash. Sensitive files remain content-unread and metadata-only, including device/inode or platform equivalents, link count, size, mode, modification time, and change time; symlink targets are represented only by byte length and SHA-256. Any sensitive metadata change before or during verification, including a newly discovered ignored addition relative to the reference capture, quarantines every changed endpoint before ordinary content capture, disables additional repository-memory/command discovery, and places ignored sensitive additions, changes, and deletions into scope. The summary reports `sensitive_integrity: metadata-observed`; this detects ordinary same-size rewrites but is not cryptographic content integrity. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
+Ordinary untracked files receive streaming SHA-256 fingerprints and bounded applyable text patches; only task-attributed non-sensitive text participates in risk analysis and the final patch. Binary/large files receive type, size, and hash. Sensitive discovery asks Git only for shared case-insensitive built-in pathspecs and literal declared roots, then reclassifies every returned path in Python; deliberately overmatching candidates and classified sensitive results use separate bounded ceilings, and matching vendor/cache paths are never silently excluded. Sensitive files remain content-unread and metadata-only, including device/inode or platform equivalents, link count, size, mode, modification time, and change time; symlink targets are represented only by byte length and SHA-256. Any sensitive metadata change before or during verification, including a newly discovered ignored addition relative to the reference capture, quarantines every changed endpoint before ordinary content capture, disables additional repository-memory/command discovery, and places ignored sensitive additions, changes, and deletions into scope. An otherwise-complete redacted review is capped at `REVIEW_REQUIRED_WITH_REDACTIONS` with `passed: false`. The summary reports `sensitive_integrity: metadata-observed`; this detects ordinary same-size rewrites but is not cryptographic content integrity. Status, patch, fingerprints, command output, and memory reads all fail closed at configured bounds.
 
 Evidence JSON rejects duplicate keys, non-standard constants, and out-of-range numbers. Every verification command is parsed before the first command executes. Evidence files, seals, the Git base, and the output target are revalidated after command execution; trust-input drift forces `FAILED`.
 
 Verification commands run in a controlled process tree. Output is consumed incrementally and the tree is terminated on timeout, output overflow, or leaked descendants. Personal Core reports `isolation: process-group-only`; it is not a sandbox for untrusted commands and cannot govern detached service managers, containers, privileged background processes, non-sensitive ignored files, Git administrative state, or external state. Command argv and output are retained verbatim in the local bundle, so never place credentials in verification commands or print them. A secret copied to an ordinary path without an observable sensitive-source change is outside the path-classifier guarantee. The summary records observed/retained bytes, `process_convergence`, `commands_passed`, `capture_preserved`, structured `claim_binding`, broader `declared_claim_binding`, `semantic_coverage`, evidence provenance, hash chain, and authoritative `quality_status`.
 
-`semantic_coverage: reviewed` is an explicit operator assertion, not machine proof. `unknown` can reach at most `MECHANICALLY_VERIFIED`; `VERIFIED_CHANGE` requires both operator-sealed mechanical evidence and the semantic-review assertion. `passed` remains true only for `VERIFIED_CHANGE`. Pure verification requires `--allow-no-change` and reports `NO_CHANGE` only after more severe gate/process errors have been excluded.
+`semantic_coverage: reviewed` is an explicit operator assertion, reported separately as `semantic_review: operator-asserted`, not machine proof. `unknown` can reach at most `MECHANICALLY_VERIFIED`; an unsealed assertion is `SEMANTIC_REVIEW_ASSERTED`; operator-sealed mechanical evidence plus the assertion yields `REVIEW_EVIDENCE_COMPLETE`. That state means the evidence chain is complete, not that correctness was proven. `passed` remains true only for `REVIEW_EVIDENCE_COMPLETE`. Pure verification requires `--allow-no-change` and reports `NO_CHANGE` only after more severe gate/process errors have been excluded.
 
 `--risk low|medium|high` remains optional and can raise but never lower the detected floor. `--strict` requires the intake baseline and change contract for Tier 1/2, refuses inconsistent seals/hash chains or moved HEAD/ref/index, and uses quality exit codes by default. Advisory mode never upgrades incomplete evidence to verified quality. Protected deletions still require every exact path to be repeated with `--confirm-dangerous-delete` after user confirmation.
 
@@ -199,6 +199,7 @@ Finish with:
 
 ```json
 {
+  "schema_revision": 4,
   "changed_files": [],
   "risk": "low | medium | high",
   "risk_assessment": {"minimum_tier": 0, "signals": []},
@@ -209,13 +210,15 @@ Finish with:
   "claim_binding": "complete",
   "verification_coverage": "complete",
   "semantic_coverage": "reviewed",
+  "semantic_review": "operator-asserted",
   "evidence_provenance": {
     "baseline": "operator-sealed",
     "change_contract": "operator-sealed",
     "verification_claims": "operator-sealed",
     "semantic_review": "operator-asserted"
   },
-  "quality_status": "VERIFIED_CHANGE",
+  "quality_status": "REVIEW_EVIDENCE_COMPLETE",
+  "passed": true,
   "remaining_risks": []
 }
 ```

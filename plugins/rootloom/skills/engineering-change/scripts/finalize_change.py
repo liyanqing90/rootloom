@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -52,7 +53,10 @@ from runner.review_run import (
     validate_review_manifest,
 )
 from runner.state import (
+    DEFAULT_MAX_GIT_SECONDS,
+    DEFAULT_MAX_SENSITIVE_PATHS,
     discover_sensitive_paths,
+    filter_untracked_patch,
     git_identity,
     metadata_only,
     snapshot_identity,
@@ -67,8 +71,9 @@ MAX_COMMAND_CHARS = 8192
 MAX_REMAINING_RISKS = 20
 MAX_REMAINING_RISK_CHARS = 4096
 QUALITY_EXIT_CODES = {
-    "VERIFIED_CHANGE": 0,
-    "SEMANTICALLY_REVIEWED": 4,
+    "REVIEW_EVIDENCE_COMPLETE": 0,
+    "REVIEW_REQUIRED_WITH_REDACTIONS": 4,
+    "SEMANTIC_REVIEW_ASSERTED": 4,
     "MECHANICALLY_VERIFIED": 4,
     "COMMANDS_PASSED": 4,
     "NO_CHANGE": 3,
@@ -148,13 +153,14 @@ def validated_external_evidence_path(
     *,
     repo: Path,
     label: str,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> Path:
     lexical = validate_no_symlink_chain(
         path,
         label=label,
         leaf_may_be_missing=False,
     )
-    identity = repository_identity(repo)
+    identity = repository_identity(repo, max_git_seconds=max_git_seconds)
     validate_outside_repository_storage(
         lexical,
         repository_roots=(
@@ -175,6 +181,7 @@ def revalidate_evidence_inputs(
     contract_path: Path | None,
     contract: dict[str, Any] | None,
     review_detail: dict[str, Any],
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> tuple[bool, list[str]]:
     errors: list[str] = []
     expected_review_detail = review_detail
@@ -187,9 +194,12 @@ def revalidate_evidence_inputs(
                 baseline_path,
                 repo=repo,
                 label="baseline path",
+                max_git_seconds=max_git_seconds,
             )
             observed_baseline, observed_baseline_sha256 = read_baseline_with_hash(
-                baseline_path, repo
+                baseline_path,
+                repo,
+                max_git_seconds=max_git_seconds,
             )
             if observed_baseline_sha256 != baseline_sha256:
                 errors.append("baseline bytes changed during verification")
@@ -198,6 +208,7 @@ def revalidate_evidence_inputs(
                 contract_path,
                 repo=repo,
                 label="change contract path",
+                max_git_seconds=max_git_seconds,
             )
             observed_contract = load_change_contract(contract_path)
             if contract is None or (
@@ -257,6 +268,8 @@ def sensitive_path_changes(
     snapshot: dict[str, Any],
     *,
     extra_sensitive: set[str],
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
 ) -> dict[str, list[str]]:
     """Compare known sensitive metadata before any changed content is read."""
 
@@ -265,7 +278,19 @@ def sensitive_path_changes(
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
             continue
         before[item["path"]] = item
-    current_paths = set(discover_sensitive_paths(repo, extra_sensitive)) | set(before)
+    current_paths = set(
+        discover_sensitive_paths(
+            repo,
+            extra_sensitive,
+            max_git_seconds=max_git_seconds,
+            max_sensitive_paths=max_sensitive_paths,
+        )
+    ) | set(before)
+    if len(current_paths) > max_sensitive_paths:
+        raise ValueError(
+            "sensitive preflight exceeds configured "
+            f"{max_sensitive_paths}-path budget"
+        )
     after = {path: metadata_only(repo, path) for path in sorted(current_paths)}
     changed = sorted(
         path
@@ -285,6 +310,168 @@ def sensitive_path_changes(
         if metadata.get("exists") and not before.get(path, {}).get("exists")
     )
     return {"changed": changed, "missing": missing, "added": added}
+
+
+def captured_changes(
+    snapshot: dict[str, Any], baseline_guard: dict[str, list[str] | bool]
+) -> list[dict[str, str]]:
+    """Combine Git status with metadata-only sensitive changes."""
+
+    git_change_paths = {
+        item.get(field)
+        for item in snapshot["changes"]
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    sensitive_task_changes = [
+        {"status": status, "path": path, "original_path": ""}
+        for status, paths in (
+            ("??", baseline_guard["added"]),
+            (" M", baseline_guard["changed"]),
+            (" D", baseline_guard["missing"]),
+        )
+        for path in paths
+        if path not in git_change_paths
+    ]
+    return [*snapshot["changes"], *sensitive_task_changes]
+
+
+def partition_task_changes(
+    *,
+    baseline: dict[str, Any] | None,
+    snapshot: dict[str, Any],
+    tracked_patch: bytes,
+    current_changes: list[dict[str, str]],
+    baseline_guard: dict[str, list[str] | bool],
+) -> dict[str, Any]:
+    """Attribute captured state to the task without claiming ambiguous precision."""
+
+    preexisting_changes = (
+        list(baseline.get("preexisting_changes", [])) if baseline is not None else []
+    )
+    preexisting_keys = {
+        (item.get("status"), item.get("path"), item.get("original_path"))
+        for item in preexisting_changes
+        if isinstance(item, dict)
+    }
+    preexisting_paths = {
+        item.get(field)
+        for item in preexisting_changes
+        if isinstance(item, dict)
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    current_paths = {
+        item.get(field)
+        for item in current_changes
+        for field in ("path", "original_path")
+        if item.get(field)
+    }
+    removed_preexisting_paths = sorted(preexisting_paths - current_paths)
+    task_changes = [
+        item
+        for item in current_changes
+        if (item.get("status"), item.get("path"), item.get("original_path"))
+        not in preexisting_keys
+    ]
+    tracked_patch_changed = baseline is None or (
+        hashlib.sha256(tracked_patch).hexdigest()
+        != baseline.get("tracked_patch_sha256")
+    )
+    baseline_state_changed = baseline is None or (
+        snapshot != baseline.get("snapshot") or tracked_patch_changed
+    )
+    change_partition = "no-baseline" if baseline is None else "exact"
+    if (
+        baseline is not None
+        and baseline_state_changed
+        and preexisting_changes
+        and current_changes
+    ):
+        # Baseline v2 stores one aggregate tracked-patch hash, so changed tracked
+        # patches keep every overlapping tracked endpoint conservative. Untracked
+        # entries have per-path fingerprints and can remain exactly pre-existing.
+        overlap_paths = set(baseline_guard["changed"])
+        if tracked_patch_changed:
+            overlap_paths.update(
+                item.get(field)
+                for item in preexisting_changes
+                if isinstance(item, dict) and item.get("status") != "??"
+                for field in ("path", "original_path")
+                if item.get(field) in current_paths
+            )
+        baseline_untracked = {
+            item["path"]: item
+            for item in baseline.get("snapshot", {}).get("untracked", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        current_untracked = {
+            item["path"]: item
+            for item in snapshot.get("untracked", [])
+            if isinstance(item, dict) and isinstance(item.get("path"), str)
+        }
+        for item in preexisting_changes:
+            if not isinstance(item, dict) or item.get("status") != "??":
+                continue
+            path = item.get("path")
+            if (
+                isinstance(path, str)
+                and path in current_paths
+                and baseline_untracked.get(path) != current_untracked.get(path)
+            ):
+                overlap_paths.add(path)
+        if overlap_paths:
+            task_changes = [
+                item
+                for item in current_changes
+                if (
+                    item.get("status"),
+                    item.get("path"),
+                    item.get("original_path"),
+                )
+                not in preexisting_keys
+                or any(
+                    item.get(field) in overlap_paths
+                    for field in ("path", "original_path")
+                )
+            ]
+            change_partition = "conservative-overlap"
+    if removed_preexisting_paths:
+        change_partition = "preexisting-state-removed"
+    return {
+        "preexisting_changes": preexisting_changes,
+        "removed_preexisting_paths": removed_preexisting_paths,
+        "task_changes": task_changes,
+        "change_partition": change_partition,
+        "tracked_patch_changed": tracked_patch_changed,
+    }
+
+
+def task_evidence_patch(
+    *,
+    baseline: dict[str, Any] | None,
+    tracked_patch: bytes,
+    untracked_patch: bytes,
+    task_changes: list[dict[str, str]],
+) -> bytes:
+    """Build the patch from the same task partition used for scope and risk."""
+
+    tracked_patch_changed = baseline is None or (
+        hashlib.sha256(tracked_patch).hexdigest()
+        != baseline.get("tracked_patch_sha256")
+    )
+    task_tracked_patch = tracked_patch if tracked_patch_changed else b""
+    task_untracked_paths = {
+        item["path"]
+        for item in task_changes
+        if item.get("status") == "??" and item.get("path")
+    }
+    task_untracked_patch = filter_untracked_patch(
+        untracked_patch, task_untracked_paths
+    )
+    return task_tracked_patch + (
+        b"\n" if task_tracked_patch and task_untracked_patch else b""
+    ) + task_untracked_patch
 
 
 def atomic_write(path: Path, value: bytes) -> None:
@@ -412,11 +599,25 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--timeout", type=int, default=300)
     parser.add_argument("--max-output-bytes", type=int, default=4 * 1024 * 1024)
     parser.add_argument("--max-patch-bytes", type=int, default=DEFAULT_MAX_PATCH_BYTES)
+    parser.add_argument(
+        "--max-git-seconds",
+        type=float,
+        default=DEFAULT_MAX_GIT_SECONDS,
+    )
+    parser.add_argument(
+        "--max-sensitive-paths",
+        type=int,
+        default=DEFAULT_MAX_SENSITIVE_PATHS,
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.max_git_seconds) or args.max_git_seconds <= 0:
+        raise SystemExit("Git time budget must be finite and positive")
+    if args.max_sensitive_paths <= 0:
+        raise SystemExit("sensitive path budget must be positive")
     if args.strict_bundle_only and not args.strict:
         raise SystemExit("--strict-bundle-only requires --strict")
     if args.strict_bundle_only and args.require_verified:
@@ -443,7 +644,10 @@ def main(argv: list[str] | None = None) -> int:
     if not (repo / ".git").exists():
         raise SystemExit(f"not a Git repository: {repo}")
     try:
-        identity = repository_identity(repo)
+        identity = repository_identity(
+            repo,
+            max_git_seconds=args.max_git_seconds,
+        )
         output = validate_outside_repository_storage(
             output_lexical,
             repository_roots=(
@@ -495,8 +699,13 @@ def main(argv: list[str] | None = None) -> int:
                 args.baseline,
                 repo=repo,
                 label="baseline path",
+                max_git_seconds=args.max_git_seconds,
             )
-            baseline, baseline_sha256 = read_baseline_with_hash(baseline_path, repo)
+            baseline, baseline_sha256 = read_baseline_with_hash(
+                baseline_path,
+                repo,
+                max_git_seconds=args.max_git_seconds,
+            )
             baseline_extra = list(baseline["sensitive_paths"])
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
@@ -547,6 +756,8 @@ def main(argv: list[str] | None = None) -> int:
                 repo,
                 baseline["snapshot"],
                 extra_sensitive=set(extra_sensitive),
+                max_git_seconds=args.max_git_seconds,
+                max_sensitive_paths=args.max_sensitive_paths,
             )
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
@@ -582,6 +793,8 @@ def main(argv: list[str] | None = None) -> int:
             ),
             max_patch_bytes=args.max_patch_bytes,
             protect_changed_paths=sensitive_change_quarantine,
+            max_git_seconds=args.max_git_seconds,
+            max_sensitive_paths=args.max_sensitive_paths,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -593,33 +806,30 @@ def main(argv: list[str] | None = None) -> int:
         if baseline is not None
         else {"preserved": True, "missing": [], "changed": [], "added": []}
     )
-    git_change_paths = {
-        item.get(field)
-        for item in snapshot_before["changes"]
-        for field in ("path", "original_path")
-        if item.get(field)
-    }
-    sensitive_task_changes = [
-        {"status": status, "path": path, "original_path": ""}
-        for status, paths in (
-            ("??", baseline_guard["added"]),
-            (" M", baseline_guard["changed"]),
-            (" D", baseline_guard["missing"]),
-        )
-        for path in paths
-        if path not in git_change_paths
-    ]
-    current_changes = [*snapshot_before["changes"], *sensitive_task_changes]
+    current_changes = captured_changes(snapshot_before, baseline_guard)
+    partition = partition_task_changes(
+        baseline=baseline,
+        snapshot=snapshot_before,
+        tracked_patch=patch_before,
+        current_changes=current_changes,
+        baseline_guard=baseline_guard,
+    )
+    preexisting_changes = partition["preexisting_changes"]
+    removed_preexisting_paths = partition["removed_preexisting_paths"]
+    task_changes = partition["task_changes"]
+    change_partition = partition["change_partition"]
+    analysis_patch = task_evidence_patch(
+        baseline=baseline,
+        tracked_patch=patch_before,
+        untracked_patch=untracked_patch_before,
+        task_changes=task_changes,
+    )
     assessment = analyze_change(
         repo,
         task=args.task,
         anticipated_paths=[],
-        changes=current_changes,
-        tracked_patch=(
-            patch_before
-            + (b"\n" if patch_before and untracked_patch_before else b"")
-            + untracked_patch_before
-        ),
+        changes=task_changes,
+        tracked_patch=analysis_patch,
         declared_risk=args.risk,
         allow_repository_reads=not bool(
             snapshot_before["bounds"].get("sensitive_change_quarantine")
@@ -640,63 +850,12 @@ def main(argv: list[str] | None = None) -> int:
                 args.change_contract,
                 repo=repo,
                 label="change contract path",
+                max_git_seconds=args.max_git_seconds,
             )
             contract = load_change_contract(contract_path)
             contract_sha256 = contract["actual_contract_sha256"]
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
-    preexisting_changes = (
-        list(baseline.get("preexisting_changes", [])) if baseline is not None else []
-    )
-    preexisting_keys = {
-        (item.get("status"), item.get("path"), item.get("original_path"))
-        for item in preexisting_changes
-        if isinstance(item, dict)
-    }
-    preexisting_paths = {
-        item.get(field)
-        for item in preexisting_changes
-        if isinstance(item, dict)
-        for field in ("path", "original_path")
-        if item.get(field)
-    }
-    current_paths = {
-        item.get(field)
-        for item in current_changes
-        for field in ("path", "original_path")
-        if item.get(field)
-    }
-    removed_preexisting_paths = sorted(preexisting_paths - current_paths)
-    task_changes = [
-        item
-        for item in current_changes
-        if (item.get("status"), item.get("path"), item.get("original_path"))
-        not in preexisting_keys
-    ]
-    baseline_state_changed = baseline is None or (
-        snapshot_before != baseline.get("snapshot")
-        or hashlib.sha256(patch_before).hexdigest()
-        != baseline.get("tracked_patch_sha256")
-    )
-    change_partition = "no-baseline" if baseline is None else "exact"
-    if (
-        baseline is not None
-        and baseline_state_changed
-        and preexisting_changes
-        and current_changes
-    ):
-        # A pre-existing tracked path can be edited again while retaining the
-        # same Git status tuple. Because v2 stores the bounded aggregate patch
-        # hash rather than per-path patch bytes, any changed dirty baseline has
-        # ambiguous overlap. Conservatively scope every current path so a second
-        # edit cannot hide behind another newly added task path.
-        task_changes = list(current_changes)
-        change_partition = "conservative-overlap"
-    if removed_preexisting_paths:
-        # Restoring or deleting pre-existing dirty work can leave no current Git
-        # record at all. It is neither a reviewable task patch nor pure
-        # verification, so fail closed instead of reporting NO_CHANGE.
-        change_partition = "preexisting-state-removed"
     scope = (
         scope_violations(contract, task_changes)
         if contract is not None
@@ -842,6 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
             repo,
             snapshot_before,
             extra_sensitive=set(extra_sensitive),
+            max_git_seconds=args.max_git_seconds,
+            max_sensitive_paths=args.max_sensitive_paths,
         )
         verification_sensitive_deletion_quarantine = bool(
             verification_sensitive_preflight["missing"]
@@ -865,6 +1026,8 @@ def main(argv: list[str] | None = None) -> int:
                 capture_sensitive_change_quarantine
                 or verification_sensitive_change_quarantine
             ),
+            max_git_seconds=args.max_git_seconds,
+            max_sensitive_paths=args.max_sensitive_paths,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -903,6 +1066,7 @@ def main(argv: list[str] | None = None) -> int:
             contract_path=contract_path,
             contract=contract,
             review_detail=review_manifest,
+            max_git_seconds=args.max_git_seconds,
         )
     )
     post_execution_errors.extend(evidence_preservation_errors)
@@ -973,6 +1137,16 @@ def main(argv: list[str] | None = None) -> int:
         and contract_operator_sealed
         and not hash_chain_errors
     )
+    redacted_evidence = bool(
+        capture_sensitive_change_quarantine
+        or verification_capture_sensitive_change_quarantine
+        or verification_sensitive_change_quarantine
+    )
+    semantic_review = {
+        "unknown": "not-reviewed",
+        "partial": "partial-operator-asserted",
+        "reviewed": "operator-asserted",
+    }[args.semantic_coverage]
     if (
         gate_errors
         or post_execution_errors
@@ -988,13 +1162,33 @@ def main(argv: list[str] | None = None) -> int:
         quality_status = "UNVERIFIED"
     elif claim_binding != "complete":
         quality_status = "COMMANDS_PASSED"
+    elif redacted_evidence:
+        quality_status = "REVIEW_REQUIRED_WITH_REDACTIONS"
     elif operator_sealed_evidence and args.semantic_coverage == "reviewed":
-        quality_status = "VERIFIED_CHANGE"
+        quality_status = "REVIEW_EVIDENCE_COMPLETE"
     elif args.semantic_coverage == "reviewed":
-        quality_status = "SEMANTICALLY_REVIEWED"
+        quality_status = "SEMANTIC_REVIEW_ASSERTED"
     else:
         quality_status = "MECHANICALLY_VERIFIED"
-    patch = patch_after + (b"\n" if patch_after and untracked_patch_after else b"") + untracked_patch_after
+    final_baseline_guard = (
+        sensitive_preservation(baseline, snapshot_after)
+        if baseline is not None
+        else {"preserved": True, "missing": [], "changed": [], "added": []}
+    )
+    final_current_changes = captured_changes(snapshot_after, final_baseline_guard)
+    final_partition = partition_task_changes(
+        baseline=baseline,
+        snapshot=snapshot_after,
+        tracked_patch=patch_after,
+        current_changes=final_current_changes,
+        baseline_guard=final_baseline_guard,
+    )
+    patch = task_evidence_patch(
+        baseline=baseline,
+        tracked_patch=patch_after,
+        untracked_patch=untracked_patch_after,
+        task_changes=final_partition["task_changes"],
+    )
     if len(patch) > args.max_patch_bytes:
         raise SystemExit(
             f"complete patch exceeds configured {args.max_patch_bytes}-byte budget"
@@ -1007,7 +1201,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "2.3.0",
+        "producer_version": "2.4.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,
@@ -1019,6 +1213,7 @@ def main(argv: list[str] | None = None) -> int:
         "declared_verification_claims": declared_coverage_detail,
         "declared_claim_binding": declared_claim_binding,
         "semantic_coverage": args.semantic_coverage,
+        "semantic_review": semantic_review,
         "mode": "strict" if args.strict else "advisory",
         "exit_policy": args.exit_policy,
         "commands_passed": commands_passed,
@@ -1031,6 +1226,11 @@ def main(argv: list[str] | None = None) -> int:
         "process_convergence": process_convergence,
         "detached_descendant_possible": True,
         "isolation": "process-group-only",
+        "capture_limits": {
+            "max_git_seconds": args.max_git_seconds,
+            "max_patch_bytes": args.max_patch_bytes,
+            "max_sensitive_paths": args.max_sensitive_paths,
+        },
         "baseline_sensitive_preservation": baseline_guard,
         "sensitive_integrity": "metadata-observed",
         "sensitive_deletion_quarantine": sensitive_deletion_quarantine,
@@ -1097,9 +1297,7 @@ def main(argv: list[str] | None = None) -> int:
                 if contract_operator_sealed and claim_binding == "complete"
                 else "self-declared"
             ),
-            "semantic_review": (
-                "operator-asserted" if args.semantic_coverage == "reviewed" else "not-reviewed"
-            ),
+            "semantic_review": semantic_review,
         },
         "hash_chain": {
             "baseline_sha256": baseline_sha256,
@@ -1120,7 +1318,7 @@ def main(argv: list[str] | None = None) -> int:
         "remaining_risks": list(args.remaining_risk),
         "dangerous_deletions_confirmed": confirmed,
         "allow_no_change": bool(args.allow_no_change),
-        "passed": quality_status == "VERIFIED_CHANGE",
+        "passed": quality_status == "REVIEW_EVIDENCE_COMPLETE",
     }
     summary["process_exit_code"] = (
         0
@@ -1133,7 +1331,10 @@ def main(argv: list[str] | None = None) -> int:
             label="output directory",
             leaf_may_be_missing=True,
         )
-        current_identity = repository_identity(repo)
+        current_identity = repository_identity(
+            repo,
+            max_git_seconds=args.max_git_seconds,
+        )
         output_resolved_after = validate_outside_repository_storage(
             output_rechecked,
             repository_roots=(

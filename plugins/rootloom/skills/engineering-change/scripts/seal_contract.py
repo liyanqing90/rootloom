@@ -15,30 +15,47 @@ from runner.evidence_paths import (
     validate_outside_repository_storage,
 )
 from runner.review_run import (
+    CONTRACT_DRAFT_SENTINEL,
     CONTRACT_HASH_BASIS,
     CONTRACT_SEAL_FORMAT,
     file_bytes_sha256,
     pretty_json_bytes,
     read_json_no_follow,
+    validate_contract_seal,
     validate_review_manifest,
     write_new_bytes,
     write_new_json,
 )
 
 
-def contains_todo(value: object) -> bool:
+LEGACY_DRAFT_PLACEHOLDERS = {
+    "TODO",
+    "TODO replace with repository test command for TODO",
+    "TODO replace before finalization",
+}
+
+
+def contains_contract_placeholder(value: object) -> bool:
     if isinstance(value, str):
-        return "TODO" in value.upper()
+        return value == CONTRACT_DRAFT_SENTINEL or value in LEGACY_DRAFT_PLACEHOLDERS
     if isinstance(value, list):
-        return any(contains_todo(item) for item in value)
+        return any(contains_contract_placeholder(item) for item in value)
     if isinstance(value, dict):
-        return any(contains_todo(key) or contains_todo(item) for key, item in value.items())
+        return any(
+            contains_contract_placeholder(key) or contains_contract_placeholder(item)
+            for key, item in value.items()
+        )
     return False
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--review-dir", type=Path, required=True)
+    parser.add_argument(
+        "--recover",
+        action="store_true",
+        help="validate and complete an exact interrupted contract/seal publication",
+    )
     return parser
 
 
@@ -59,10 +76,20 @@ def main(argv: list[str] | None = None) -> int:
     draft_path = review_dir / "change-contract.draft.json"
     contract_path = review_dir / "change-contract.json"
     seal_path = review_dir / "contract.seal.json"
-    if contract_path.exists() or contract_path.is_symlink():
+    contract_exists = contract_path.exists() or contract_path.is_symlink()
+    seal_exists = seal_path.exists() or seal_path.is_symlink()
+    if not args.recover and contract_exists:
         raise SystemExit(f"sealed change contract already exists: {contract_path}")
-    if seal_path.exists() or seal_path.is_symlink():
+    if not args.recover and seal_exists:
         raise SystemExit(f"contract seal already exists: {seal_path}")
+    if args.recover and not contract_exists:
+        if seal_exists:
+            raise SystemExit(
+                "cannot recover a contract seal without its sealed change contract"
+            )
+        raise SystemExit(
+            "no interrupted contract publication exists; seal without --recover"
+        )
     try:
         baseline, baseline_sha256 = read_baseline_payload_with_hash(baseline_path)
         if (
@@ -96,8 +123,8 @@ def main(argv: list[str] | None = None) -> int:
     raw_contract = dict(contract["raw_payload"])
     if "contract_sha256" in raw_contract:
         raise SystemExit("change-contract draft must not declare contract_sha256")
-    if contains_todo(raw_contract):
-        raise SystemExit("change-contract draft still contains TODO")
+    if contains_contract_placeholder(raw_contract):
+        raise SystemExit("change-contract draft still contains a Rootloom contract placeholder")
     expected_identity = {
         "run_id": baseline.get("run_id"),
         "nonce": baseline.get("nonce"),
@@ -139,9 +166,36 @@ def main(argv: list[str] | None = None) -> int:
         )
         if review_storage_after != review_storage:
             raise ValueError("review directory target changed before sealing")
-        write_new_bytes(contract_path, contract_bytes)
-        contract_created = True
-        write_new_json(seal_path, seal)
+        if contract_exists:
+            existing_contract = load_change_contract(contract_path)
+            if (
+                existing_contract["raw_payload"] != sealed_contract
+                or existing_contract["actual_contract_file_sha256"]
+                != seal["contract_file_sha256"]
+            ):
+                raise ValueError(
+                    "existing sealed change contract does not match the current draft and intake"
+                )
+        else:
+            write_new_bytes(contract_path, contract_bytes)
+            contract_created = True
+        if seal_exists:
+            existing_seal, existing_seal_raw = read_json_no_follow(
+                seal_path,
+                label="contract seal",
+            )
+            validate_contract_seal(
+                existing_seal,
+                baseline=baseline,
+                baseline_sha256=baseline_sha256,
+                review_manifest_sha256=seal["review_manifest_sha256"],
+                contract_sha256=seal["contract_sha256"],
+                contract_file_sha256=seal["contract_file_sha256"],
+            )
+            if existing_seal_raw != pretty_json_bytes(seal):
+                raise ValueError("existing contract seal does not match expected bytes")
+        else:
+            write_new_json(seal_path, seal)
         fsync_directory(review_dir)
     except (OSError, ValueError) as exc:
         if contract_created and not seal_path.exists():

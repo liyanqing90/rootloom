@@ -6,6 +6,33 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-07-15
+
+### Added
+
+- Add finite-positive `--max-git-seconds` and positive `--max-sensitive-paths` capture budgets to analyzer, intake, and finalizer entry points; summaries record the effective limits.
+- Add exact, idempotent `seal_contract.py --recover` support for matching interrupted contract/seal publication.
+
+### Changed
+
+- Advance `rootloom-engineering-summary-v1` to revision 4: rename the complete governed state to `REVIEW_EVIDENCE_COMPLETE`, expose `semantic_review` separately, and name unsealed semantic assertions `SEMANTIC_REVIEW_ASSERTED`.
+- Route every Git child through the existing controlled process-tree owner, with timeout, output ceiling, descendant cleanup, and a bounded post-exit grace for Windows Job Object accounting convergence.
+- Discover tracked and ignored sensitive paths through shared case-insensitive Git pathspecs plus literal declared roots before Python reclassification, instead of enumerating every path.
+- Replace recursive `TODO` substring matching with one exact Rootloom draft placeholder while continuing to reject exact legacy generated placeholders.
+
+### Fixed
+
+- Cap an otherwise-complete sensitive quarantine at `REVIEW_REQUIRED_WITH_REDACTIONS` and `passed: false`, so metadata-only/redacted evidence cannot return a complete review result.
+- Refuse mismatched, seal-only, or not-yet-started recovery attempts without overwriting or deleting existing files.
+- Keep byte-identical pre-existing untracked files out of dirty-baseline task scope while retaining conservative attribution for changed aggregate tracked patches and changed per-path untracked fingerprints.
+- Apply that task partition before risk analysis and reuse it for `diff.patch`, so exact unchanged user-owned text cannot trigger task claims or enter the review patch.
+- Close stdin for every bounded Git child, preventing `hash-object --stdin` from waiting on an inherited interactive pipe in unborn repositories.
+- Keep deliberately overmatching pathspec candidates under a separate bounded ceiling and apply `--max-sensitive-paths` only to reclassified sensitive results.
+
+### Compatibility
+
+- Keep summary/artifact field and format names, advisory bundle exits, baseline/contract/manifest/seal formats, and existing CLI defaults. Exact revision-3 `VERIFIED_CHANGE` consumers must switch to `REVIEW_EVIDENCE_COMPLETE` when `schema_revision >= 4`.
+
 ## [2.3.0] - 2026-07-14
 
 ### Added
@@ -557,7 +584,9 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v2.2.2...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/liyanqing90/rootloom/compare/v2.3.0...v2.4.0
+[2.3.0]: https://github.com/liyanqing90/rootloom/compare/v2.2.2...v2.3.0
 [2.2.2]: https://github.com/liyanqing90/rootloom/compare/v2.2.1...v2.2.2
 [2.2.1]: https://github.com/liyanqing90/rootloom/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/liyanqing90/rootloom/compare/v2.1.0...v2.2.0

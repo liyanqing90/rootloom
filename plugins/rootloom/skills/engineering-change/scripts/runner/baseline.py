@@ -14,14 +14,14 @@ from datetime import UTC, datetime
 from typing import Any
 import uuid
 
-from .state import git_bounded, git_identity
+from .state import DEFAULT_MAX_GIT_SECONDS, git_bounded, git_identity
 from .strict_json import parse_json_object
 
 
 BASELINE_FORMAT = "rootloom-change-baseline-v1"
 BASELINE_FORMAT_V2 = "rootloom-change-baseline-v2"
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
-PRODUCER_VERSION = "2.3.0"
+PRODUCER_VERSION = "2.4.0"
 MAX_FUTURE_CLOCK_SKEW_SECONDS = 300
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OBJECT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -119,8 +119,18 @@ def _is_nonnegative_int(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
 
-def repository_identity(repo: Path) -> dict[str, str]:
-    raw = git_bounded(repo, "rev-parse", "--git-common-dir", max_bytes=4096)
+def repository_identity(
+    repo: Path,
+    *,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> dict[str, str]:
+    raw = git_bounded(
+        repo,
+        "rev-parse",
+        "--git-common-dir",
+        max_bytes=4096,
+        max_git_seconds=max_git_seconds,
+    )
     git_common = Path(raw.decode("utf-8", errors="surrogateescape").strip())
     if not git_common.is_absolute():
         git_common = repo / git_common
@@ -137,6 +147,7 @@ def baseline_payload(
     provenance: str = "self-declared",
     allow_dirty_baseline: bool = False,
     captured_git: dict[str, str] | None = None,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> dict[str, Any]:
     if provenance not in {"self-declared", "operator-sealed"}:
         raise ValueError("baseline provenance must be self-declared or operator-sealed")
@@ -159,8 +170,12 @@ def baseline_payload(
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "producer_version": PRODUCER_VERSION,
         "evidence_provenance": provenance,
-        "repository": repository_identity(repo),
-        "git": dict(captured_git) if captured_git is not None else git_identity(repo),
+        "repository": repository_identity(repo, max_git_seconds=max_git_seconds),
+        "git": (
+            dict(captured_git)
+            if captured_git is not None
+            else git_identity(repo, max_git_seconds=max_git_seconds)
+        ),
         "task_sha256": task_sha256(task),
         "sensitive_policy_sha256": payload_sha256(sensitive_policy),
         "snapshot": snapshot,
@@ -488,15 +503,32 @@ def read_baseline_payload_with_hash(path: Path) -> tuple[dict[str, Any], str]:
     return payload, digest
 
 
-def read_baseline_with_hash(path: Path, repo: Path) -> tuple[dict[str, Any], str]:
+def read_baseline_with_hash(
+    path: Path,
+    repo: Path,
+    *,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> tuple[dict[str, Any], str]:
     payload, digest = read_baseline_payload_with_hash(path)
-    if payload.get("repository") != repository_identity(repo):
+    if payload.get("repository") != repository_identity(
+        repo,
+        max_git_seconds=max_git_seconds,
+    ):
         raise ValueError("baseline belongs to a different repository/worktree")
     return payload, digest
 
 
-def load_baseline(path: Path, repo: Path) -> dict[str, Any]:
-    payload, _digest = read_baseline_with_hash(path, repo)
+def load_baseline(
+    path: Path,
+    repo: Path,
+    *,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> dict[str, Any]:
+    payload, _digest = read_baseline_with_hash(
+        path,
+        repo,
+        max_git_seconds=max_git_seconds,
+    )
     return payload
 
 

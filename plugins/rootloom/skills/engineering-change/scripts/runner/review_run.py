@@ -17,6 +17,7 @@ from .strict_json import parse_json_object
 REVIEW_MANIFEST_FORMAT = "rootloom-review-run-v2"
 CONTRACT_SEAL_FORMAT = "rootloom-contract-seal-v1"
 CONTRACT_HASH_BASIS = "canonical-json-without-contract_sha256"
+CONTRACT_DRAFT_SENTINEL = "__ROOTLOOM_CONTRACT_PLACEHOLDER__"
 MAX_REVIEW_FILE_BYTES = 256 * 1024
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 NONCE_PATTERN = re.compile(r"[0-9a-f]{32}")
