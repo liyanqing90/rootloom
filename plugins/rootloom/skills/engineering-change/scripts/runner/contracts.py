@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 
 SUMMARY_FORMAT = "rootloom-engineering-summary-v1"
-SUMMARY_SCHEMA_REVISION = 4
+SUMMARY_SCHEMA_REVISION = 5
 RISK_LEVELS = ("low", "medium", "high")
 DANGEROUS_DELETE_EXIT = 10
 QUALITY_STATUSES = (

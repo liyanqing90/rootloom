@@ -22,6 +22,8 @@ sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_paths import is_protected_deletion_path, normalize_repo_path
 
 from runner.baseline import (
+    BASELINE_FORMAT_V2,
+    BASELINE_FORMAT_V3,
     read_baseline_with_hash,
     repository_identity,
     sensitive_preservation,
@@ -53,6 +55,8 @@ from runner.review_run import (
     validate_review_manifest,
 )
 from runner.state import (
+    CaptureDeadline,
+    DEFAULT_MAX_CAPTURE_SECONDS,
     DEFAULT_MAX_GIT_SECONDS,
     DEFAULT_MAX_SENSITIVE_PATHS,
     discover_sensitive_paths,
@@ -80,6 +84,15 @@ QUALITY_EXIT_CODES = {
     "UNVERIFIED": 4,
     "FAILED": 1,
 }
+
+
+def is_intake_sealed_baseline(baseline: dict[str, Any]) -> bool:
+    return baseline.get("evidence_provenance") == {
+        BASELINE_FORMAT_V2: "operator-sealed",
+        BASELINE_FORMAT_V3: "intake-sealed",
+    }.get(baseline.get("format"))
+
+
 BUNDLE_MARKER = ".rootloom-engineering-bundle.json"
 BUNDLE_MARKER_FORMAT = "rootloom-engineering-bundle-owner-v1"
 BUNDLE_FILES = {BUNDLE_MARKER, "diff.patch", "test.log", "summary.json"}
@@ -270,11 +283,14 @@ def sensitive_path_changes(
     extra_sensitive: set[str],
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    capture_deadline: CaptureDeadline | None = None,
 ) -> dict[str, list[str]]:
     """Compare known sensitive metadata before any changed content is read."""
 
     before: dict[str, dict[str, Any]] = {}
     for item in snapshot.get("sensitive_paths", []):
+        if capture_deadline is not None:
+            capture_deadline.checkpoint()
         if not isinstance(item, dict) or not isinstance(item.get("path"), str):
             continue
         before[item["path"]] = item
@@ -284,6 +300,7 @@ def sensitive_path_changes(
             extra_sensitive,
             max_git_seconds=max_git_seconds,
             max_sensitive_paths=max_sensitive_paths,
+            capture_deadline=capture_deadline,
         )
     ) | set(before)
     if len(current_paths) > max_sensitive_paths:
@@ -291,7 +308,10 @@ def sensitive_path_changes(
             "sensitive preflight exceeds configured "
             f"{max_sensitive_paths}-path budget"
         )
-    after = {path: metadata_only(repo, path) for path in sorted(current_paths)}
+    after = {
+        path: metadata_only(repo, path, capture_deadline=capture_deadline)
+        for path in sorted(current_paths)
+    }
     changed = sorted(
         path
         for path, metadata in before.items()
@@ -309,6 +329,8 @@ def sensitive_path_changes(
         for path, metadata in after.items()
         if metadata.get("exists") and not before.get(path, {}).get("exists")
     )
+    if capture_deadline is not None:
+        capture_deadline.checkpoint()
     return {"changed": changed, "missing": missing, "added": added}
 
 
@@ -600,6 +622,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-output-bytes", type=int, default=4 * 1024 * 1024)
     parser.add_argument("--max-patch-bytes", type=int, default=DEFAULT_MAX_PATCH_BYTES)
     parser.add_argument(
+        "--max-capture-seconds",
+        type=float,
+        default=DEFAULT_MAX_CAPTURE_SECONDS,
+    )
+    parser.add_argument(
         "--max-git-seconds",
         type=float,
         default=DEFAULT_MAX_GIT_SECONDS,
@@ -614,6 +641,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.max_capture_seconds) or args.max_capture_seconds <= 0:
+        raise SystemExit("capture time budget must be finite and positive")
     if not math.isfinite(args.max_git_seconds) or args.max_git_seconds <= 0:
         raise SystemExit("Git time budget must be finite and positive")
     if args.max_sensitive_paths <= 0:
@@ -750,6 +779,7 @@ def main(argv: list[str] | None = None) -> int:
         }
     )
     baseline_sensitive_preflight = {"changed": [], "missing": [], "added": []}
+    capture_deadline_before = CaptureDeadline(args.max_capture_seconds)
     if baseline is not None:
         try:
             baseline_sensitive_preflight = sensitive_path_changes(
@@ -758,6 +788,7 @@ def main(argv: list[str] | None = None) -> int:
                 extra_sensitive=set(extra_sensitive),
                 max_git_seconds=args.max_git_seconds,
                 max_sensitive_paths=args.max_sensitive_paths,
+                capture_deadline=capture_deadline_before,
             )
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
@@ -783,6 +814,7 @@ def main(argv: list[str] | None = None) -> int:
             untracked_patch_before,
             patch_before,
             current_git,
+            capture_duration_before,
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
@@ -793,8 +825,10 @@ def main(argv: list[str] | None = None) -> int:
             ),
             max_patch_bytes=args.max_patch_bytes,
             protect_changed_paths=sensitive_change_quarantine,
+            max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            capture_deadline=capture_deadline_before,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -872,8 +906,8 @@ def main(argv: list[str] | None = None) -> int:
     expected_task_sha256 = task_sha256(args.task)
     baseline_age_seconds: int | None = None
     baseline_freshness = "not-provided"
-    baseline_operator_sealed = False
-    contract_operator_sealed = False
+    baseline_intake_sealed = False
+    contract_workflow_sealed = False
     review_manifest: dict[str, Any] = {"provided": False, "valid": False, "errors": []}
     hash_chain_errors: list[str] = []
     if baseline is not None:
@@ -899,7 +933,10 @@ def main(argv: list[str] | None = None) -> int:
                 baseline_freshness = "unknown"
         if baseline.get("task_sha256") not in {None, expected_task_sha256}:
             hash_chain_errors.append("baseline task_sha256 does not match task")
-        if args.strict and baseline.get("format") == "rootloom-change-baseline-v2":
+        if args.strict and baseline.get("format") in {
+            BASELINE_FORMAT_V2,
+            BASELINE_FORMAT_V3,
+        }:
             baseline_git = baseline.get("git", {})
             if baseline_git.get("head") != current_git.get("head"):
                 hash_chain_errors.append("repository HEAD changed since baseline")
@@ -922,19 +959,17 @@ def main(argv: list[str] | None = None) -> int:
                 baseline_sha256=baseline_sha256,
                 contract=contract,
             )
-            baseline_operator_sealed = (
-                baseline.get("format") == "rootloom-change-baseline-v2"
-                and baseline.get("evidence_provenance") == "operator-sealed"
-                and review_run_valid
+            baseline_intake_sealed = (
+                is_intake_sealed_baseline(baseline) and review_run_valid
             )
-            contract_operator_sealed = (
-                baseline_operator_sealed
+            contract_workflow_sealed = (
+                baseline_intake_sealed
                 and bool(contract.get("declared_contract_sha256_valid"))
                 and not hash_chain_errors
             )
             if (
                 args.strict
-                and baseline.get("evidence_provenance") == "operator-sealed"
+                and is_intake_sealed_baseline(baseline)
                 and not review_run_valid
             ):
                 hash_chain_errors.extend(review_manifest["errors"])
@@ -996,6 +1031,7 @@ def main(argv: list[str] | None = None) -> int:
             max_output_bytes=args.max_output_bytes,
         )
 
+    capture_deadline_after = CaptureDeadline(args.max_capture_seconds)
     try:
         verification_sensitive_preflight = sensitive_path_changes(
             repo,
@@ -1003,6 +1039,7 @@ def main(argv: list[str] | None = None) -> int:
             extra_sensitive=set(extra_sensitive),
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            capture_deadline=capture_deadline_after,
         )
         verification_sensitive_deletion_quarantine = bool(
             verification_sensitive_preflight["missing"]
@@ -1017,6 +1054,7 @@ def main(argv: list[str] | None = None) -> int:
             untracked_patch_after,
             patch_after,
             current_git_after,
+            capture_duration_after,
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
@@ -1026,8 +1064,10 @@ def main(argv: list[str] | None = None) -> int:
                 capture_sensitive_change_quarantine
                 or verification_sensitive_change_quarantine
             ),
+            max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            capture_deadline=capture_deadline_after,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -1071,8 +1111,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     post_execution_errors.extend(evidence_preservation_errors)
     if not evidence_files_preserved:
-        baseline_operator_sealed = False
-        contract_operator_sealed = False
+        baseline_intake_sealed = False
+        contract_workflow_sealed = False
     if post_execution_errors:
         hash_chain_errors.extend(post_execution_errors)
         hash_chain_errors = list(dict.fromkeys(hash_chain_errors))
@@ -1131,10 +1171,10 @@ def main(argv: list[str] | None = None) -> int:
         and root_cause_valid
         and baseline_guard_satisfied
     )
-    operator_sealed_evidence = (
+    workflow_sealed_evidence = (
         governed_evidence_complete
-        and baseline_operator_sealed
-        and contract_operator_sealed
+        and baseline_intake_sealed
+        and contract_workflow_sealed
         and not hash_chain_errors
     )
     redacted_evidence = bool(
@@ -1164,7 +1204,7 @@ def main(argv: list[str] | None = None) -> int:
         quality_status = "COMMANDS_PASSED"
     elif redacted_evidence:
         quality_status = "REVIEW_REQUIRED_WITH_REDACTIONS"
-    elif operator_sealed_evidence and args.semantic_coverage == "reviewed":
+    elif workflow_sealed_evidence and args.semantic_coverage == "reviewed":
         quality_status = "REVIEW_EVIDENCE_COMPLETE"
     elif args.semantic_coverage == "reviewed":
         quality_status = "SEMANTIC_REVIEW_ASSERTED"
@@ -1201,7 +1241,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "2.4.0",
+        "producer_version": "3.0.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,
@@ -1227,10 +1267,15 @@ def main(argv: list[str] | None = None) -> int:
         "detached_descendant_possible": True,
         "isolation": "process-group-only",
         "capture_limits": {
+            "max_capture_seconds": args.max_capture_seconds,
             "max_git_seconds": args.max_git_seconds,
             "max_patch_bytes": args.max_patch_bytes,
             "max_sensitive_paths": args.max_sensitive_paths,
         },
+        "capture_duration_seconds": round(
+            capture_duration_before + capture_duration_after,
+            6,
+        ),
         "baseline_sensitive_preservation": baseline_guard,
         "sensitive_integrity": "metadata-observed",
         "sensitive_deletion_quarantine": sensitive_deletion_quarantine,
@@ -1288,13 +1333,13 @@ def main(argv: list[str] | None = None) -> int:
         },
         "review_manifest": review_manifest,
         "evidence_provenance": {
-            "baseline": "operator-sealed" if baseline_operator_sealed else "self-declared",
+            "baseline": "intake-sealed" if baseline_intake_sealed else "self-declared",
             "change_contract": (
-                "operator-sealed" if contract_operator_sealed else "self-declared"
+                "workflow-sealed" if contract_workflow_sealed else "self-declared"
             ),
             "verification_claims": (
-                "operator-sealed"
-                if contract_operator_sealed and claim_binding == "complete"
+                "workflow-sealed"
+                if contract_workflow_sealed and claim_binding == "complete"
                 else "self-declared"
             ),
             "semantic_review": semantic_review,
@@ -1315,6 +1360,7 @@ def main(argv: list[str] | None = None) -> int:
             "bounds": snapshot_after["bounds"],
         },
         "quality_status": quality_status,
+        "evidence_complete": quality_status == "REVIEW_EVIDENCE_COMPLETE",
         "remaining_risks": list(args.remaining_risk),
         "dangerous_deletions_confirmed": confirmed,
         "allow_no_change": bool(args.allow_no_change),

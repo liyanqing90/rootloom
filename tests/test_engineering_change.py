@@ -37,7 +37,12 @@ PROJECT_MEMORY = (
 )
 sys.path.insert(0, str(SCRIPT.parent))
 import begin_review as begin_review_module
-from rootloom_paths import is_protected_deletion_path, is_sensitive_path
+import finalize_change as finalize_change_module
+from rootloom_paths import (
+    is_protected_deletion_path,
+    is_security_domain_path,
+    is_sensitive_material_path,
+)
 from runner.baseline import read_baseline_payload_with_hash
 from runner.change_contract import load_change_contract, path_matches
 from runner.evidence_paths import rename_directory_no_replace
@@ -53,12 +58,14 @@ from runner.process import (
 )
 from runner.review_run import CONTRACT_DRAFT_SENTINEL
 from runner.state import (
+    CaptureDeadline,
     _new_file_patch,
     discover_sensitive_paths,
     filter_untracked_patch,
     git_bounded,
     repository_snapshot,
     stable_repository_capture,
+    tracked_patch,
 )
 from runner.strict_json import parse_json_object
 from runner.verification import split_command, verify
@@ -167,6 +174,105 @@ class EngineeringChangeTests(unittest.TestCase):
                 )
         self.assertEqual(controlled.call_args.kwargs["timeout"], 0.25)
         self.assertEqual(controlled.call_args.kwargs["max_output_bytes"], 128)
+
+    def test_git_capture_uses_the_remaining_aggregate_deadline(self) -> None:
+        passed = VerificationResult(
+            command=["git", "--no-pager", "status"],
+            exit_code=0,
+            duration_seconds=1.0,
+            passed=True,
+        )
+        with mock.patch("runner.state.time.monotonic", side_effect=[10.0, 12.0, 13.0]):
+            deadline = CaptureDeadline(10.0)
+            with mock.patch(
+                "runner.state.run_command",
+                return_value=(passed, b""),
+            ) as controlled:
+                git_bounded(
+                    Path("/repository"),
+                    "status",
+                    max_bytes=128,
+                    max_git_seconds=30.0,
+                    capture_deadline=deadline,
+                )
+        self.assertEqual(controlled.call_args.kwargs["timeout"], 8.0)
+
+    def test_stable_capture_deadline_is_shared_across_both_passes(self) -> None:
+        clock = [0.0]
+
+        def advance(deadline: CaptureDeadline) -> None:
+            clock[0] += 20.0
+            deadline.checkpoint()
+
+        def fake_identity(_repo, *, capture_deadline, **_kwargs):
+            advance(capture_deadline)
+            return {"head": "a" * 40, "head_ref": "refs/heads/main", "index_sha256": "b" * 40}
+
+        def fake_snapshot(_repo, *, capture_deadline, **_kwargs):
+            advance(capture_deadline)
+            return (
+                {
+                    "changes": [],
+                    "untracked": [],
+                    "sensitive_paths": [],
+                    "bounds": {
+                        "fingerprint_bytes_observed": 0,
+                        "untracked_patch_bytes": 0,
+                        "sensitive_change_quarantine": False,
+                    },
+                },
+                b"",
+            )
+
+        def fake_patch(_repo, *, capture_deadline, **_kwargs):
+            advance(capture_deadline)
+            return b""
+
+        with (
+            mock.patch("runner.state.time.monotonic", side_effect=lambda: clock[0]),
+            mock.patch("runner.state.git_identity", side_effect=fake_identity),
+            mock.patch("runner.state.repository_snapshot", side_effect=fake_snapshot),
+            mock.patch("runner.state.tracked_patch", side_effect=fake_patch),
+        ):
+            with self.assertRaisesRegex(ValueError, "90-second aggregate budget"):
+                stable_repository_capture(
+                    Path("/repository"),
+                    max_capture_seconds=90.0,
+                )
+
+    def test_sensitive_preflight_propagates_the_capture_deadline(self) -> None:
+        deadline = CaptureDeadline(90.0)
+        snapshot = {"sensitive_paths": []}
+        metadata = {
+            "path": "clientSecret.json",
+            "exists": True,
+            "sensitive": True,
+            "content_read": False,
+            "kind": "file",
+            "size": 12,
+        }
+        with (
+            mock.patch(
+                "finalize_change.discover_sensitive_paths",
+                return_value=["clientSecret.json"],
+            ) as discover,
+            mock.patch(
+                "finalize_change.metadata_only",
+                return_value=metadata,
+            ) as metadata_only_mock,
+        ):
+            changes = finalize_change_module.sensitive_path_changes(
+                Path("/repository"),
+                snapshot,
+                extra_sensitive=set(),
+                capture_deadline=deadline,
+            )
+        self.assertEqual(changes["added"], ["clientSecret.json"])
+        self.assertIs(discover.call_args.kwargs["capture_deadline"], deadline)
+        self.assertIs(
+            metadata_only_mock.call_args.kwargs["capture_deadline"],
+            deadline,
+        )
 
     def test_verification_output_budget_is_aggregate_and_strict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -402,6 +508,9 @@ class EngineeringChangeTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             repo = self.make_repo(Path(temporary))
             invalid = (
+                ("--max-capture-seconds", "0", "finite and positive"),
+                ("--max-capture-seconds", "nan", "finite and positive"),
+                ("--max-capture-seconds", "inf", "finite and positive"),
                 ("--max-git-seconds", "0", "finite and positive"),
                 ("--max-git-seconds", "nan", "finite and positive"),
                 ("--max-git-seconds", "inf", "finite and positive"),
@@ -413,7 +522,47 @@ class EngineeringChangeTests(unittest.TestCase):
                     self.assertNotEqual(completed.returncode, 0)
                     self.assertIn(message, completed.stderr)
 
-    def test_begin_review_creates_operator_sealed_intake_without_overwrite(self) -> None:
+            entry_points = (
+                (
+                    BEGIN_REVIEW,
+                    [
+                        "--repo",
+                        str(repo),
+                        "--task",
+                        "bounded intake",
+                        "--output",
+                        str(Path(temporary) / "invalid-intake"),
+                        "--allow-all-paths",
+                    ],
+                ),
+                (
+                    SCRIPT,
+                    [
+                        "--repo",
+                        str(repo),
+                        "--output",
+                        str(Path(temporary) / "invalid-finalizer"),
+                    ],
+                ),
+            )
+            for script, arguments in entry_points:
+                with self.subTest(script=script.name):
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(script),
+                            *arguments,
+                            "--max-capture-seconds",
+                            "nan",
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn("finite and positive", completed.stderr)
+
+    def test_begin_review_creates_intake_sealed_v3_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
             repo = self.make_repo(root)
@@ -438,6 +587,8 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(created.returncode, 0, created.stderr)
             manifest = json.loads((output / "review.json").read_text(encoding="ascii"))
             baseline = json.loads((output / "baseline.json").read_text(encoding="ascii"))
+            self.assertEqual(baseline["format"], "rootloom-change-baseline-v3")
+            self.assertEqual(baseline["evidence_provenance"], "intake-sealed")
             draft_path = output / "change-contract.draft.json"
             contract = json.loads(draft_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["run_id"], baseline["run_id"])
@@ -1475,17 +1626,21 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
             self.assertTrue(summary["passed"])
-            self.assertEqual(summary["schema_revision"], 4)
+            self.assertEqual(summary["schema_revision"], 5)
             self.assertEqual(summary["quality_status"], "REVIEW_EVIDENCE_COMPLETE")
+            self.assertTrue(summary["evidence_complete"])
             self.assertEqual(summary["verification_coverage"], "complete")
             self.assertEqual(summary["claim_binding"], "complete")
             self.assertEqual(summary["semantic_coverage"], "reviewed")
             self.assertEqual(summary["semantic_review"], "operator-asserted")
-            self.assertEqual(summary["evidence_provenance"]["baseline"], "operator-sealed")
+            self.assertEqual(summary["evidence_provenance"]["baseline"], "intake-sealed")
             self.assertEqual(
-                summary["evidence_provenance"]["change_contract"], "operator-sealed"
+                summary["evidence_provenance"]["change_contract"], "workflow-sealed"
             )
-            self.assertEqual(summary["evidence_provenance"]["verification_claims"], "operator-sealed")
+            self.assertEqual(
+                summary["evidence_provenance"]["verification_claims"],
+                "workflow-sealed",
+            )
             self.assertEqual(summary["evidence_provenance"]["semantic_review"], "operator-asserted")
             self.assertEqual(summary["sensitive_integrity"], "metadata-observed")
             self.assertTrue(summary["hash_chain"]["valid"])
@@ -1498,11 +1653,13 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(
                 summary["capture_limits"],
                 {
+                    "max_capture_seconds": 90.0,
                     "max_git_seconds": 7.0,
                     "max_patch_bytes": 16 * 1024 * 1024,
                     "max_sensitive_paths": 17,
                 },
             )
+            self.assertGreaterEqual(summary["capture_duration_seconds"], 0.0)
             self.assertEqual(summary["changed_files"], ["app.py"])
             self.assertEqual(summary["risk"], "medium")
             self.assertTrue(summary["risk_assessment"]["risk_was_raised"])
@@ -2002,9 +2159,111 @@ class EngineeringChangeTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(sealed.returncode, 0)
-            self.assertIn("operator-sealed baseline v2", sealed.stderr)
+            self.assertIn("intake-sealed baseline v3", sealed.stderr)
             self.assertFalse((review_dir / "change-contract.json").exists())
             self.assertFalse((review_dir / "contract.seal.json").exists())
+
+    def test_legacy_sealed_v2_intake_remains_usable_and_normalizes_provenance(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            review_dir = root / "legacy-v2-review"
+            task = "change product behavior"
+            begun = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    task,
+                    "--output",
+                    str(review_dir),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(begun.returncode, 0, begun.stderr)
+
+            baseline_path = review_dir / "baseline.json"
+            baseline = json.loads(baseline_path.read_text(encoding="ascii"))
+            baseline["format"] = "rootloom-change-baseline-v2"
+            baseline["evidence_provenance"] = "operator-sealed"
+            baseline_path.write_text(
+                json.dumps(baseline, ensure_ascii=True, indent=2, sort_keys=True) + "\n",
+                encoding="ascii",
+            )
+            baseline_sha256 = hashlib.sha256(baseline_path.read_bytes()).hexdigest()
+
+            manifest_path = review_dir / "review.json"
+            manifest = json.loads(manifest_path.read_text(encoding="ascii"))
+            manifest["baseline_sha256"] = baseline_sha256
+            manifest_path.write_text(json.dumps(manifest), encoding="ascii")
+
+            command = f"{sys.executable} -c 'assert True'"
+            draft_path = review_dir / "change-contract.draft.json"
+            draft = json.loads(draft_path.read_text(encoding="utf-8"))
+            draft["baseline_sha256"] = baseline_sha256
+            draft["root_cause_alignment"] = "PASS"
+            draft["verification_commands"] = {"verify-1": command}
+            draft["verification_claims"] = {
+                claim: [
+                    {
+                        "id": claim,
+                        "command_ids": ["verify-1"],
+                        "target": sys.executable,
+                        "expected_evidence": f"{claim} remains compatible",
+                        "evidence_kind": "regression-test",
+                    }
+                ]
+                for claim in self.ALL_CLAIM_IDS
+            }
+            draft_path.write_text(json.dumps(draft), encoding="utf-8")
+            sealed = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(review_dir)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(sealed.returncode, 0, sealed.stderr)
+
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            output = root / "legacy-v2-run"
+            finalized = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(output),
+                    "--task",
+                    task,
+                    "--baseline",
+                    str(baseline_path),
+                    "--change-contract",
+                    str(review_dir / "change-contract.json"),
+                    "--strict",
+                    "--semantic-coverage",
+                    "reviewed",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(finalized.returncode, 0, finalized.stderr)
+            summary = json.loads((output / "summary.json").read_text(encoding="ascii"))
+            self.assertTrue(summary["evidence_complete"])
+            self.assertEqual(summary["evidence_provenance"]["baseline"], "intake-sealed")
+            self.assertEqual(
+                summary["evidence_provenance"]["change_contract"],
+                "workflow-sealed",
+            )
 
     def test_contract_rejects_duplicate_claim_aliases(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -2911,10 +3170,163 @@ class EngineeringChangeTests(unittest.TestCase):
             "nested/id_rsa/config",
         ):
             with self.subTest(path=path):
-                self.assertTrue(is_sensitive_path(path))
-        self.assertFalse(is_sensitive_path("environment/config"))
+                self.assertTrue(is_sensitive_material_path(path))
+        self.assertFalse(is_sensitive_material_path("environment/config"))
         self.assertTrue(is_protected_deletion_path("state.sqlite"))
         self.assertTrue(is_protected_deletion_path("state.sqlite3"))
+
+    def test_secret_material_and_security_domain_classifiers_are_separate(self) -> None:
+        source_paths = (
+            "src/auth/token.py",
+            "src/token_service.py",
+            "src/credential_store.ts",
+            "internal/secret_manager.go",
+            "src/secrets/manager.py",
+            "packages/account/credentials/store.go",
+            "src/secrets/rotate.sh",
+            "modules/token/validator.sql",
+            "src/auth_service.ts",
+            "src/permission.rs",
+            "src/apiKey.ts",
+            "src/auth/token_schema.json",
+            "config/token_policy.yaml",
+            "config/secret_manager.json",
+            "config/credential_store.json",
+            "config/clientSecretSchema.json",
+            "config/apiTokenPolicy.yaml",
+            "config/serviceAccountKeyProvider.json",
+            "config/certificate_manager.json",
+            "config/keystore_service.json",
+            "src/serviceAccountService.ts",
+        )
+        for path in source_paths:
+            with self.subTest(source=path):
+                self.assertFalse(is_sensitive_material_path(path))
+                self.assertTrue(is_security_domain_path(path))
+                self.assertFalse(is_protected_deletion_path(path))
+
+        material_paths = (
+            ".env.production",
+            "config/clientSecret.json",
+            "config/apiToken.json",
+            "config/serviceAccountKey.json",
+            "config/serviceAccount.json",
+            "config/apiKey.json",
+            "config/clientCertificate.json",
+            "config/signingKey.json",
+            "config/credentials-prod.json",
+            "config/certificate.json",
+            "config/keystore.json",
+            "certs/client.crt",
+            "deploy/keystores/app.jks",
+            "secrets/runtime.py",
+            "credentials/provider.ts",
+            "private-secrets/loader.py",
+        )
+        for path in material_paths:
+            with self.subTest(material=path):
+                self.assertTrue(is_sensitive_material_path(path))
+                self.assertTrue(is_security_domain_path(path))
+                self.assertTrue(is_protected_deletion_path(path))
+
+        self.assertTrue(
+            is_sensitive_material_path(
+                "ordinary/location.txt",
+                extra_sensitive={"ordinary"},
+            )
+        )
+
+    def test_security_domain_source_stays_reviewable_and_raises_risk(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            source = repo / "src" / "auth"
+            source.mkdir(parents=True)
+            token = source / "token.py"
+            token.write_text("TOKEN_VERSION = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "src/auth/token.py"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "add token source"], cwd=repo, check=True)
+            token.write_text("TOKEN_VERSION = 2\n", encoding="utf-8")
+
+            snapshot, _untracked_patch = repository_snapshot(repo)
+            self.assertFalse(snapshot["bounds"]["sensitive_change_quarantine"])
+            self.assertNotIn(
+                "src/auth/token.py",
+                {item["path"] for item in snapshot["sensitive_paths"]},
+            )
+            patch = tracked_patch(
+                repo,
+                sensitive_paths=[item["path"] for item in snapshot["sensitive_paths"]],
+            )
+            self.assertIn(b"TOKEN_VERSION = 2", patch)
+            assessment = analyze_change_intelligence(
+                repo,
+                task="change token validation",
+                anticipated_paths=[],
+                changes=snapshot["changes"],
+                tracked_patch=patch,
+                declared_risk=None,
+            )
+            self.assertEqual(assessment["effective_risk"], "high")
+            self.assertIn(
+                "authentication",
+                {item["id"] for item in assessment["signals"]},
+            )
+
+    def test_key_material_path_raises_security_risk(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            assessment = analyze_change_intelligence(
+                repo,
+                task="rotate service integration material",
+                anticipated_paths=[],
+                changes=[
+                    {
+                        "status": "??",
+                        "path": "config/apiKey.json",
+                        "original_path": "",
+                    }
+                ],
+                tracked_patch=b"",
+                declared_risk=None,
+                allow_repository_reads=False,
+            )
+            self.assertEqual(assessment["effective_risk"], "high")
+            self.assertIn(
+                "security",
+                {item["id"] for item in assessment["signals"]},
+            )
+
+    def test_camelcase_secret_material_is_discovered_without_content_reads(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            names = (
+                "clientSecret.json",
+                "apiToken.json",
+                "serviceAccountKey.json",
+                "apiKey.json",
+                "serviceAccount.json",
+                "clientCertificate.json",
+                "signingKey.json",
+            )
+            (repo / ".gitignore").write_text("*.json\n", encoding="utf-8")
+            subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "ignore local material"], cwd=repo, check=True)
+            for index, name in enumerate(names):
+                (repo / name).write_text(
+                    f"synthetic-secret-{index}\n",
+                    encoding="utf-8",
+                )
+
+            snapshot, untracked_patch = repository_snapshot(repo)
+            metadata = {
+                item["path"]: item for item in snapshot["sensitive_paths"]
+            }
+            self.assertEqual(set(metadata), set(names))
+            for item in metadata.values():
+                self.assertFalse(item["content_read"])
+            serialized = json.dumps(snapshot, sort_keys=True)
+            self.assertNotIn("synthetic-secret", serialized)
+            self.assertNotIn(b"synthetic-secret", untracked_patch)
 
     def test_equal_length_ignored_sensitive_rewrite_breaks_capture(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:

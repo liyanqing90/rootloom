@@ -7,7 +7,11 @@ import argparse
 import json
 from pathlib import Path
 
-from runner.baseline import BASELINE_FORMAT_V2, read_baseline_payload_with_hash
+from runner.baseline import (
+    BASELINE_FORMAT_V2,
+    BASELINE_FORMAT_V3,
+    read_baseline_payload_with_hash,
+)
 from runner.change_contract import contract_sha256, load_change_contract
 from runner.evidence_paths import (
     fsync_directory,
@@ -92,12 +96,16 @@ def main(argv: list[str] | None = None) -> int:
         )
     try:
         baseline, baseline_sha256 = read_baseline_payload_with_hash(baseline_path)
-        if (
-            baseline.get("format") != BASELINE_FORMAT_V2
-            or baseline.get("evidence_provenance") != "operator-sealed"
+        sealed_baselines = {
+            BASELINE_FORMAT_V2: "operator-sealed",
+            BASELINE_FORMAT_V3: "intake-sealed",
+        }
+        if baseline.get("evidence_provenance") != sealed_baselines.get(
+            baseline.get("format")
         ):
             raise ValueError(
-                "contract sealing requires an operator-sealed baseline v2 intake"
+                "contract sealing requires an intake-sealed baseline v3 "
+                "or compatible legacy sealed baseline v2"
             )
         repository = baseline["repository"]
         review_storage = validate_outside_repository_storage(

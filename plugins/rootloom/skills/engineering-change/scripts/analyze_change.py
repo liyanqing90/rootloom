@@ -16,6 +16,8 @@ from runner.evidence_paths import (
 )
 from runner.intelligence import analyze_change
 from runner.state import (
+    CaptureDeadline,
+    DEFAULT_MAX_CAPTURE_SECONDS,
     DEFAULT_MAX_GIT_SECONDS,
     DEFAULT_MAX_SENSITIVE_PATHS,
     repository_snapshot,
@@ -33,6 +35,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sensitive-path", action="append", default=[])
     parser.add_argument("--write-baseline", type=Path)
     parser.add_argument(
+        "--max-capture-seconds",
+        type=float,
+        default=DEFAULT_MAX_CAPTURE_SECONDS,
+    )
+    parser.add_argument(
         "--max-git-seconds",
         type=float,
         default=DEFAULT_MAX_GIT_SECONDS,
@@ -47,6 +54,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.max_capture_seconds) or args.max_capture_seconds <= 0:
+        raise SystemExit("capture time budget must be finite and positive")
     if not math.isfinite(args.max_git_seconds) or args.max_git_seconds <= 0:
         raise SystemExit("Git time budget must be finite and positive")
     if args.max_sensitive_paths <= 0:
@@ -81,25 +90,36 @@ def main(argv: list[str] | None = None) -> int:
     captured_git = None
     try:
         if args.write_baseline:
-            snapshot, _untracked_patch, patch, captured_git = stable_repository_capture(
+            (
+                snapshot,
+                _untracked_patch,
+                patch,
+                captured_git,
+                _capture_duration_seconds,
+            ) = stable_repository_capture(
                 repo,
                 extra_sensitive=args.sensitive_path,
+                max_capture_seconds=args.max_capture_seconds,
                 max_git_seconds=args.max_git_seconds,
                 max_sensitive_paths=args.max_sensitive_paths,
             )
         else:
+            capture_deadline = CaptureDeadline(args.max_capture_seconds)
             snapshot, _untracked_patch = repository_snapshot(
                 repo,
                 extra_sensitive=args.sensitive_path,
                 max_git_seconds=args.max_git_seconds,
                 max_sensitive_paths=args.max_sensitive_paths,
+                capture_deadline=capture_deadline,
             )
             sensitive = [item["path"] for item in snapshot["sensitive_paths"]]
             patch = tracked_patch(
                 repo,
                 sensitive_paths=sensitive,
                 max_git_seconds=args.max_git_seconds,
+                capture_deadline=capture_deadline,
             )
+            capture_deadline.checkpoint()
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
     assessment = analyze_change(

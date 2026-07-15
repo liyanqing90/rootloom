@@ -83,6 +83,18 @@ make smoke
 
 Do not make the live smoke test part of normal CI because it depends on a logged-in Codex installation and performs a real model turn. Hook trust is bypassed only inside the disposable test home.
 
+## Versioning public contracts
+
+Rootloom applies Semantic Versioning to observable JSON, CLI, persisted evidence, setup, and plugin behavior—not only to Python APIs:
+
+- Patch: correct an implementation defect without changing the documented meaning of an existing field, enum, flag, exit code, or persisted format.
+- Minor: add an optional field, flag, or compatible format/behavior that old consumers can ignore and existing producers/consumers can coexist with. Adding an enum value is Minor only when the enum is explicitly documented as open and unknown values are safely ignored.
+- Major: remove or rename a field/flag, replace an enum value, add a value to a closed/exhaustive enum, change exit semantics, reinterpret an existing value incompatibly, or make a new persisted format mandatory without a compatibility reader.
+
+A schema revision inside the same top-level `format` does not automatically make a change Minor. Review the real producer/consumer contract and mixed-version behavior. Prefer stable capability fields such as `evidence_complete` for automation; treat detailed status enums as diagnostic presentation. Never preserve a misleading status as an authoritative compatibility alias.
+
+Published tags and Releases are immutable. A post-release correction receives a new version; it never moves or deletes the existing tag during ordinary release maintenance.
+
 ## Pull requests
 
 Pull requests should explain:
