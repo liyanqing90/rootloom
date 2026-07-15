@@ -47,7 +47,10 @@ from runner.intelligence import (
     read_bounded_repository_text,
 )
 from runner.contracts import VerificationResult
-from runner.process import _controlled_tree_active
+from runner.process import (
+    _controlled_tree_active,
+    _controlled_tree_inactive_after_grace,
+)
 from runner.review_run import CONTRACT_DRAFT_SENTINEL
 from runner.state import (
     _new_file_patch,
@@ -110,6 +113,23 @@ class EngineeringChangeTests(unittest.TestCase):
         process.poll.return_value = None
         with mock.patch("runner.process.os.name", "nt"):
             self.assertTrue(_controlled_tree_active(process, job))
+
+    def test_windows_job_accounting_gets_a_post_exit_convergence_grace(self) -> None:
+        process = mock.Mock()
+        job = mock.Mock()
+        job.supported = True
+        job.active.side_effect = [True, False]
+        with mock.patch("runner.process.os.name", "nt"):
+            self.assertTrue(
+                _controlled_tree_inactive_after_grace(process, job, timeout=0.1)
+            )
+
+        job.active.side_effect = None
+        job.active.return_value = True
+        with mock.patch("runner.process.os.name", "nt"):
+            self.assertFalse(
+                _controlled_tree_inactive_after_grace(process, job, timeout=0)
+            )
 
     def test_git_capture_uses_the_bounded_process_tree_and_translates_timeout(self) -> None:
         with mock.patch("runner.state.run_command") as controlled:

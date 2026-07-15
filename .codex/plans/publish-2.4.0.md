@@ -106,10 +106,11 @@ Success requires fail-before/pass-after regressions for every reported trigger, 
 ### Executed pre-publication evidence
 
 - Fail-before reproductions confirmed unchanged baseline text contaminating analyzer/patch evidence, an unborn-repository Git stdin timeout, and false-positive discovery candidates exhausting the sensitive-result budget.
-- Pass-after focused coverage completed 105 tests with one environment-only non-UTF-8 filename skip; the repository gate completed 155 tests with the same skip.
+- Pass-after focused coverage completed 105 tests with one environment-only non-UTF-8 filename skip; the initial repository gate completed 155 tests with the same skip. After the Windows accounting repair, the replacement local gate completed 156 tests with the same skip and compatibility smoke still returned `passed: true`.
 - `make compatibility-smoke` returned `passed: true` with no failed commands, managed rollback leftovers, or plugin-install side effects.
 - The original sealed intake finalized with exit 0, summary revision 4, `REVIEW_EVIDENCE_COMPLETE`, `passed: true`, `change_partition: exact`, complete claim binding, and a valid hash chain.
 - The unrelated image stayed in `preexisting_changes`, outside task changes and patch headers; its SHA-256 remains `55ea78b17ac40b85cf347b478799dbda629ba8f4d52e7cea5044734c6ec1c0a6`.
+- PR CI run `29382878992` passed six jobs and exposed a Windows-only Job Object accounting race: short-lived Git descendants could still appear active immediately after pipe EOF and be falsely terminated. The process owner now gives post-exit accounting a bounded convergence grace and has a focused synthetic regression; publication remains blocked until the full replacement CI passes.
 
 ## Risks
 
@@ -132,6 +133,7 @@ Success requires fail-before/pass-after regressions for every reported trigger, 
 - 2026-07-15 — Select 2.4.0 because the accumulated change advances public evidence semantics and adds CLI/recovery contracts.
 - 2026-07-15 — Use the established PR → CI → merge → merged-main CI → annotated tag → public Release → publication-record flow.
 - 2026-07-15 — Preserve `assets/rootloom-xiaohei-loom.png` and `codex/enterprise-assurance` outside publication.
+- 2026-07-15 — Treat the first PR's Windows failure as an owning-boundary defect, add a bounded Job Object convergence grace, and require a fresh seven-job CI pass rather than retrying or bypassing the failed gate.
 
 ## Durable decision records
 

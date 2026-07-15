@@ -18,6 +18,7 @@ READ_CHUNK_BYTES = 64 * 1024
 TERMINATE_GRACE_SECONDS = 0.5
 KILL_GRACE_SECONDS = 1.5
 POST_EXIT_PIPE_GRACE_SECONDS = 0.2
+POST_EXIT_TREE_GRACE_SECONDS = 0.5
 
 
 class _WindowsJob:
@@ -193,6 +194,24 @@ def _wait_inactive(active, timeout: float) -> bool:
     return active() is False
 
 
+def _controlled_tree_inactive_after_grace(
+    process: subprocess.Popen[bytes],
+    windows_job: _WindowsJob | None,
+    timeout: float,
+) -> bool:
+    """Allow exited processes to drain from OS process-tree accounting."""
+
+    def active() -> bool | None:
+        return _controlled_tree_active(process, windows_job)
+
+    state = active()
+    if state is False:
+        return True
+    if state is None:
+        return False
+    return _wait_inactive(active, timeout)
+
+
 def _terminate_tree(
     process: subprocess.Popen[bytes], windows_job: _WindowsJob | None
 ) -> bool:
@@ -302,8 +321,11 @@ def run_command(
                     exit_code = polled
                     parent_exit_observed = parent_exit_observed or now
                     if now - parent_exit_observed >= POST_EXIT_PIPE_GRACE_SECONDS:
-                        active = _controlled_tree_active(process, windows_job)
-                        if active is not False:
+                        if not _controlled_tree_inactive_after_grace(
+                            process,
+                            windows_job,
+                            POST_EXIT_TREE_GRACE_SECONDS,
+                        ):
                             leaked_descendant = True
                             converged = _terminate_tree(process, windows_job)
                             try:
@@ -331,8 +353,11 @@ def run_command(
             except subprocess.TimeoutExpired:
                 converged = False
                 exit_code = 125
-        active = _controlled_tree_active(process, windows_job)
-        if active is not False:
+        if not _controlled_tree_inactive_after_grace(
+            process,
+            windows_job,
+            POST_EXIT_TREE_GRACE_SECONDS,
+        ):
             leaked_descendant = True
             converged = _terminate_tree(process, windows_job) and converged
     finally:

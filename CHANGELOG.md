@@ -16,7 +16,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Changed
 
 - Advance `rootloom-engineering-summary-v1` to revision 4: rename the complete governed state to `REVIEW_EVIDENCE_COMPLETE`, expose `semantic_review` separately, and name unsealed semantic assertions `SEMANTIC_REVIEW_ASSERTED`.
-- Route every Git child through the existing controlled process-tree owner, with timeout, output ceiling, and descendant cleanup.
+- Route every Git child through the existing controlled process-tree owner, with timeout, output ceiling, descendant cleanup, and a bounded post-exit grace for Windows Job Object accounting convergence.
 - Discover tracked and ignored sensitive paths through shared case-insensitive Git pathspecs plus literal declared roots before Python reclassification, instead of enumerating every path.
 - Replace recursive `TODO` substring matching with one exact Rootloom draft placeholder while continuing to reject exact legacy generated placeholders.
 
