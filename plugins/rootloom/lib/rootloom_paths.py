@@ -413,7 +413,16 @@ def validate_reviewable_paths(
                     f"reviewable path must name an existing regular file: {path}"
                 ) from exc
             if stat.S_ISLNK(info.st_mode):
-                raise ValueError(f"reviewable path must not be a symlink: {path}")
+                component_type = (
+                    "parent component"
+                    if index < len(parts) - 1
+                    else "target file"
+                )
+                component = current.relative_to(repo).as_posix()
+                raise ValueError(
+                    f"reviewable path {component_type} must not be a symlink: "
+                    f"{component}"
+                )
             if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
                 raise ValueError(
                     f"reviewable path parent must be a directory: {path}"

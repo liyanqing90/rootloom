@@ -926,29 +926,65 @@ class EngineeringChangeTests(unittest.TestCase):
             repo = self.make_repo(root)
             (repo / "public.pem").write_text("PUBLIC CERTIFICATE\n", encoding="utf-8")
             (repo / "public-link.pem").symlink_to("public.pem")
-            subprocess.run(["git", "add", "public.pem", "public-link.pem"], cwd=repo, check=True)
-            subprocess.run(["git", "commit", "-qm", "add public certificate link"], cwd=repo, check=True)
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(BEGIN_REVIEW),
-                    "--repo",
-                    str(repo),
-                    "--task",
-                    "review linked public material",
-                    "--output",
-                    str(root / "symlink-review"),
-                    "--path",
-                    "app.py",
-                    "--reviewable-path",
-                    "public-link.pem",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
+            public_directory = repo / "public-directory"
+            public_directory.mkdir()
+            (public_directory / "public.pem").write_text(
+                "PUBLIC CERTIFICATE\n",
+                encoding="utf-8",
             )
-            self.assertNotEqual(completed.returncode, 0)
-            self.assertIn("must not be a symlink", completed.stderr)
+            (repo / "public-directory-link").symlink_to(
+                public_directory.name,
+                target_is_directory=True,
+            )
+            subprocess.run(
+                [
+                    "git",
+                    "add",
+                    "public.pem",
+                    "public-link.pem",
+                    "public-directory/public.pem",
+                    "public-directory-link",
+                ],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "commit", "-qm", "add public certificate link"], cwd=repo, check=True)
+            cases = (
+                (
+                    "target",
+                    "public-link.pem",
+                    "reviewable path target file must not be a symlink: public-link.pem",
+                ),
+                (
+                    "parent",
+                    "public-directory-link/public.pem",
+                    "reviewable path parent component must not be a symlink: "
+                    "public-directory-link",
+                ),
+            )
+            for name, reviewable_path, message in cases:
+                with self.subTest(name=name):
+                    completed = subprocess.run(
+                        [
+                            sys.executable,
+                            str(BEGIN_REVIEW),
+                            "--repo",
+                            str(repo),
+                            "--task",
+                            "review linked public material",
+                            "--output",
+                            str(root / f"symlink-review-{name}"),
+                            "--path",
+                            "app.py",
+                            "--reviewable-path",
+                            reviewable_path,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(message, completed.stderr)
 
     @unittest.skipIf(os.name == "nt", "symlink creation is not portable on Windows CI")
     def test_sealed_reviewable_file_cannot_be_replaced_by_symlink(self) -> None:
