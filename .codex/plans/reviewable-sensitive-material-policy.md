@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: complete — local 3.1.0 candidate; external publication requires renewed authorization
+- State: complete — published as Rootloom Personal Core 3.1.0
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: security and public CLI/schema contract
@@ -112,6 +112,7 @@ Executed evidence as of 2026-07-15:
 - `git diff --check`: passed.
 - Final source/contract challenge: default calls still emit field-identical baseline v3; `.env.example`, public `.crt`, and public `.pem` declarations emit sealed v4 and remain high risk; strong/CamelCase secret names, explicit Sensitive roots, type replacement, and rename non-transfer all fail closed or quarantine as designed.
 - Self-review correction: the first implementation accepted only ambiguous built-in material. The supplied CLI examples also require already-reviewable templates and public certificates to be pinnable, so the final contract accepts any exact non-strong/non-explicit regular file while preserving every privacy hard stop.
+- Publication verification: corrected PR run `29408409629` and merged-main run `29408654603` passed all seven jobs; annotated `v3.1.0` peels to `4e010ea26c871a603a955b88ede8c5cea5066572`; public Release `RE_kwDOTVQo6M4VH8wK` is non-draft and non-prerelease.
 
 ## Risks
 

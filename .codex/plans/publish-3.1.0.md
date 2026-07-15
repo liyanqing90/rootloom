@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: in progress
+- State: finalizing publication record
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: release and external publication
@@ -99,6 +99,13 @@ Publish the verified sensitive-material classification refinement as Rootloom Pe
 - Security/dependency checks: `make compatibility-smoke`; exact staged/path/image/Enterprise identity checks.
 - Post-action verification: PR/main/final Actions, tag object and peeled commit, public Release JSON, local plugin version/preset drift, image hash, and Enterprise ref.
 
+Executed publication evidence as of 2026-07-15:
+
+- PR #8 corrected review feedback at the symlink-validation boundary and merged as `4e010ea26c871a603a955b88ede8c5cea5066572`; corrected PR run `29408409629` and merged-main run `29408654603` each passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs.
+- Annotated tag object `fe8c834d5e9d450210cfdb33de0d6e8f688a7ae3` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VH8wK` was published at 2026-07-15T11:58:09Z.
+- Local `rootloom@rootloom` and the managed personal preset upgraded from 3.0.0 to 3.1.0; setup reports no drift or pending upgrade. Installed Rules preserve representative routine/high-risk allow decisions and catastrophic deletion denials.
+- The preserved image hash and Enterprise branch ref remain unchanged. Pending evidence is the publication-record CI and its final factual record.
+
 ## Risks
 
 - Risk: a published tag identifies code that did not pass merged-main CI.
@@ -116,6 +123,7 @@ Publish the verified sensitive-material classification refinement as Rootloom Pe
 - 2026-07-15 — Publish the additive exact-reviewability capability as 3.1.0 using PR → CI → merge → merged-main CI → annotated tag → public Release → publication-record CI.
 - 2026-07-15 — Treat the current `发布` request as Single action authority for this exact repository/version workflow, not reusable Full authorization.
 - 2026-07-15 — Preserve the Enterprise branch and unrelated image unchanged and outside all publication artifacts.
+- 2026-07-15 — Publish annotated `v3.1.0` only after corrected PR and merged-main CI passed; retain the tag and record later evidence on `main` rather than moving it.
 
 ## Durable decision records
 
