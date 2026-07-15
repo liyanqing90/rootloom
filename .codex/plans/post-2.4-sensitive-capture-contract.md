@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: finalizing publication record
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: privacy, public CLI/JSON contract, resource-governance defect repair, and release
@@ -129,7 +129,7 @@ Completion requires focused regressions, the repository contract gate, the full 
 - Release PR run `29390214510` passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs. PR #7 merged as `61c1d8202350442721644345678e1525461c7d08`; merged-main run `29390437387` independently passed the same seven jobs.
 - Annotated tag object `72091416819a5b16436f2be0b7862dc965856f49` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VHOPs` was published at 2026-07-15T05:07:33Z.
 - Local `rootloom@rootloom` and the managed personal preset upgraded from 2.4.0 to 3.0.0; setup reports no drift or pending upgrade. Installed Rules allow representative routine/high-risk argv and forbid catastrophic root deletion.
-- Pending release evidence: publication-record CI and its final factual record.
+- Publication-record run `29390839339` passed the same seven jobs after the factual release record and validator contract were committed to `main`.
 
 ## Risks
 

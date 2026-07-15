@@ -570,6 +570,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "RE_kwDOTVQo6M4VHOPs",
             "29390214510",
             "29390437387",
+            "29390839339",
         ),
         ROOT / "docs" / "diagram" / "architecture-en.svg": (
             "Authorization Modes",
