@@ -431,6 +431,7 @@ def analyze_change(
     changes: list[dict[str, str]],
     tracked_patch: bytes,
     declared_risk: str | None,
+    reviewable_paths: list[str] | None = None,
     allow_repository_reads: bool = True,
 ) -> dict[str, Any]:
     repo = repo.expanduser().resolve()
@@ -439,6 +440,9 @@ def analyze_change(
     if declared_risk is not None and declared_risk not in RISK_ORDER:
         raise ValueError(f"unsupported declared risk: {declared_risk}")
     paths, operations = change_paths(changes, anticipated_paths)
+    normalized_reviewable = {
+        normalized_path(path) for path in reviewable_paths or []
+    }
     if len(paths) > MAX_CHANGED_PATHS:
         raise ValueError(f"change analysis exceeds {MAX_CHANGED_PATHS} paths")
     product_paths = [path for path in paths if is_product_path(path)]
@@ -474,7 +478,12 @@ def analyze_change(
         )
 
     security_domain_paths = [
-        path for path in signal_paths if is_security_domain_path(path)
+        path
+        for path in signal_paths
+        if is_security_domain_path(
+            path,
+            reviewable_paths=normalized_reviewable,
+        )
     ]
     auth_paths = [
         path

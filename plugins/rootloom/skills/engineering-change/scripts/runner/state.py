@@ -264,6 +264,7 @@ def discover_sensitive_paths(
     repo: Path,
     extra_sensitive: set[str],
     *,
+    reviewable_paths: set[str] | None = None,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
     max_candidate_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
@@ -319,7 +320,11 @@ def discover_sensitive_paths(
     for path in candidates:
         if capture_deadline is not None:
             capture_deadline.checkpoint()
-        if is_sensitive_material_path(path, extra_sensitive=extra_sensitive):
+        if is_sensitive_material_path(
+            path,
+            extra_sensitive=extra_sensitive,
+            reviewable_paths=reviewable_paths,
+        ):
             classified.add(path)
     result = sorted(classified | set(extra_sensitive))
     if len(result) > max_sensitive_paths:
@@ -667,6 +672,7 @@ def repository_snapshot(
     repo: Path,
     *,
     extra_sensitive: list[str] | None = None,
+    reviewable_paths: list[str] | None = None,
     reference_sensitive_metadata: list[dict[str, Any]] | None = None,
     max_untracked_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     max_fingerprint_file_bytes: int = DEFAULT_MAX_FINGERPRINT_FILE_BYTES,
@@ -682,6 +688,17 @@ def repository_snapshot(
     normalized_extra = {
         normalize_repo_path(path, label="sensitive path") for path in extra_sensitive or []
     }
+    normalized_reviewable = {
+        normalize_repo_path(path, label="reviewable path")
+        for path in reviewable_paths or []
+    }
+    for path in sorted(normalized_reviewable):
+        info = _lstat_repo_entry(repo, path)
+        if info is not None and not stat.S_ISREG(info.st_mode):
+            raise ValueError(
+                "reviewable path must remain a regular file or be deleted: "
+                + path
+            )
     changes, untracked = repository_changes(
         repo,
         max_git_seconds=max_git_seconds,
@@ -690,6 +707,7 @@ def repository_snapshot(
     sensitive_paths = discover_sensitive_paths(
         repo,
         normalized_extra,
+        reviewable_paths=normalized_reviewable,
         max_sensitive_paths=max_sensitive_paths,
         max_git_seconds=max_git_seconds,
         capture_deadline=capture_deadline,
@@ -724,7 +742,11 @@ def repository_snapshot(
         and current_sensitive_by_path != reference_by_path
     )
     sensitive_change_observed = any(
-        is_sensitive_material_path(path, extra_sensitive=normalized_extra)
+        is_sensitive_material_path(
+            path,
+            extra_sensitive=normalized_extra,
+            reviewable_paths=normalized_reviewable,
+        )
         for item in changes
         for path in (item.get("path", ""), item.get("original_path", ""))
         if path
@@ -739,11 +761,19 @@ def repository_snapshot(
         original = item.get("original_path", "")
         current_sensitive = bool(current) and (
             quarantine_changed_paths
-            or is_sensitive_material_path(current, extra_sensitive=normalized_extra)
+            or is_sensitive_material_path(
+                current,
+                extra_sensitive=normalized_extra,
+                reviewable_paths=normalized_reviewable,
+            )
         )
         original_sensitive = bool(original) and (
             quarantine_changed_paths
-            or is_sensitive_material_path(original, extra_sensitive=normalized_extra)
+            or is_sensitive_material_path(
+                original,
+                extra_sensitive=normalized_extra,
+                reviewable_paths=normalized_reviewable,
+            )
         )
         if current_sensitive or original_sensitive:
             if current:
@@ -763,7 +793,9 @@ def repository_snapshot(
         if capture_deadline is not None:
             capture_deadline.checkpoint()
         sensitive = path in sensitive_set or is_sensitive_material_path(
-            path, extra_sensitive=normalized_extra
+            path,
+            extra_sensitive=normalized_extra,
+            reviewable_paths=normalized_reviewable,
         )
         if sensitive:
             sensitive_set.add(path)
@@ -831,6 +863,7 @@ def stable_repository_capture(
     repo: Path,
     *,
     extra_sensitive: list[str] | None = None,
+    reviewable_paths: list[str] | None = None,
     reference_sensitive_metadata: list[dict[str, Any]] | None = None,
     max_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     protect_changed_paths: bool = False,
@@ -853,6 +886,7 @@ def stable_repository_capture(
         snapshot, untracked_patch = repository_snapshot(
             repo,
             extra_sensitive=extra_sensitive,
+            reviewable_paths=reviewable_paths,
             reference_sensitive_metadata=reference_sensitive_metadata,
             max_untracked_patch_bytes=max_patch_bytes,
             protect_changed_paths=protect_changed_paths,

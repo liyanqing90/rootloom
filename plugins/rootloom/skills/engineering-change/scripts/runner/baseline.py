@@ -16,13 +16,15 @@ import uuid
 
 from .state import DEFAULT_MAX_GIT_SECONDS, git_bounded, git_identity
 from .strict_json import parse_json_object
+from rootloom_paths import validate_reviewable_policy_path
 
 
 BASELINE_FORMAT = "rootloom-change-baseline-v1"
 BASELINE_FORMAT_V2 = "rootloom-change-baseline-v2"
 BASELINE_FORMAT_V3 = "rootloom-change-baseline-v3"
+BASELINE_FORMAT_V4 = "rootloom-change-baseline-v4"
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
-PRODUCER_VERSION = "3.0.0"
+PRODUCER_VERSION = "3.1.0"
 MAX_FUTURE_CLOCK_SKEW_SECONDS = 300
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OBJECT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -45,6 +47,7 @@ VERSIONED_BASELINE_FIELDS = {
     "allow_dirty_baseline",
     "preexisting_changes",
 }
+VERSIONED_BASELINE_V4_FIELDS = VERSIONED_BASELINE_FIELDS | {"reviewable_paths"}
 SNAPSHOT_FIELDS = {"changes", "untracked", "sensitive_paths", "bounds"}
 MISSING_METADATA_FIELDS = {
     "path",
@@ -144,6 +147,7 @@ def baseline_payload(
     snapshot: dict[str, Any],
     tracked_patch: bytes,
     extra_sensitive: list[str],
+    reviewable_paths: list[str] | None = None,
     task: str = "",
     provenance: str = "self-declared",
     allow_dirty_baseline: bool = False,
@@ -160,12 +164,33 @@ def baseline_payload(
             for path in extra_sensitive
         }
     )
+    normalized_reviewable = sorted(
+        _normalized_repo_path(path, field="reviewable_paths")
+        for path in reviewable_paths or []
+    )
+    if len({path.casefold() for path in normalized_reviewable}) != len(
+        normalized_reviewable
+    ):
+        raise ValueError(
+            "baseline reviewable_paths must not contain case-insensitive duplicates"
+        )
+    for path in normalized_reviewable:
+        validate_reviewable_policy_path(
+            path,
+            extra_sensitive=set(normalized_sensitive),
+        )
+    if normalized_reviewable and provenance != "intake-sealed":
+        raise ValueError("reviewable paths require intake-sealed baseline provenance")
     sensitive_policy = {
         "extra_sensitive": normalized_sensitive,
         "snapshot_sensitive_paths": snapshot.get("sensitive_paths", []),
     }
-    return {
-        "format": BASELINE_FORMAT_V3,
+    if normalized_reviewable:
+        sensitive_policy["reviewable_paths"] = normalized_reviewable
+    payload = {
+        "format": (
+            BASELINE_FORMAT_V4 if normalized_reviewable else BASELINE_FORMAT_V3
+        ),
         "run_id": run_id,
         "nonce": nonce,
         "created_at": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
@@ -185,6 +210,9 @@ def baseline_payload(
         "allow_dirty_baseline": allow_dirty_baseline,
         "preexisting_changes": list(snapshot.get("changes", [])),
     }
+    if normalized_reviewable:
+        payload["reviewable_paths"] = normalized_reviewable
+    return payload
 
 
 def write_new_baseline(path: Path, payload: dict[str, Any]) -> None:
@@ -200,6 +228,12 @@ def write_new_baseline(path: Path, payload: dict[str, Any]) -> None:
         _validate_versioned_baseline(
             payload,
             version=3,
+            sealed_provenance="intake-sealed",
+        )
+    elif payload.get("format") == BASELINE_FORMAT_V4:
+        _validate_versioned_baseline(
+            payload,
+            version=4,
             sealed_provenance="intake-sealed",
         )
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -345,7 +379,10 @@ def _validate_versioned_baseline(
     version: int,
     sealed_provenance: str,
 ) -> None:
-    if set(payload) != VERSIONED_BASELINE_FIELDS:
+    expected_fields = (
+        VERSIONED_BASELINE_V4_FIELDS if version == 4 else VERSIONED_BASELINE_FIELDS
+    )
+    if set(payload) != expected_fields:
         raise ValueError(f"baseline v{version} has unexpected or missing fields")
     run_id = payload.get("run_id")
     try:
@@ -486,14 +523,55 @@ def _validate_versioned_baseline(
     ]
     if normalized_sensitive != sorted(set(normalized_sensitive)):
         raise ValueError("baseline sensitive_paths must be normalized, unique, and sorted")
+    normalized_reviewable: list[str] = []
+    if version == 4:
+        reviewable = payload.get("reviewable_paths")
+        if not isinstance(reviewable, list) or any(
+            not isinstance(item, str) for item in reviewable
+        ):
+            raise ValueError("baseline reviewable_paths must be a string list")
+        normalized_reviewable = [
+            _validated_repo_path(item, field="reviewable_paths")
+            for item in reviewable
+        ]
+        if not normalized_reviewable:
+            raise ValueError("baseline v4 reviewable_paths must not be empty")
+        if normalized_reviewable != sorted(set(normalized_reviewable)):
+            raise ValueError(
+                "baseline reviewable_paths must be normalized, unique, and sorted"
+            )
+        if len({path.casefold() for path in normalized_reviewable}) != len(
+            normalized_reviewable
+        ):
+            raise ValueError(
+                "baseline reviewable_paths must not contain case-insensitive duplicates"
+            )
+        for path in normalized_reviewable:
+            validate_reviewable_policy_path(
+                path,
+                extra_sensitive=set(normalized_sensitive),
+            )
+        snapshot_sensitive_paths = {
+            item["path"] for item in snapshot["sensitive_paths"]
+        }
+        overlap = sorted(set(normalized_reviewable) & snapshot_sensitive_paths)
+        if overlap:
+            raise ValueError(
+                "baseline reviewable_paths overlap sensitive snapshot metadata: "
+                + ", ".join(overlap)
+            )
     sensitive_policy = {
         "extra_sensitive": normalized_sensitive,
         "snapshot_sensitive_paths": snapshot["sensitive_paths"],
     }
+    if version == 4:
+        sensitive_policy["reviewable_paths"] = normalized_reviewable
     if payload_sha256(sensitive_policy) != payload["sensitive_policy_sha256"]:
         raise ValueError("baseline sensitive_policy_sha256 does not match content")
     provenance = payload.get("evidence_provenance")
-    if provenance not in {"self-declared", sealed_provenance}:
+    if version == 4 and provenance != "intake-sealed":
+        raise ValueError("baseline v4 evidence_provenance must be intake-sealed")
+    if version != 4 and provenance not in {"self-declared", sealed_provenance}:
         raise ValueError("baseline evidence_provenance is malformed")
 
 
@@ -505,10 +583,12 @@ def read_baseline_payload_with_hash(path: Path) -> tuple[dict[str, Any], str]:
         BASELINE_FORMAT,
         BASELINE_FORMAT_V2,
         BASELINE_FORMAT_V3,
+        BASELINE_FORMAT_V4,
     }:
         raise ValueError(
             "baseline format must be one of "
-            f"{BASELINE_FORMAT}, {BASELINE_FORMAT_V2}, or {BASELINE_FORMAT_V3}"
+            f"{BASELINE_FORMAT}, {BASELINE_FORMAT_V2}, {BASELINE_FORMAT_V3}, "
+            f"or {BASELINE_FORMAT_V4}"
         )
     if payload.get("format") == BASELINE_FORMAT_V2:
         _validate_versioned_baseline(
@@ -520,6 +600,12 @@ def read_baseline_payload_with_hash(path: Path) -> tuple[dict[str, Any], str]:
         _validate_versioned_baseline(
             payload,
             version=3,
+            sealed_provenance="intake-sealed",
+        )
+    elif payload.get("format") == BASELINE_FORMAT_V4:
+        _validate_versioned_baseline(
+            payload,
+            version=4,
             sealed_provenance="intake-sealed",
         )
     snapshot = payload.get("snapshot")

@@ -10,6 +10,7 @@ from pathlib import Path
 from runner.baseline import (
     BASELINE_FORMAT_V2,
     BASELINE_FORMAT_V3,
+    BASELINE_FORMAT_V4,
     read_baseline_payload_with_hash,
 )
 from runner.change_contract import contract_sha256, load_change_contract
@@ -99,12 +100,13 @@ def main(argv: list[str] | None = None) -> int:
         sealed_baselines = {
             BASELINE_FORMAT_V2: "operator-sealed",
             BASELINE_FORMAT_V3: "intake-sealed",
+            BASELINE_FORMAT_V4: "intake-sealed",
         }
         if baseline.get("evidence_provenance") != sealed_baselines.get(
             baseline.get("format")
         ):
             raise ValueError(
-                "contract sealing requires an intake-sealed baseline v3 "
+                "contract sealing requires an intake-sealed baseline v3 or v4 "
                 "or compatible legacy sealed baseline v2"
             )
         repository = baseline["repository"]

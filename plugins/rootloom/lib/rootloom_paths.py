@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import re
+import stat
 
 
 SENSITIVE_MATERIAL_EXACT_NAMES = {
@@ -23,19 +24,30 @@ SENSITIVE_MATERIAL_EXACT_NAMES = {
     "secrets.yaml",
     "secrets.yml",
 }
-SENSITIVE_MATERIAL_SUFFIXES = {
+PUBLIC_CERTIFICATE_SUFFIXES = {
     ".cer",
     ".crt",
     ".der",
+    ".p7b",
+    ".p7c",
+}
+STRONG_SENSITIVE_MATERIAL_SUFFIXES = {
     ".jks",
     ".key",
     ".keystore",
     ".p12",
-    ".p7b",
-    ".p7c",
-    ".pem",
     ".pfx",
     ".ppk",
+}
+AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES = {".pem"}
+SENSITIVE_MATERIAL_SUFFIXES = (
+    STRONG_SENSITIVE_MATERIAL_SUFFIXES | AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES
+)
+REVIEWABLE_ENV_TEMPLATE_NAMES = {
+    ".env.dist",
+    ".env.example",
+    ".env.sample",
+    ".env.template",
 }
 SENSITIVE_MATERIAL_CONFIG_SUFFIXES = {
     ".cfg",
@@ -54,6 +66,16 @@ SENSITIVE_MATERIAL_WORDS = {
     "credential",
     "credentials",
     "keystore",
+    "secret",
+    "secrets",
+    "token",
+    "tokens",
+}
+STRONG_SENSITIVE_MATERIAL_WORDS = {
+    "credential",
+    "credentials",
+    "keystore",
+    "private",
     "secret",
     "secrets",
     "token",
@@ -128,8 +150,6 @@ SENSITIVE_MATERIAL_DIRECTORIES = {
     ".private-keys",
     ".private_keys",
     ".secrets",
-    "certificates",
-    "certs",
     "keystores",
     "private-keys",
     "private_keys",
@@ -185,6 +205,8 @@ SECURITY_DOMAIN_WORDS = {
     "auth",
     "authentication",
     "authorization",
+    "cert",
+    "certs",
     "certificate",
     "certificates",
     "credential",
@@ -251,12 +273,27 @@ def path_words(path: str) -> set[str]:
     return words
 
 
-def is_sensitive_material_path(
-    path: str, *, extra_sensitive: set[str] | None = None
-) -> bool:
-    """Return whether path alone identifies content that must remain unread."""
+def _matches_declared_root(lowered: str, raw_roots: set[str] | None) -> bool:
+    if not raw_roots:
+        return False
+    for raw_root in raw_roots:
+        root = normalize_repo_path(raw_root, label="sensitive path").casefold()
+        if lowered == root or lowered.startswith(root + "/"):
+            return True
+    return False
 
-    normalized = normalize_repo_path(path)
+
+def _is_environment_material_name(name: str) -> bool:
+    lowered = name.casefold()
+    return lowered in {".env", ".envrc"} or (
+        lowered.startswith(".env.")
+        and lowered not in REVIEWABLE_ENV_TEMPLATE_NAMES
+    )
+
+
+def _material_policy(normalized: str) -> tuple[bool, bool]:
+    """Return (material, strong) for the built-in path-only policy."""
+
     lowered = normalized.casefold()
     parts = PurePosixPath(lowered).parts
     explicit_material_root = parts[0] in (
@@ -266,59 +303,171 @@ def is_sensitive_material_path(
         PurePosixPath(lowered).suffix in SOURCE_CODE_SUFFIXES
         and not explicit_material_root
     )
-    if extra_sensitive:
-        for raw_root in extra_sensitive:
-            root = normalize_repo_path(raw_root, label="sensitive path").casefold()
-            if lowered == root or lowered.startswith(root + "/"):
-                return True
     if any(
         part in SENSITIVE_MATERIAL_EXACT_NAMES
-        or part.startswith(".env")
-        or PurePosixPath(part).suffix in SENSITIVE_MATERIAL_SUFFIXES
+        or _is_environment_material_name(part)
+        or PurePosixPath(part).suffix in STRONG_SENSITIVE_MATERIAL_SUFFIXES
         for part in parts
     ):
-        return True
+        return True, True
+    ambiguous_suffix = any(
+        PurePosixPath(part).suffix in AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES
+        for part in parts
+    )
     for part in parts[:-1]:
         if part in SENSITIVE_MATERIAL_DIRECTORIES and (
             part.startswith(".") or not source_like
         ):
-            return True
-        if (
-            part in ROOT_SENSITIVE_MATERIAL_DIRECTORIES
-            and not source_like
-        ):
-            return True
+            return True, True
+        if part in ROOT_SENSITIVE_MATERIAL_DIRECTORIES and not source_like:
+            return True, True
     name = PurePosixPath(normalized).name
     name_words = path_words(name)
     suffix = PurePosixPath(name).suffix.casefold()
     config_like = suffix in SENSITIVE_MATERIAL_CONFIG_SUFFIXES or not suffix
     stem = PurePosixPath(name).stem.casefold()
-    if config_like and stem in SENSITIVE_MATERIAL_WORDS:
-        return True
     domain_descriptor = bool(name_words & SECURITY_DOMAIN_DESCRIPTOR_WORDS)
+    strong_named_material = bool(
+        name_words & STRONG_SENSITIVE_MATERIAL_WORDS
+    ) or any(
+        context.issubset(name_words) and "certificate" not in context
+        for context in SENSITIVE_MATERIAL_CONTEXTS
+    )
+    if ambiguous_suffix and stem in SENSITIVE_MATERIAL_EXACT_NAMES:
+        return True, True
+    if (
+        suffix
+        in (PUBLIC_CERTIFICATE_SUFFIXES | AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES)
+        and not domain_descriptor
+        and strong_named_material
+    ):
+        return True, True
+    if config_like and stem in SENSITIVE_MATERIAL_WORDS:
+        return True, True
     if config_like and any(
         context.issubset(name_words)
         and not ((name_words - context) & SECURITY_DOMAIN_DESCRIPTOR_WORDS)
         for context in SENSITIVE_MATERIAL_CONTEXTS
     ):
-        return True
+        return True, True
     if (
         config_like
         and not domain_descriptor
         and name_words & {"credentials", "secrets"}
         and name_words & SENSITIVE_MATERIAL_ENVIRONMENTS
     ):
+        return True, True
+    return ambiguous_suffix, False
+
+
+def validate_reviewable_policy_path(
+    path: str, *, extra_sensitive: set[str] | None = None
+) -> str:
+    """Validate one normalized, path-only reviewability declaration."""
+
+    normalized = normalize_repo_path(path, label="reviewable path")
+    if any(character in normalized for character in "*?["):
+        raise ValueError("reviewable path must be one exact file path, not a glob")
+    if _matches_declared_root(normalized.casefold(), extra_sensitive):
+        raise ValueError(
+            f"reviewable path overlaps declared sensitive material: {normalized}"
+        )
+    _, strong = _material_policy(normalized)
+    if strong:
+        raise ValueError(
+            f"reviewable path cannot override strong sensitive material: {normalized}"
+        )
+    return normalized
+
+
+def validate_reviewable_paths(
+    repo: Path,
+    paths: list[str],
+    *,
+    extra_sensitive: set[str] | None = None,
+    max_paths: int | None = None,
+) -> list[str]:
+    """Validate exact existing regular files without reading their contents."""
+
+    normalized = [
+        normalize_repo_path(path, label="reviewable path") for path in paths
+    ]
+    if max_paths is not None and len(normalized) > max_paths:
+        raise ValueError(
+            f"reviewable paths exceed configured {max_paths}-path budget"
+        )
+    if any(any(character in path for character in "*?[") for path in normalized):
+        raise ValueError("reviewable path must be one exact file path, not a glob")
+    folded = [path.casefold() for path in normalized]
+    if len(folded) != len(set(folded)):
+        raise ValueError("reviewable paths must not contain case-insensitive duplicates")
+    for path in normalized:
+        current = repo
+        parts = PurePosixPath(path).parts
+        for index, part in enumerate(parts):
+            current /= part
+            try:
+                info = current.lstat()
+            except FileNotFoundError as exc:
+                raise ValueError(
+                    f"reviewable path must name an existing regular file: {path}"
+                ) from exc
+            if stat.S_ISLNK(info.st_mode):
+                component_type = (
+                    "parent component"
+                    if index < len(parts) - 1
+                    else "target file"
+                )
+                component = current.relative_to(repo).as_posix()
+                raise ValueError(
+                    f"reviewable path {component_type} must not be a symlink: "
+                    f"{component}"
+                )
+            if index < len(parts) - 1 and not stat.S_ISDIR(info.st_mode):
+                raise ValueError(
+                    f"reviewable path parent must be a directory: {path}"
+                )
+        if not stat.S_ISREG(info.st_mode):
+            raise ValueError(f"reviewable path must name a regular file: {path}")
+        validate_reviewable_policy_path(path, extra_sensitive=extra_sensitive)
+    return sorted(normalized)
+
+
+def is_sensitive_material_path(
+    path: str,
+    *,
+    extra_sensitive: set[str] | None = None,
+    reviewable_paths: set[str] | None = None,
+) -> bool:
+    """Return whether path alone identifies content that must remain unread."""
+
+    normalized = normalize_repo_path(path)
+    lowered = normalized.casefold()
+    if _matches_declared_root(lowered, extra_sensitive):
         return True
-    return False
+    material, strong = _material_policy(normalized)
+    if reviewable_paths and normalized in reviewable_paths:
+        return material and strong
+    return material
 
 
-def is_security_domain_path(path: str) -> bool:
+def is_security_domain_path(
+    path: str, *, reviewable_paths: set[str] | None = None
+) -> bool:
     """Return whether a path names security behavior that raises review risk."""
 
     normalized = normalize_repo_path(path)
     words = path_words(normalized)
+    parts = PurePosixPath(normalized.casefold()).parts
+    suffix = PurePosixPath(normalized).suffix.casefold()
     return (
-        is_sensitive_material_path(normalized)
+        bool(reviewable_paths and normalized in reviewable_paths)
+        or is_sensitive_material_path(
+            normalized,
+            reviewable_paths=reviewable_paths,
+        )
+        or suffix in PUBLIC_CERTIFICATE_SUFFIXES
+        or any(part in REVIEWABLE_ENV_TEMPLATE_NAMES for part in parts)
         or bool(words & SECURITY_DOMAIN_WORDS)
         or {"api", "key"}.issubset(words)
         or {"access", "key"}.issubset(words)
@@ -330,11 +479,18 @@ def is_security_domain_path(path: str) -> bool:
 
 
 def is_protected_deletion_path(
-    path: str, *, extra_sensitive: set[str] | None = None
+    path: str,
+    *,
+    extra_sensitive: set[str] | None = None,
+    reviewable_paths: set[str] | None = None,
 ) -> bool:
     normalized = normalize_repo_path(path)
     return (
-        is_sensitive_material_path(normalized, extra_sensitive=extra_sensitive)
+        is_sensitive_material_path(
+            normalized,
+            extra_sensitive=extra_sensitive,
+            reviewable_paths=reviewable_paths,
+        )
         or PurePosixPath(normalized).suffix.lower() in PROTECTED_STATE_SUFFIXES
         or bool(path_words(normalized) & PROTECTED_STATE_WORDS)
     )
@@ -345,7 +501,8 @@ def sensitive_material_git_pathspecs() -> list[str]:
 
     patterns = {
         "**/.env",
-        "**/.env*",
+        "**/.env.*",
+        "**/.envrc",
         "**/.git-credentials",
         "**/.netrc",
         "**/.npmrc",
@@ -383,7 +540,7 @@ def sensitive_material_git_pathspecs() -> list[str]:
     for suffix in SENSITIVE_MATERIAL_SUFFIXES:
         patterns.add(f"**/*{suffix}")
         patterns.add(f"**/*{suffix}/**")
-    patterns.add("**/.env*/**")
+    patterns.add("**/.env.*/**")
     return [f":(glob,icase){pattern}" for pattern in sorted(patterns)]
 
 
