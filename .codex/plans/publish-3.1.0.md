@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: finalizing publication record
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: release and external publication
@@ -104,7 +104,7 @@ Executed publication evidence as of 2026-07-15:
 - PR #8 corrected review feedback at the symlink-validation boundary and merged as `4e010ea26c871a603a955b88ede8c5cea5066572`; corrected PR run `29408409629` and merged-main run `29408654603` each passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs.
 - Annotated tag object `fe8c834d5e9d450210cfdb33de0d6e8f688a7ae3` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VH8wK` was published at 2026-07-15T11:58:09Z.
 - Local `rootloom@rootloom` and the managed personal preset upgraded from 3.0.0 to 3.1.0; setup reports no drift or pending upgrade. Installed Rules preserve representative routine/high-risk allow decisions and catastrophic deletion denials.
-- The preserved image hash and Enterprise branch ref remain unchanged. Pending evidence is the publication-record CI and its final factual record.
+- The preserved image hash and Enterprise branch ref remain unchanged. Publication-record run `29413872318` passed the same seven jobs after the factual release record and validator contract were committed to `main`.
 
 ## Risks
 
