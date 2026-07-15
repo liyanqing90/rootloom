@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -23,8 +24,16 @@ from runner.evidence_paths import (
     validate_no_symlink_chain,
     validate_outside_repository_storage,
 )
-from runner.review_run import REVIEW_MANIFEST_FORMAT, write_new_json
-from runner.state import stable_repository_capture
+from runner.review_run import (
+    CONTRACT_DRAFT_SENTINEL,
+    REVIEW_MANIFEST_FORMAT,
+    write_new_json,
+)
+from runner.state import (
+    DEFAULT_MAX_GIT_SECONDS,
+    DEFAULT_MAX_SENSITIVE_PATHS,
+    stable_repository_capture,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -44,11 +53,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly capture pre-existing worktree/index changes",
     )
     parser.add_argument("--sensitive-path", action="append", default=[])
+    parser.add_argument(
+        "--max-git-seconds",
+        type=float,
+        default=DEFAULT_MAX_GIT_SECONDS,
+    )
+    parser.add_argument(
+        "--max-sensitive-paths",
+        type=int,
+        default=DEFAULT_MAX_SENSITIVE_PATHS,
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+    if not math.isfinite(args.max_git_seconds) or args.max_git_seconds <= 0:
+        raise SystemExit("Git time budget must be finite and positive")
+    if args.max_sensitive_paths <= 0:
+        raise SystemExit("sensitive path budget must be positive")
     repo = args.repo.expanduser().resolve()
     try:
         output_lexical = validate_no_symlink_chain(
@@ -61,7 +84,10 @@ def main(argv: list[str] | None = None) -> int:
     if not (repo / ".git").exists():
         raise SystemExit(f"not a Git repository: {repo}")
     try:
-        identity = repository_identity(repo)
+        identity = repository_identity(
+            repo,
+            max_git_seconds=args.max_git_seconds,
+        )
         output = validate_outside_repository_storage(
             output_lexical,
             repository_roots=(
@@ -80,9 +106,15 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--allow-all-paths cannot be combined with --path")
     if not output.parent.is_dir():
         raise SystemExit(f"review output parent does not exist: {output.parent}")
-    snapshot, _untracked_patch, patch, captured_git = stable_repository_capture(
-        repo, extra_sensitive=args.sensitive_path
-    )
+    try:
+        snapshot, _untracked_patch, patch, captured_git = stable_repository_capture(
+            repo,
+            extra_sensitive=args.sensitive_path,
+            max_git_seconds=args.max_git_seconds,
+            max_sensitive_paths=args.max_sensitive_paths,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     if snapshot["changes"] and not args.allow_dirty_baseline:
         raise SystemExit(
             "begin_review requires a clean worktree and index; "
@@ -97,6 +129,7 @@ def main(argv: list[str] | None = None) -> int:
         provenance="operator-sealed",
         allow_dirty_baseline=args.allow_dirty_baseline,
         captured_git=captured_git,
+        max_git_seconds=args.max_git_seconds,
     )
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
@@ -110,7 +143,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         if persisted_baseline != baseline:
             raise ValueError("persisted baseline does not match captured baseline")
-        command = "TODO replace with repository test command for TODO"
+        command = CONTRACT_DRAFT_SENTINEL
         contract = {
             "format": "rootloom-change-contract-v1",
             "run_id": baseline["run_id"],
@@ -126,8 +159,8 @@ def main(argv: list[str] | None = None) -> int:
                     {
                         "id": "primary-behavior",
                         "command_ids": ["verify-primary"],
-                        "target": "TODO",
-                        "expected_evidence": "TODO replace before finalization",
+                        "target": CONTRACT_DRAFT_SENTINEL,
+                        "expected_evidence": CONTRACT_DRAFT_SENTINEL,
                         "evidence_kind": "manual-review",
                     }
                 ]
@@ -142,7 +175,12 @@ def main(argv: list[str] | None = None) -> int:
             "change_contract_draft": "change-contract.draft.json",
             "nonce": baseline["nonce"],
             "task_sha256": baseline["task_sha256"],
-            "next_step": "Edit change-contract.draft.json, then run seal_contract.py --review-dir this-directory.",
+            "next_step": (
+                "Replace every Rootloom contract placeholder, edit "
+                "change-contract.draft.json, then run seal_contract.py "
+                "--review-dir this-directory. Use --recover only to validate "
+                "and finish an exact interrupted seal publication."
+            ),
         }
         write_new_json(temporary / "review.json", manifest)
         fsync_directory(temporary)
@@ -151,7 +189,10 @@ def main(argv: list[str] | None = None) -> int:
             label="review output",
             leaf_may_be_missing=True,
         )
-        current_identity = repository_identity(repo)
+        current_identity = repository_identity(
+            repo,
+            max_git_seconds=args.max_git_seconds,
+        )
         output_resolved_after = validate_outside_repository_storage(
             output_rechecked,
             repository_roots=(

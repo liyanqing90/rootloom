@@ -5,7 +5,7 @@
 - Owners: Rootloom maintainers
 - Scope: Personal Core task intelligence, verification planning, and engineering-memory contracts
 - Supersedes: none
-- Superseded by: none
+- Superseded by: summary-status, Git-capture, sensitive-discovery, and seal-recovery clauses are superseded by [Keep Strict Review Evidence-Honest and Resource-Bounded](2026-07-15-evidence-honest-strict-review.md); all other decisions remain active
 
 ## Context
 

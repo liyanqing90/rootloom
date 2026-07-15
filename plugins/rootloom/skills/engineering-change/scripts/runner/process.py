@@ -238,8 +238,9 @@ def run_command(
     argv: list[str],
     *,
     cwd: Path,
-    timeout: int,
+    timeout: float,
     max_output_bytes: int,
+    inherit_stdin: bool = True,
 ) -> tuple[VerificationResult, bytes]:
     started = time.monotonic()
     output_queue: queue.Queue[bytes | None] = queue.Queue(maxsize=4)
@@ -249,6 +250,7 @@ def run_command(
         process = subprocess.Popen(
             argv,
             cwd=cwd,
+            stdin=None if inherit_stdin else subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             start_new_session=os.name != "nt",

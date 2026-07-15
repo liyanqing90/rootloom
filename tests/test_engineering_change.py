@@ -46,8 +46,17 @@ from runner.intelligence import (
     analyze_change as analyze_change_intelligence,
     read_bounded_repository_text,
 )
+from runner.contracts import VerificationResult
 from runner.process import _controlled_tree_active
-from runner.state import _new_file_patch, repository_snapshot, stable_repository_capture
+from runner.review_run import CONTRACT_DRAFT_SENTINEL
+from runner.state import (
+    _new_file_patch,
+    discover_sensitive_paths,
+    filter_untracked_patch,
+    git_bounded,
+    repository_snapshot,
+    stable_repository_capture,
+)
 from runner.strict_json import parse_json_object
 from runner.verification import split_command, verify
 
@@ -101,6 +110,43 @@ class EngineeringChangeTests(unittest.TestCase):
         process.poll.return_value = None
         with mock.patch("runner.process.os.name", "nt"):
             self.assertTrue(_controlled_tree_active(process, job))
+
+    def test_git_capture_uses_the_bounded_process_tree_and_translates_timeout(self) -> None:
+        with mock.patch("runner.state.run_command") as controlled:
+            for invalid in (float("nan"), float("inf")):
+                with self.subTest(invalid=invalid):
+                    with self.assertRaisesRegex(ValueError, "finite and positive"):
+                        git_bounded(
+                            Path("/repository"),
+                            "status",
+                            max_bytes=128,
+                            max_git_seconds=invalid,
+                        )
+            controlled.assert_not_called()
+
+        timed_out = VerificationResult(
+            command=["git", "--no-pager", "status"],
+            exit_code=124,
+            duration_seconds=0.25,
+            passed=False,
+            timed_out=True,
+        )
+        with mock.patch(
+            "runner.state.run_command",
+            return_value=(timed_out, b"Rootloom: command timed out\n"),
+        ) as controlled:
+            with self.assertRaisesRegex(
+                ValueError,
+                "Git command exceeded configured 0.25-second budget",
+            ):
+                git_bounded(
+                    Path("/repository"),
+                    "status",
+                    max_bytes=128,
+                    max_git_seconds=0.25,
+                )
+        self.assertEqual(controlled.call_args.kwargs["timeout"], 0.25)
+        self.assertEqual(controlled.call_args.kwargs["max_output_bytes"], 128)
 
     def test_verification_output_budget_is_aggregate_and_strict(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -332,6 +378,21 @@ class EngineeringChangeTests(unittest.TestCase):
                 ["docs-or-tests-only"],
             )
 
+    def test_capture_cli_budgets_must_be_finite_and_positive(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            invalid = (
+                ("--max-git-seconds", "0", "finite and positive"),
+                ("--max-git-seconds", "nan", "finite and positive"),
+                ("--max-git-seconds", "inf", "finite and positive"),
+                ("--max-sensitive-paths", "0", "must be positive"),
+            )
+            for flag, value, message in invalid:
+                with self.subTest(flag=flag, value=value):
+                    completed = self.analyze(repo, flag, value)
+                    self.assertNotEqual(completed.returncode, 0)
+                    self.assertIn(message, completed.stderr)
+
     def test_begin_review_creates_operator_sealed_intake_without_overwrite(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             root = Path(temporary)
@@ -374,6 +435,10 @@ class EngineeringChangeTests(unittest.TestCase):
                 hashlib.sha256((output / "baseline.json").read_bytes()).hexdigest(),
             )
             self.assertEqual(manifest["baseline_sha256"], contract["baseline_sha256"])
+            self.assertEqual(
+                contract["verification_commands"]["verify-primary"],
+                CONTRACT_DRAFT_SENTINEL,
+            )
             todo_refused = subprocess.run(
                 [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(output)],
                 capture_output=True,
@@ -381,7 +446,21 @@ class EngineeringChangeTests(unittest.TestCase):
                 check=False,
             )
             self.assertNotEqual(todo_refused.returncode, 0)
-            self.assertIn("TODO", todo_refused.stderr)
+            self.assertIn("placeholder", todo_refused.stderr.lower())
+            contract["verification_commands"]["verify-primary"] = "echo TODO"
+            contract["verification_claims"]["primary-behavior"][0]["target"] = "TODO"
+            contract["verification_claims"]["primary-behavior"][0][
+                "expected_evidence"
+            ] = "legacy target must be replaced"
+            draft_path.write_text(json.dumps(contract), encoding="utf-8")
+            legacy_target_refused = subprocess.run(
+                [sys.executable, str(SEAL_CONTRACT), "--review-dir", str(output)],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(legacy_target_refused.returncode, 0)
+            self.assertIn("placeholder", legacy_target_refused.stderr.lower())
             command = f"{sys.executable} -c 'assert True'"
             contract["root_cause_alignment"] = "PASS"
             contract["verification_commands"] = {"verify-1": command}
@@ -412,6 +491,9 @@ class EngineeringChangeTests(unittest.TestCase):
             del contract["verification_claims"]["primary-behavior"][0][
                 "unexpected"
             ]
+            contract["verification_claims"]["primary-behavior"][0][
+                "expected_evidence"
+            ] = "TodoService behavior is reviewed"
             draft_path.write_text(json.dumps(contract), encoding="utf-8")
             manifest_before = (output / "review.json").read_bytes()
             sealed = subprocess.run(
@@ -454,6 +536,119 @@ class EngineeringChangeTests(unittest.TestCase):
             )
             self.assertNotEqual(refused.returncode, 0)
             self.assertIn("already exists", refused.stderr)
+
+    def test_contract_seal_recovery_is_exact_idempotent_and_non_overwriting(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+
+            intake = root / "intake-only-review"
+            created = subprocess.run(
+                [
+                    sys.executable,
+                    str(BEGIN_REVIEW),
+                    "--repo",
+                    str(repo),
+                    "--task",
+                    "prepare recovery boundary",
+                    "--output",
+                    str(intake),
+                    "--path",
+                    "app.py",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(created.returncode, 0, created.stderr)
+            nothing_to_recover = subprocess.run(
+                [
+                    sys.executable,
+                    str(SEAL_CONTRACT),
+                    "--review-dir",
+                    str(intake),
+                    "--recover",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(nothing_to_recover.returncode, 0)
+            self.assertIn(
+                "no interrupted contract publication",
+                nothing_to_recover.stderr,
+            )
+            self.assertFalse((intake / "change-contract.json").exists())
+            self.assertFalse((intake / "contract.seal.json").exists())
+
+            self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                name="recoverable",
+            )
+            review_dir = root / "recoverable-review"
+            seal_path = review_dir / "contract.seal.json"
+            expected_seal = seal_path.read_bytes()
+            seal_path.unlink()
+            recovered = subprocess.run(
+                [
+                    sys.executable,
+                    str(SEAL_CONTRACT),
+                    "--review-dir",
+                    str(review_dir),
+                    "--recover",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            self.assertEqual(seal_path.read_bytes(), expected_seal)
+            repeated = subprocess.run(
+                [
+                    sys.executable,
+                    str(SEAL_CONTRACT),
+                    "--review-dir",
+                    str(review_dir),
+                    "--recover",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(repeated.returncode, 0, repeated.stderr)
+            self.assertEqual(seal_path.read_bytes(), expected_seal)
+
+            self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                name="mismatched-recovery",
+            )
+            mismatched = root / "mismatched-recovery-review"
+            mismatched_seal = mismatched / "contract.seal.json"
+            mismatched_seal.unlink()
+            contract_path = mismatched / "change-contract.json"
+            contract_path.write_bytes(contract_path.read_bytes() + b"\n")
+            existing = contract_path.read_bytes()
+            refused = subprocess.run(
+                [
+                    sys.executable,
+                    str(SEAL_CONTRACT),
+                    "--review-dir",
+                    str(mismatched),
+                    "--recover",
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("does not match", refused.stderr)
+            self.assertEqual(contract_path.read_bytes(), existing)
+            self.assertFalse(mismatched_seal.exists())
 
     def test_review_directory_publication_never_replaces_an_empty_destination(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -615,7 +810,153 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(summary["change_partition"], "conservative-overlap")
             self.assertEqual(summary["changed_files"], ["app.py"])
             self.assertEqual(summary["task_changes"][0]["path"], "app.py")
-            self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
+            self.assertEqual(summary["quality_status"], "REVIEW_EVIDENCE_COMPLETE")
+
+    def test_unchanged_untracked_dirty_baseline_does_not_contaminate_task_scope(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "user.bin").write_bytes(b"\x00pre-existing-user-state")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["new.py"],
+                name="dirty-untracked-separated",
+                allow_dirty_baseline=True,
+            )
+            (repo / "new.py").write_text("created = True\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["change_partition"], "exact")
+            self.assertEqual(summary["changed_files"], ["new.py"])
+            self.assertEqual(
+                [item["path"] for item in summary["task_changes"]],
+                ["new.py"],
+            )
+            self.assertEqual(
+                [item["path"] for item in summary["preexisting_changes"]],
+                ["user.bin"],
+            )
+            self.assertEqual(summary["quality_status"], "REVIEW_EVIDENCE_COMPLETE")
+
+    def test_unchanged_untracked_text_is_excluded_from_analysis_and_bundle(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            marker = "PREEXISTING_USER_AUTH_NOTE"
+            (repo / "auth.py").write_text(marker + "\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                task="add a new Python constant",
+                allowed_paths=["new.py"],
+                name="dirty-untracked-text-separated",
+                allow_dirty_baseline=True,
+            )
+            (repo / "new.py").write_text("created = True\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["change_partition"], "exact")
+            self.assertEqual(summary["changed_files"], ["new.py"])
+            self.assertNotIn(
+                "authentication",
+                {item["id"] for item in summary["risk_assessment"]["signals"]},
+            )
+            patch = (root / "run" / "diff.patch").read_bytes()
+            self.assertIn(b"diff --git a/new.py b/new.py", patch)
+            self.assertNotIn(b"diff --git a/auth.py b/auth.py", patch)
+            self.assertNotIn(marker.encode("ascii"), patch)
+
+    def test_changed_untracked_dirty_baseline_remains_conservatively_attributed(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            (repo / "notes.txt").write_text("before\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                allowed_paths=["new.py"],
+                name="dirty-untracked-text-overlap",
+                allow_dirty_baseline=True,
+            )
+            (repo / "notes.txt").write_text("after\n", encoding="utf-8")
+            (repo / "new.py").write_text("created = True\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--strict",
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 1, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["change_partition"], "conservative-overlap")
+            self.assertIn(
+                "notes.txt",
+                summary["change_contract"]["scope_violations"][
+                    "outside_allowed_paths"
+                ],
+            )
+            patch = (root / "run" / "diff.patch").read_bytes()
+            self.assertIn(b"diff --git a/new.py b/new.py", patch)
+            self.assertIn(b"diff --git a/notes.txt b/notes.txt", patch)
+            self.assertIn(b"+after", patch)
 
     def test_dirty_baseline_overlap_cannot_hide_behind_a_new_path(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -1100,6 +1441,10 @@ class EngineeringChangeTests(unittest.TestCase):
                     "--risk",
                     "low",
                     *governed,
+                    "--max-git-seconds",
+                    "7",
+                    "--max-sensitive-paths",
+                    "17",
                     "--verify",
                     command,
                 ],
@@ -1110,11 +1455,12 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(completed.returncode, 0, completed.stderr)
             summary = json.loads((output / "summary.json").read_text(encoding="utf-8"))
             self.assertTrue(summary["passed"])
-            self.assertEqual(summary["schema_revision"], 3)
-            self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
+            self.assertEqual(summary["schema_revision"], 4)
+            self.assertEqual(summary["quality_status"], "REVIEW_EVIDENCE_COMPLETE")
             self.assertEqual(summary["verification_coverage"], "complete")
             self.assertEqual(summary["claim_binding"], "complete")
             self.assertEqual(summary["semantic_coverage"], "reviewed")
+            self.assertEqual(summary["semantic_review"], "operator-asserted")
             self.assertEqual(summary["evidence_provenance"]["baseline"], "operator-sealed")
             self.assertEqual(
                 summary["evidence_provenance"]["change_contract"], "operator-sealed"
@@ -1129,6 +1475,14 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertTrue(summary["review_manifest"]["valid"])
             self.assertEqual(summary["exit_policy"], "bundle")
             self.assertEqual(summary["process_exit_code"], 0)
+            self.assertEqual(
+                summary["capture_limits"],
+                {
+                    "max_git_seconds": 7.0,
+                    "max_patch_bytes": 16 * 1024 * 1024,
+                    "max_sensitive_paths": 17,
+                },
+            )
             self.assertEqual(summary["changed_files"], ["app.py"])
             self.assertEqual(summary["risk"], "medium")
             self.assertTrue(summary["risk_assessment"]["risk_was_raised"])
@@ -1247,6 +1601,42 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(summary["semantic_coverage"], "unknown")
             self.assertEqual(summary["quality_status"], "MECHANICALLY_VERIFIED")
             self.assertFalse(summary["passed"])
+
+    def test_semantic_review_without_a_sealed_chain_is_assertion_only(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            command = f"{sys.executable} -c 'assert True'"
+            governed = self.prepare_governed_change(
+                root,
+                repo,
+                command=command,
+                name="semantic-assertion",
+            )
+            (root / "semantic-assertion-review" / "contract.seal.json").unlink()
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "run"),
+                    *governed,
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(summary["quality_status"], "SEMANTIC_REVIEW_ASSERTED")
+            self.assertEqual(summary["semantic_review"], "operator-asserted")
+            self.assertFalse(summary["passed"])
+            self.assertFalse(summary["review_manifest"]["valid"])
 
     def test_cli_claims_cannot_promote_a_partial_sealed_contract(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -2110,6 +2500,56 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertEqual(fingerprint["kind"], "file")
             self.assertEqual(len(fingerprint["sha256"]), 64)
             self.assertIn(b'value = "B"', (root / "run" / "diff.patch").read_bytes())
+
+    def test_sensitive_discovery_targets_policy_matches_before_applying_path_budget(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            repo = self.make_repo(Path(temporary))
+            ordinary = repo / "ordinary"
+            ordinary.mkdir()
+            for index in range(12):
+                (ordinary / f"file-{index}.txt").write_text(
+                    "ordinary\n", encoding="utf-8"
+                )
+            (repo / ".ENV").write_text("TOKEN=synthetic\n", encoding="utf-8")
+            (repo / "tokenizer-one.py").write_text("ordinary\n", encoding="utf-8")
+            (repo / "tokenizer-two.py").write_text("ordinary\n", encoding="utf-8")
+            (repo / ".gitignore").write_text("cache/\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=repo, check=True)
+            subprocess.run(["git", "commit", "-qm", "policy discovery"], cwd=repo, check=True)
+            cache = repo / "cache"
+            cache.mkdir()
+            for index in range(12):
+                (cache / f"ordinary-{index}.txt").write_text(
+                    "ignored ordinary\n", encoding="utf-8"
+                )
+
+            self.assertEqual(
+                discover_sensitive_paths(
+                    repo,
+                    set(),
+                    max_sensitive_paths=1,
+                ),
+                [".ENV"],
+            )
+
+            with self.assertRaisesRegex(ValueError, "1-path budget"):
+                discover_sensitive_paths(
+                    repo,
+                    set(),
+                    max_sensitive_paths=10,
+                    max_candidate_paths=1,
+                )
+
+            nested = repo / "nested"
+            nested.mkdir()
+            (nested / "secret.txt").write_text("synthetic\n", encoding="utf-8")
+            subprocess.run(["git", "add", "nested/secret.txt"], cwd=repo, check=True)
+            with self.assertRaisesRegex(ValueError, "1-path budget"):
+                discover_sensitive_paths(
+                    repo,
+                    set(),
+                    max_sensitive_paths=1,
+                )
 
     def test_ignored_sensitive_baseline_is_metadata_only_and_guards_deletion(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -3160,6 +3600,11 @@ class EngineeringChangeTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(accepted.returncode, 0, accepted.stderr)
+            summary = json.loads((root / "run" / "summary.json").read_text())
+            self.assertEqual(
+                summary["quality_status"], "REVIEW_REQUIRED_WITH_REDACTIONS"
+            )
+            self.assertFalse(summary["passed"])
 
     def test_dangerous_deletion_never_leaves_a_stale_summary(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -3181,7 +3626,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 encoding="ascii",
             )
             (output / "summary.json").write_text(
-                '{"quality_status":"VERIFIED_CHANGE","passed":true}',
+                '{"quality_status":"REVIEW_EVIDENCE_COMPLETE","passed":true}',
                 encoding="ascii",
             )
             secret.unlink()
@@ -3242,10 +3687,13 @@ class EngineeringChangeTests(unittest.TestCase):
                 text=True,
                 check=False,
             )
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.returncode, 4, completed.stderr)
             summary = json.loads((root / "run" / "summary.json").read_text())
             self.assertTrue(summary["sensitive_deletion_quarantine"])
-            self.assertEqual(summary["quality_status"], "VERIFIED_CHANGE")
+            self.assertEqual(
+                summary["quality_status"], "REVIEW_REQUIRED_WITH_REDACTIONS"
+            )
+            self.assertFalse(summary["passed"])
             patch = (root / "run" / "diff.patch").read_text(encoding="utf-8")
             self.assertNotIn("never-enter-bundle", patch)
             metadata = next(
@@ -3626,6 +4074,27 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertIn(b"new file mode " + expected_mode, patch)
             self.assertNotIn(b"diff --git a/safe.py +++ injected.py", patch)
 
+    def test_untracked_patch_filter_handles_quoted_paths_and_patch_like_content(
+        self,
+    ) -> None:
+        kept = _new_file_patch(
+            " leading name.txt",
+            b"diff --git a/fake b/fake\n",
+            mode=0o644,
+        )
+        removed = _new_file_patch("ordinary.txt", b"ordinary\n", mode=0o644)
+        combined = kept + b"\n" + removed
+        self.assertEqual(
+            filter_untracked_patch(combined, {" leading name.txt"}),
+            kept,
+        )
+        self.assertEqual(
+            filter_untracked_patch(
+                combined, {" leading name.txt", "ordinary.txt"}
+            ),
+            combined,
+        )
+
     def test_untracked_text_patches_apply_for_empty_and_nonempty_files(self) -> None:
         for content in (
             b"",
@@ -3784,6 +4253,48 @@ class EngineeringChangeTests(unittest.TestCase):
             self.assertTrue(summary["verification_preserved_capture"])
             self.assertEqual(summary["changed_files"], ["app.py"])
             self.assertIn(b"value = 1", (output / "diff.patch").read_bytes())
+
+    def test_unborn_repository_git_capture_closes_inherited_stdin(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q"], cwd=repo, check=True)
+            (repo / "app.py").write_text("value = 1\n", encoding="utf-8")
+            subprocess.run(["git", "add", "app.py"], cwd=repo, check=True)
+            probe = "\n".join(
+                [
+                    "import sys",
+                    f"sys.path.insert(0, {str(SCRIPT.parent)!r})",
+                    "from runner.state import tracked_patch",
+                    f"patch = tracked_patch({str(repo)!r}, max_git_seconds=0.2)",
+                    "sys.stdout.buffer.write(patch)",
+                ]
+            )
+            process = subprocess.Popen(
+                [sys.executable, "-c", probe],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+            try:
+                try:
+                    returncode = process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+                    self.fail("tracked_patch did not terminate with inherited stdin open")
+            finally:
+                assert process.stdin is not None
+                process.stdin.close()
+            assert process.stdout is not None
+            assert process.stderr is not None
+            stdout = process.stdout.read()
+            stderr = process.stderr.read().decode("utf-8", errors="replace")
+            process.stdout.close()
+            process.stderr.close()
+            self.assertEqual(returncode, 0, stderr)
+            self.assertIn(b"value = 1", stdout)
 
     def test_invalid_detached_head_is_not_treated_as_an_unborn_branch(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:

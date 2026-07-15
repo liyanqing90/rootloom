@@ -1,6 +1,6 @@
 # Maturity, guarantees, and compatibility
 
-Rootloom Personal Core 2.2 is an early-stage, single-maintainer product. Its goal is to make Codex engineering behavior more deliberate and inspectable without imposing deep-review cost on installation or routine work; the repository does not yet contain controlled evidence that it reduces defects or review time.
+Rootloom Personal Core is an early-stage, single-maintainer product. Its goal is to make Codex engineering behavior more deliberate and inspectable without imposing deep-review cost on installation or routine work; the repository does not yet contain controlled evidence that it reduces defects or review time.
 
 Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Windows, and pinned Codex CLI contract matrix. That proves the checked mechanics on those environments, not model-level engineering quality.
 
@@ -11,11 +11,12 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 - explicit install/upgrade/status/rollback behavior for the personal setup targets, with installed-hash drift refusal;
 - ordinary local lock serialization and per-file atomic replacement;
 - drift-refusing backup restoration;
-- all-command preflight parsing followed by no-shell execution, streaming output ceilings, and descendant-process cleanup;
+- all-command preflight parsing followed by no-shell execution, streaming output/time ceilings, and descendant-process cleanup shared by verification and Git capture;
 - out-of-repository, ownership-marked review bundles with bounded status, patch, fingerprints, command count, and aggregate log;
 - opt-in atomic no-replace pre-change baselines plus explicit draft-to-sealed strict Tier 1/2 contracts;
 - two-pass stable repository capture, strict evidence JSON, segment-aware scope globs, and unchanged HEAD/ref/index binding;
-- ordinary untracked content fingerprints, applyable bounded text patches, and tracked/untracked risk signals, with recursive metadata-observed sensitive capture and sensitive-change quarantine;
+- ordinary untracked content fingerprints, task-partitioned applyable bounded text patches and risk signals, with separate targeted-candidate and classified-result path ceilings, recursive metadata-observed sensitive capture, and sensitive-change quarantine;
+- evidence-honest revision-4 review states that keep the operator semantic assertion separate and make redacted reviews non-passing;
 - exact dangerous-path deletion confirmation;
 - explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and active-memory signals;
 - risk-specific verification recommendations kept separate from executed test evidence;
@@ -52,3 +53,5 @@ Personal Core 2.0 intentionally breaks the 1.2.19 high-assurance Skill, strict R
 Personal Core 2.1 keeps `rootloom-project-memory-v1` envelopes and legacy entries readable. New ID, evidence, status, path, and expiry fields are additive. The existing `rootloom-engineering-summary-v1` fields remain; `risk_assessment` and `verification_plan` are additive, and old `--risk low|medium|high` calls still work. A supplied risk can no longer lower the static detected floor.
 
 Personal Core 2.2 retains the summary format name while revision 3 tightens explicit governed evidence. Advisory finalization remains non-blocking by default. Strict review uses a draft → seal lifecycle, stable two-pass capture, strict JSON, post-verification evidence/base revalidation, reference-aware sensitive-change quarantine, worktree plus Git-common-directory containment, unchanged HEAD/ref/index, and structured sealed claims. It defaults to quality exit codes; `--strict-bundle-only` preserves an explicit non-blocking strict bundle. `semantic_coverage: reviewed` is an operator assertion, not machine proof. Unknown semantics can reach at most `MECHANICALLY_VERIFIED`, and only sealed mechanical evidence plus that assertion yields `VERIFIED_CHANGE`/`passed: true`. Pure verification requires `--allow-no-change`, but invalid evidence and process/capture failures take priority over `NO_CHANGE`.
+
+Summary revision 4 deliberately changes the exact highest-status value from `VERIFIED_CHANGE` to `REVIEW_EVIDENCE_COMPLETE` and exposes `semantic_review: operator-asserted` separately. An assertion without a sealed chain is `SEMANTIC_REVIEW_ASSERTED`; sensitive quarantine caps an otherwise-complete result at `REVIEW_REQUIRED_WITH_REDACTIONS` with `passed: false`. Strict quality exit zero belongs only to `REVIEW_EVIDENCE_COMPLETE`; advisory bundle exits remain non-blocking. Revision-3 exact-value consumers must branch on `schema_revision`. Git now shares the controlled process-tree owner, closed stdin, and an explicit time budget with verification; sensitive discovery uses shared targeted pathspecs with separate candidate and classified-result ceilings; dirty-baseline risk and patch output reuse the same task partition; and exact `seal_contract --recover` completes only matching interrupted publications.

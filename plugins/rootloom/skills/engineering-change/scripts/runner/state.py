@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 from pathlib import Path, PurePosixPath
 import stat
-import subprocess
 import sys
 from typing import Any
 
@@ -17,64 +17,98 @@ sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_paths import (
     is_sensitive_path,
     normalize_repo_path,
+    sensitive_git_pathspecs,
     validate_git_repo_path,
 )
 
+from .process import run_command
+
 
 DEFAULT_MAX_GIT_BYTES = 16 * 1024 * 1024
+DEFAULT_MAX_GIT_SECONDS = 30.0
 DEFAULT_MAX_STATUS_BYTES = 4 * 1024 * 1024
 DEFAULT_MAX_STATUS_PATHS = 10_000
-DEFAULT_MAX_LISTED_PATHS = 50_000
+DEFAULT_MAX_SENSITIVE_PATHS = 10_000
+DEFAULT_MAX_SENSITIVE_CANDIDATES = 50_000
 DEFAULT_MAX_FINGERPRINT_FILE_BYTES = 256 * 1024 * 1024
 DEFAULT_MAX_FINGERPRINT_TOTAL_BYTES = 1024 * 1024 * 1024
 DEFAULT_MAX_TEXT_PATCH_FILE_BYTES = 256 * 1024
 
 
-def git_identity(repo: Path) -> dict[str, str]:
+def _git_result(
+    repo: Path,
+    *args: str,
+    max_bytes: int,
+    max_git_seconds: float,
+) -> tuple[int, bytes]:
+    if max_bytes <= 0:
+        raise ValueError("Git capture budget must be positive")
+    if not math.isfinite(max_git_seconds) or max_git_seconds <= 0:
+        raise ValueError("Git time budget must be finite and positive")
+    result, output = run_command(
+        ["git", "--no-pager", *args],
+        cwd=repo,
+        timeout=max_git_seconds,
+        max_output_bytes=max_bytes,
+        inherit_stdin=False,
+    )
+    command = "git " + " ".join(args)
+    if result.timed_out:
+        raise ValueError(
+            f"Git command exceeded configured {max_git_seconds:g}-second budget: {command}"
+        )
+    if result.output_limit_exceeded:
+        raise ValueError(
+            f"{command} exceeds configured {max_bytes}-byte budget"
+        )
+    if not result.process_tree_converged:
+        raise ValueError(f"Git process tree did not converge: {command}")
+    return result.exit_code, output
+
+
+def git_identity(
+    repo: Path,
+    *,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> dict[str, str]:
     """Return the commit/ref/index identity that bounds a worktree capture."""
 
-    head_process = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
-        cwd=repo,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    head_code, head_output = _git_result(
+        repo,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "HEAD",
+        max_bytes=4096,
+        max_git_seconds=max_git_seconds,
     )
-    if head_process.returncode == 0:
-        head = head_process.stdout.decode(
-            "utf-8", errors="surrogateescape"
-        ).strip()
+    if head_code == 0:
+        head = head_output.decode("utf-8", errors="surrogateescape").strip()
     else:
-        symbolic = subprocess.run(
-            ["git", "symbolic-ref", "--quiet", "HEAD"],
-            cwd=repo,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            check=False,
-        )
-        if symbolic.returncode != 0:
-            reason = head_process.stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(f"git HEAD is invalid: {reason or 'not an unborn branch'}")
         head = ""
-    ref_process = subprocess.run(
-        ["git", "symbolic-ref", "--quiet", "HEAD"],
-        cwd=repo,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        check=False,
+    ref_code, ref_output = _git_result(
+        repo,
+        "symbolic-ref",
+        "--quiet",
+        "HEAD",
+        max_bytes=4096,
+        max_git_seconds=max_git_seconds,
     )
-    if ref_process.returncode == 0:
-        head_ref = ref_process.stdout.decode(
-            "utf-8", errors="surrogateescape"
-        ).strip()
-    elif ref_process.returncode == 1 and head:
+    if ref_code == 0:
+        head_ref = ref_output.decode("utf-8", errors="surrogateescape").strip()
+    elif ref_code == 1 and head:
         head_ref = ""
     else:
-        reason = ref_process.stderr.decode("utf-8", errors="replace").strip()
+        reason = (head_output if not head else ref_output).decode(
+            "utf-8", errors="replace"
+        ).strip()
         raise ValueError(f"git HEAD ref is invalid: {reason or 'symbolic ref failed'}")
-    index_sha256 = git_bounded(repo, "write-tree", max_bytes=4096).decode(
-        "ascii"
-    ).strip()
+    index_sha256 = git_bounded(
+        repo,
+        "write-tree",
+        max_bytes=4096,
+        max_git_seconds=max_git_seconds,
+    ).decode("ascii").strip()
     return {"head": head, "head_ref": head_ref, "index_sha256": index_sha256}
 
 
@@ -83,41 +117,18 @@ def git_bounded(
     *args: str,
     max_bytes: int,
     accepted_codes: tuple[int, ...] = (0,),
-    input_data: bytes | None = None,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> bytes:
-    if max_bytes <= 0:
-        raise ValueError("Git capture budget must be positive")
-    process = subprocess.Popen(
-        ["git", "--no-pager", *args],
-        cwd=repo,
-        stdin=subprocess.PIPE if input_data is not None else subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+    returncode, output = _git_result(
+        repo,
+        *args,
+        max_bytes=max_bytes,
+        max_git_seconds=max_git_seconds,
     )
-    if input_data is not None and process.stdin is not None:
-        process.stdin.write(input_data)
-        process.stdin.close()
-    output = bytearray()
-    assert process.stdout is not None
-    try:
-        while True:
-            chunk = process.stdout.read(64 * 1024)
-            if not chunk:
-                break
-            if len(output) + len(chunk) > max_bytes:
-                process.kill()
-                process.wait()
-                raise ValueError(
-                    f"git {' '.join(args)} exceeds configured {max_bytes}-byte budget"
-                )
-            output.extend(chunk)
-    finally:
-        process.stdout.close()
-    returncode = process.wait()
     if returncode not in accepted_codes:
-        reason = bytes(output).decode("utf-8", errors="replace").strip()
+        reason = output.decode("utf-8", errors="replace").strip()
         raise ValueError(f"git {' '.join(args)} failed: {reason}")
-    return bytes(output)
+    return output
 
 
 def repository_changes(
@@ -125,6 +136,7 @@ def repository_changes(
     *,
     max_bytes: int = DEFAULT_MAX_STATUS_BYTES,
     max_paths: int = DEFAULT_MAX_STATUS_PATHS,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> tuple[list[dict[str, str]], list[str]]:
     raw = git_bounded(
         repo,
@@ -133,6 +145,7 @@ def repository_changes(
         "-z",
         "--untracked-files=all",
         max_bytes=max_bytes,
+        max_git_seconds=max_git_seconds,
     )
     records = raw.split(b"\0")
     changes: list[dict[str, str]] = []
@@ -168,9 +181,15 @@ def git_list_paths(
     args: list[str],
     *,
     max_bytes: int = DEFAULT_MAX_STATUS_BYTES,
-    max_paths: int = DEFAULT_MAX_LISTED_PATHS,
+    max_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> list[str]:
-    raw = git_bounded(repo, *args, max_bytes=max_bytes)
+    raw = git_bounded(
+        repo,
+        *args,
+        max_bytes=max_bytes,
+        max_git_seconds=max_git_seconds,
+    )
     values = [
         validate_git_repo_path(
             item.decode("utf-8", errors="surrogateescape"),
@@ -184,25 +203,77 @@ def git_list_paths(
     return sorted(set(values))
 
 
-def discover_sensitive_paths(repo: Path, extra_sensitive: set[str]) -> list[str]:
-    # Enumerate bounded path names, then apply the shared case-insensitive Python
-    # classifier. Git pathspecs alone miss names such as `.ENV` on a
-    # case-sensitive filesystem and cannot express user-declared directory roots
-    # without risking ordinary string-prefix matches.
-    tracked = git_list_paths(repo, ["ls-files", "-z"])
+def discover_sensitive_paths(
+    repo: Path,
+    extra_sensitive: set[str],
+    *,
+    max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    max_candidate_paths: int = DEFAULT_MAX_SENSITIVE_CANDIDATES,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> list[str]:
+    if max_sensitive_paths <= 0:
+        raise ValueError("sensitive path budget must be positive")
+    if len(extra_sensitive) > max_sensitive_paths:
+        raise ValueError(
+            "declared sensitive paths exceed configured "
+            f"{max_sensitive_paths}-path budget"
+        )
+    if max_candidate_paths <= 0:
+        raise ValueError("sensitive candidate path budget must be positive")
+    # Ask Git only for paths that may match the shared policy, then reclassify
+    # every result in Python. The built-in pathspecs are case-insensitive and a
+    # literal directory pathspec recursively includes descendants, so ordinary
+    # vendor/cache paths are not enumerated while sensitive-looking matches are
+    # never silently excluded.
+    pathspecs = [
+        *sensitive_git_pathspecs(),
+        *(f":(icase,literal){path}" for path in sorted(extra_sensitive)),
+    ]
+    tracked = git_list_paths(
+        repo,
+        ["ls-files", "-z", "--", *pathspecs],
+        max_paths=max_candidate_paths,
+        max_git_seconds=max_git_seconds,
+    )
     ignored = git_list_paths(
         repo,
-        ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"],
+        [
+            "ls-files",
+            "-z",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "--",
+            *pathspecs,
+        ],
+        max_paths=max_candidate_paths,
+        max_git_seconds=max_git_seconds,
     )
+    candidates = set(tracked) | set(ignored)
+    if len(candidates) > max_candidate_paths:
+        raise ValueError(
+            "sensitive candidate discovery exceeds configured "
+            f"{max_candidate_paths}-path budget"
+        )
     classified = {
         path
-        for path in [*tracked, *ignored]
+        for path in candidates
         if is_sensitive_path(path, extra_sensitive=extra_sensitive)
     }
-    return sorted(classified | set(extra_sensitive))
+    result = sorted(classified | set(extra_sensitive))
+    if len(result) > max_sensitive_paths:
+        raise ValueError(
+            "sensitive path discovery exceeds configured "
+            f"{max_sensitive_paths}-path budget"
+        )
+    return result
 
 
-def _empty_tree(repo: Path) -> str:
+def _empty_tree(
+    repo: Path,
+    *,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+) -> str:
     return git_bounded(
         repo,
         "hash-object",
@@ -210,7 +281,7 @@ def _empty_tree(repo: Path) -> str:
         "tree",
         "--stdin",
         max_bytes=1024,
-        input_data=b"",
+        max_git_seconds=max_git_seconds,
     ).decode("ascii").strip()
 
 
@@ -219,28 +290,32 @@ def tracked_patch(
     *,
     max_bytes: int = DEFAULT_MAX_GIT_BYTES,
     sensitive_paths: list[str] | None = None,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
 ) -> bytes:
-    head = subprocess.run(
-        ["git", "rev-parse", "--verify", "--quiet", "HEAD"],
-        cwd=repo,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.PIPE,
-        check=False,
+    head_code, head_output = _git_result(
+        repo,
+        "rev-parse",
+        "--verify",
+        "--quiet",
+        "HEAD",
+        max_bytes=4096,
+        max_git_seconds=max_git_seconds,
     )
-    if head.returncode == 0:
+    if head_code == 0:
         baseline = "HEAD"
     else:
-        symbolic = subprocess.run(
-            ["git", "symbolic-ref", "--quiet", "HEAD"],
-            cwd=repo,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            check=False,
+        symbolic_code, _symbolic_output = _git_result(
+            repo,
+            "symbolic-ref",
+            "--quiet",
+            "HEAD",
+            max_bytes=4096,
+            max_git_seconds=max_git_seconds,
         )
-        if symbolic.returncode != 0:
-            reason = head.stderr.decode("utf-8", errors="replace").strip()
+        if symbolic_code != 0:
+            reason = head_output.decode("utf-8", errors="replace").strip()
             raise ValueError(f"git HEAD is invalid: {reason or 'not an unborn branch'}")
-        baseline = _empty_tree(repo)
+        baseline = _empty_tree(repo, max_git_seconds=max_git_seconds)
     exclusions = [f":(exclude,literal){path}" for path in sorted(sensitive_paths or [])]
     return git_bounded(
         repo,
@@ -253,6 +328,7 @@ def tracked_patch(
         ".",
         *exclusions,
         max_bytes=max_bytes,
+        max_git_seconds=max_git_seconds,
     )
 
 
@@ -474,6 +550,29 @@ def _new_file_patch(path: str, content: bytes, *, mode: int) -> bytes:
     return header + f"@@ -0,0 +1,{len(lines)} @@\n".encode("ascii") + body
 
 
+def filter_untracked_patch(patch: bytes, included_paths: set[str]) -> bytes:
+    """Select generated untracked-file patch sections by exact repository path."""
+
+    if not patch or not included_paths:
+        return b""
+    if not patch.startswith(b"diff --git "):
+        raise ValueError("untracked patch has an invalid section header")
+    headers = {
+        b"diff --git "
+        + _quoted_git_patch_path("a/", path)
+        + b" "
+        + _quoted_git_patch_path("b/", path)
+        for path in included_paths
+    }
+    sections: list[bytes] = []
+    for index, part in enumerate(patch.split(b"\ndiff --git ")):
+        section = part if index == 0 else b"diff --git " + part
+        header = section.split(b"\n", 1)[0]
+        if header in headers:
+            sections.append(section)
+    return b"\n".join(sections)
+
+
 def repository_snapshot(
     repo: Path,
     *,
@@ -484,12 +583,22 @@ def repository_snapshot(
     max_fingerprint_total_bytes: int = DEFAULT_MAX_FINGERPRINT_TOTAL_BYTES,
     max_text_patch_file_bytes: int = DEFAULT_MAX_TEXT_PATCH_FILE_BYTES,
     protect_changed_paths: bool = False,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
 ) -> tuple[dict[str, Any], bytes]:
     normalized_extra = {
         normalize_repo_path(path, label="sensitive path") for path in extra_sensitive or []
     }
-    changes, untracked = repository_changes(repo)
-    sensitive_paths = discover_sensitive_paths(repo, normalized_extra)
+    changes, untracked = repository_changes(
+        repo,
+        max_git_seconds=max_git_seconds,
+    )
+    sensitive_paths = discover_sensitive_paths(
+        repo,
+        normalized_extra,
+        max_sensitive_paths=max_sensitive_paths,
+        max_git_seconds=max_git_seconds,
+    )
     reference_by_path: dict[str, dict[str, Any]] | None = None
     reference_paths: set[str] = set()
     if reference_sensitive_metadata is not None:
@@ -503,6 +612,11 @@ def repository_snapshot(
             reference_by_path[path] = item
             reference_paths.add(path)
     sensitive_set = set(sensitive_paths) | reference_paths
+    if len(sensitive_set) > max_sensitive_paths:
+        raise ValueError(
+            "sensitive metadata capture exceeds configured "
+            f"{max_sensitive_paths}-path budget"
+        )
     initial_sensitive_metadata = [
         metadata_only(repo, path) for path in sorted(sensitive_set)
     ]
@@ -540,6 +654,11 @@ def repository_snapshot(
                 sensitive_set.add(current)
             if original:
                 sensitive_set.add(original)
+    if len(sensitive_set) > max_sensitive_paths:
+        raise ValueError(
+            "quarantined metadata capture exceeds configured "
+            f"{max_sensitive_paths}-path budget"
+        )
     fingerprints: list[dict[str, Any]] = []
     patch_parts: list[bytes] = []
     patch_bytes = 0
@@ -604,17 +723,21 @@ def stable_repository_capture(
     reference_sensitive_metadata: list[dict[str, Any]] | None = None,
     max_patch_bytes: int = DEFAULT_MAX_GIT_BYTES,
     protect_changed_paths: bool = False,
+    max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
+    max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
 ) -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
     """Require two identical bounded captures before trusting repository state."""
 
     def capture_once() -> tuple[dict[str, Any], bytes, bytes, dict[str, str]]:
-        git_before = git_identity(repo)
+        git_before = git_identity(repo, max_git_seconds=max_git_seconds)
         snapshot, untracked_patch = repository_snapshot(
             repo,
             extra_sensitive=extra_sensitive,
             reference_sensitive_metadata=reference_sensitive_metadata,
             max_untracked_patch_bytes=max_patch_bytes,
             protect_changed_paths=protect_changed_paths,
+            max_git_seconds=max_git_seconds,
+            max_sensitive_paths=max_sensitive_paths,
         )
         remaining_patch = max_patch_bytes - len(untracked_patch)
         if remaining_patch <= 0:
@@ -624,8 +747,9 @@ def stable_repository_capture(
             repo,
             max_bytes=remaining_patch,
             sensitive_paths=sensitive,
+            max_git_seconds=max_git_seconds,
         )
-        git_after = git_identity(repo)
+        git_after = git_identity(repo, max_git_seconds=max_git_seconds)
         if git_after != git_before:
             raise ValueError("repository Git base changed during capture")
         return snapshot, untracked_patch, patch, git_after
