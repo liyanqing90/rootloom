@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: finalizing publication record
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: governed defect repair, public contract release, and local upgrade
@@ -114,6 +114,7 @@ Success requires fail-before/pass-after regressions for every reported trigger, 
 - Replacement PR CI run `29383392662` passed all seven Linux 3.11–3.14, macOS, Windows, and Codex CLI jobs. PR #6 merged as `e434654958109ef6f6a3878ef8a3db36226cec54`; merged-main run `29383564033` independently passed the same seven jobs.
 - Annotated tag object `df0bb82d8253724b362988a8540e099e903df627` peels to the passing merge commit. Public non-draft, non-prerelease Release `RE_kwDOTVQo6M4VHEQf` was published at 2026-07-15T02:36:50Z.
 - Local `rootloom@rootloom` and the managed personal preset are installed at 2.4.0; setup reports no drift or pending upgrade. Installed Rules preserve allow decisions for representative authorized commands and forbid catastrophic root deletion.
+- Publication-record run `29385444153` passed all seven jobs after the factual release record and its validator contract were committed to `main`.
 
 ## Risks
 
