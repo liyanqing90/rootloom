@@ -2,7 +2,7 @@
 
 ## Status
 
-- State: published; publication-record CI pending
+- State: complete
 - Owner: Codex
 - Last updated: 2026-07-15
 - Task type: security defect repair and external release
@@ -100,7 +100,7 @@ Publish the complete Reviewable Capture/privacy closure as Rootloom Personal Cor
 - Exact merged commit `9935bbd8f8ab80ae49f9e2e626a5c62e8e4ac51c` has the same tree and passed all seven jobs again in `main` run [29427110772](https://github.com/liyanqing90/rootloom/actions/runs/29427110772).
 - Annotated tag object `b2a6bfa043847d9462607a67a84c7ac5f8f96611` peels to that passing commit and is published as `v3.2.0`.
 - Public latest Release [Rootloom Personal Core 3.2.0](https://github.com/liyanqing90/rootloom/releases/tag/v3.2.0) is non-draft and non-prerelease with GitHub Release ID `RE_kwDOTVQo6M4VIbQT`.
-- Publication-record CI remains pending; the next transition is to add the observed run ID and close this plan only after all seven jobs pass.
+- Publication-record run [29427797183](https://github.com/liyanqing90/rootloom/actions/runs/29427797183) passed the same seven jobs after the factual release record and validator contract were added to `main`.
 
 ## Risks
 
