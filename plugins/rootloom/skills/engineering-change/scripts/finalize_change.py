@@ -24,6 +24,7 @@ from rootloom_paths import is_protected_deletion_path, normalize_repo_path
 from runner.baseline import (
     BASELINE_FORMAT_V2,
     BASELINE_FORMAT_V3,
+    BASELINE_FORMAT_V4,
     read_baseline_with_hash,
     repository_identity,
     sensitive_preservation,
@@ -90,6 +91,7 @@ def is_intake_sealed_baseline(baseline: dict[str, Any]) -> bool:
     return baseline.get("evidence_provenance") == {
         BASELINE_FORMAT_V2: "operator-sealed",
         BASELINE_FORMAT_V3: "intake-sealed",
+        BASELINE_FORMAT_V4: "intake-sealed",
     }.get(baseline.get("format"))
 
 
@@ -257,19 +259,26 @@ def revalidate_evidence_inputs(
 
 
 def dangerous_deletions(
-    changes: list[dict[str, str]], *, extra_sensitive: set[str] | None = None
+    changes: list[dict[str, str]],
+    *,
+    extra_sensitive: set[str] | None = None,
+    reviewable_paths: set[str] | None = None,
 ) -> list[str]:
     dangerous: set[str] = set()
     for item in changes:
         if "D" in item["status"] and is_protected_deletion_path(
-            item["path"], extra_sensitive=extra_sensitive
+            item["path"],
+            extra_sensitive=extra_sensitive,
+            reviewable_paths=reviewable_paths,
         ):
             dangerous.add(item["path"])
         if (
             "R" in item["status"]
             and item["original_path"]
             and is_protected_deletion_path(
-                item["original_path"], extra_sensitive=extra_sensitive
+                item["original_path"],
+                extra_sensitive=extra_sensitive,
+                reviewable_paths=reviewable_paths,
             )
         ):
             dangerous.add(item["original_path"])
@@ -281,6 +290,7 @@ def sensitive_path_changes(
     snapshot: dict[str, Any],
     *,
     extra_sensitive: set[str],
+    reviewable_paths: set[str] | None = None,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
     capture_deadline: CaptureDeadline | None = None,
@@ -298,6 +308,7 @@ def sensitive_path_changes(
         discover_sensitive_paths(
             repo,
             extra_sensitive,
+            reviewable_paths=reviewable_paths,
             max_git_seconds=max_git_seconds,
             max_sensitive_paths=max_sensitive_paths,
             capture_deadline=capture_deadline,
@@ -722,6 +733,7 @@ def main(argv: list[str] | None = None) -> int:
     baseline_path: Path | None = None
     baseline_sha256: str | None = None
     baseline_extra: list[str] = []
+    baseline_reviewable: list[str] = []
     if args.baseline:
         try:
             baseline_path = validated_external_evidence_path(
@@ -736,6 +748,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_git_seconds=args.max_git_seconds,
             )
             baseline_extra = list(baseline["sensitive_paths"])
+            baseline_reviewable = list(baseline.get("reviewable_paths", []))
         except (OSError, ValueError) as exc:
             raise SystemExit(str(exc)) from exc
     normalized_cli_sensitive = sorted(
@@ -786,6 +799,7 @@ def main(argv: list[str] | None = None) -> int:
                 repo,
                 baseline["snapshot"],
                 extra_sensitive=set(extra_sensitive),
+                reviewable_paths=set(baseline_reviewable),
                 max_git_seconds=args.max_git_seconds,
                 max_sensitive_paths=args.max_sensitive_paths,
                 capture_deadline=capture_deadline_before,
@@ -818,6 +832,7 @@ def main(argv: list[str] | None = None) -> int:
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
+            reviewable_paths=baseline_reviewable,
             reference_sensitive_metadata=(
                 baseline["snapshot"]["sensitive_paths"]
                 if baseline is not None
@@ -865,6 +880,7 @@ def main(argv: list[str] | None = None) -> int:
         changes=task_changes,
         tracked_patch=analysis_patch,
         declared_risk=args.risk,
+        reviewable_paths=baseline_reviewable,
         allow_repository_reads=not bool(
             snapshot_before["bounds"].get("sensitive_change_quarantine")
         ),
@@ -936,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.strict and baseline.get("format") in {
             BASELINE_FORMAT_V2,
             BASELINE_FORMAT_V3,
+            BASELINE_FORMAT_V4,
         }:
             baseline_git = baseline.get("git", {})
             if baseline_git.get("head") != current_git.get("head"):
@@ -983,7 +1000,9 @@ def main(argv: list[str] | None = None) -> int:
 
     dangerous = set(
         dangerous_deletions(
-            snapshot_before["changes"], extra_sensitive=set(extra_sensitive)
+            snapshot_before["changes"],
+            extra_sensitive=set(extra_sensitive),
+            reviewable_paths=set(baseline_reviewable),
         )
     )
     dangerous.update(baseline_guard["missing"])
@@ -1037,6 +1056,7 @@ def main(argv: list[str] | None = None) -> int:
             repo,
             snapshot_before,
             extra_sensitive=set(extra_sensitive),
+            reviewable_paths=set(baseline_reviewable),
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
             capture_deadline=capture_deadline_after,
@@ -1058,6 +1078,7 @@ def main(argv: list[str] | None = None) -> int:
         ) = stable_repository_capture(
             repo,
             extra_sensitive=extra_sensitive,
+            reviewable_paths=baseline_reviewable,
             reference_sensitive_metadata=snapshot_before["sensitive_paths"],
             max_patch_bytes=args.max_patch_bytes,
             protect_changed_paths=(
@@ -1126,7 +1147,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     dangerous_after = set(
         dangerous_deletions(
-            snapshot_after["changes"], extra_sensitive=set(extra_sensitive)
+            snapshot_after["changes"],
+            extra_sensitive=set(extra_sensitive),
+            reviewable_paths=set(baseline_reviewable),
         )
     )
     dangerous_after.update(verification_sensitive["missing"])
@@ -1241,7 +1264,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "3.0.0",
+        "producer_version": "3.1.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,

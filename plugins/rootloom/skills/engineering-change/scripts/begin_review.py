@@ -35,6 +35,7 @@ from runner.state import (
     DEFAULT_MAX_SENSITIVE_PATHS,
     stable_repository_capture,
 )
+from rootloom_paths import validate_reviewable_paths
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -54,6 +55,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="explicitly capture pre-existing worktree/index changes",
     )
     parser.add_argument("--sensitive-path", action="append", default=[])
+    parser.add_argument(
+        "--reviewable-path",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help=(
+            "Intake-only exact-file reviewability declaration; the declaration "
+            "is sealed, remains high risk, and cannot override "
+            "strong or explicitly declared secrets"
+        ),
+    )
     parser.add_argument(
         "--max-capture-seconds",
         type=float,
@@ -115,6 +127,15 @@ def main(argv: list[str] | None = None) -> int:
     if not output.parent.is_dir():
         raise SystemExit(f"review output parent does not exist: {output.parent}")
     try:
+        reviewable_paths = validate_reviewable_paths(
+            repo,
+            args.reviewable_path,
+            extra_sensitive=set(args.sensitive_path),
+            max_paths=args.max_sensitive_paths,
+        )
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+    try:
         (
             snapshot,
             _untracked_patch,
@@ -124,6 +145,7 @@ def main(argv: list[str] | None = None) -> int:
         ) = stable_repository_capture(
             repo,
             extra_sensitive=args.sensitive_path,
+            reviewable_paths=reviewable_paths,
             max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
@@ -140,12 +162,23 @@ def main(argv: list[str] | None = None) -> int:
         snapshot=snapshot,
         tracked_patch=patch,
         extra_sensitive=args.sensitive_path,
+        reviewable_paths=reviewable_paths,
         task=args.task,
         provenance="intake-sealed",
         allow_dirty_baseline=args.allow_dirty_baseline,
         captured_git=captured_git,
         max_git_seconds=args.max_git_seconds,
     )
+    try:
+        if validate_reviewable_paths(
+            repo,
+            reviewable_paths,
+            extra_sensitive=set(args.sensitive_path),
+            max_paths=args.max_sensitive_paths,
+        ) != reviewable_paths:
+            raise ValueError("reviewable path policy changed during capture")
+    except (OSError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
     temporary = Path(
         tempfile.mkdtemp(prefix=f".{output.name}.tmp-", dir=output.parent)
     )

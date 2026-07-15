@@ -6,6 +6,25 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-07-15
+
+### Added
+
+- Add Intake-only `begin_review.py --reviewable-path FILE` for an exact existing regular non-symlink file. The declaration may pin an already-reviewable template or public certificate, can downgrade ambiguous material such as a public `.pem`, is stored in opt-in `rootloom-change-baseline-v4`, is included in the sensitive-policy hash, and remains a high-risk security-domain signal.
+
+### Changed
+
+- Classify `.env`, `.envrc`, and non-template `.env.<name>` files as secret material while keeping `.env.example`, `.env.sample`, `.env.template`, and `.env.dist` patch-readable security configuration. Unrelated `.environment`, `.envelope`, and `.envoy` names are ordinary paths.
+- Keep public certificate formats (`.crt`, `.cer`, `.der`, `.p7b`, and `.p7c`) patch-readable and high risk; private-key and keystore formats remain metadata-only, and ambiguous `.pem` stays material unless explicitly downgraded at Intake.
+
+### Security
+
+- Refuse reviewability exceptions for globs, directories, missing files, symlinks, case-insensitive duplicates, explicit sensitive roots, environment secrets, private keys, keystores, and other strong secret names. Finalizer has no option to add or alter reviewable paths after Intake.
+
+### Compatibility
+
+- Calls that do not use `--reviewable-path` continue to produce the existing baseline v3 schema. Readers, sealers, and Finalizer accept baseline v2, v3, and v4; only consumers opting into the new CLI capability must add v4 support. This additive opt-in contract is a Minor release.
+
 ## [3.0.0] - 2026-07-15
 
 ### Added
@@ -609,7 +628,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/liyanqing90/rootloom/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...v3.0.0
 [2.4.0]: https://github.com/liyanqing90/rootloom/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/liyanqing90/rootloom/compare/v2.2.2...v2.3.0
