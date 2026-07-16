@@ -32,7 +32,7 @@ Authorization needs to express user intent at a useful level without making a pe
 
 Under Standard, irreversible loss, history rewrite or force-push, destructive local discard or remote deletion, production teardown, purchases or billing, credential or permission changes, incompatible contracts, and material scope expansion require Single action or Full authorization. A current request that already names the exact high-risk action counts as Single action authorization.
 
-The bundled `rootloom.rules` does not attempt to persist or infer these semantic modes. `command-safety` therefore always includes `global-policy`. Covered commands return `allow` so the Rules do not ask a second time after the global agreement has made the authorization decision. Catastrophic recursive deletion of root, the current directory, or its parent remains `forbidden`. Platform, sandbox, organization, credential, and other active Rules remain authoritative.
+The bundled `rootloom.rules` does not attempt to persist or infer these semantic modes. The optional `autonomy` capability therefore always includes `global-policy`. Covered commands return `allow` so the Rules do not ask a second time after the global agreement has made the authorization decision. Catastrophic recursive deletion of root, the current directory, or its parent remains `forbidden`. Platform, sandbox, organization, credential, and other active Rules remain authoritative. Legacy `command-safety` remains an input alias only; the Rules are a low-confirmation authorization layer, not a deterministic safety system.
 
 ## Alternatives considered
 
@@ -48,7 +48,7 @@ The bundled `rootloom.rules` does not attempt to persist or infer these semantic
 - Positive: high-risk actions have two useful escalation paths: one action or all in-scope actions for the current task.
 - Negative: semantic enforcement depends on agents following installed global guidance; argv Rules alone cannot prove that Standard or Full is active.
 - Negative: Full does not persist across tasks, and catastrophic recursive deletion remains unavailable through Rootloom Rules.
-- Operational: existing optional global installations must run `$setup-rootloom upgrade` after refreshing the plugin to receive the new copied guidance and Rules. A legacy exact `command-safety` selection expands to include its required `global-policy`; plugin-only installations remain unchanged.
+- Operational: existing optional global installations must run `$setup-rootloom upgrade` after refreshing the plugin to receive the new copied guidance and Rules. A legacy exact `command-safety` selection normalizes to `autonomy` and includes its required `global-policy`; plugin-only installations remain unchanged.
 
 ## Verification
 

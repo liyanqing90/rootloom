@@ -9,7 +9,7 @@ codex plugin marketplace add liyanqing90/rootloom
 codex plugin add rootloom@rootloom
 ```
 
-新建任务并检查 `/hooks`。唯一 Hook 是本地项目指导播种；只有有效的托管组件策略启用后才会执行。
+新建任务并检查 `/hooks`。唯一 Hook 只检测仓库事实并注入临时只读项目 Context；只有精确的托管组件策略版本 1 启用后才会执行，并且绝不写入 `AGENTS.md`。
 
 此时插件已经可以完整使用，不需要 setup 命令、analyzer、baseline、contract、finalizer 或 project-memory 查询。
 
@@ -19,8 +19,7 @@ codex plugin add rootloom@rootloom
 | --- | --- |
 | `skills-only` | 仅 Skills；关闭 Hook |
 | `guidance` | `global-policy`、`project-context` |
-| `personal` | Guidance + `command-safety`；默认 |
-| `engineering` | `personal` 的兼容别名 |
+| `personal` | Guidance + `autonomy`；默认 |
 
 `skills-only` 使用的空 capability 集合会作为明确的已安装状态保存。后续没有显式新选择的 `status`、`plan` 与兼容命令 `apply` 都会保持它。
 
@@ -39,17 +38,17 @@ python3 <setup-skill>/scripts/setup_rootloom.py status
 
 ```bash
 python3 <setup-skill>/scripts/setup_rootloom.py plan \
-  --capabilities global-policy,project-context,command-safety
+  --capabilities global-policy,project-context,autonomy
 ```
 
-选择 `command-safety` 时会自动包含 `global-policy`；负责避免重复弹窗的命令规则不能脱离管理普通权限、本条命令和所有权限的全局指导单独安装。
+选择 `autonomy` 时会自动包含 `global-policy`；负责避免重复弹窗的命令规则不能脱离管理普通权限、本条命令和所有权限的全局指导单独安装。旧 `engineering` 与 `command-safety` 输入只作为兼容别名继续接受。
 
 ## 托管目标
 
 | 路径 | 用途 |
 | --- | --- |
 | `~/.codex/AGENTS.md` | 个人工程工作协议 |
-| `~/.codex/rules/rootloom.rules` | 命令安全策略 |
+| `~/.codex/rules/rootloom.rules` | 可选低确认授权策略 |
 | `~/.codex/.rootloom/components.json` | Hook 开关 |
 | `~/.codex/.rootloom/state.json` | 已安装选择与目标哈希 |
 | `~/.codex/.rootloom/backups/` | 修改前文件副本与清单 |
@@ -72,7 +71,7 @@ Setup：
 
 个人契约不承诺跨整个事务的崩溃补偿。如果进程在多个文件替换之间停止，请运行 `status`、检查 `.rootloom/backups/` 并显式处理可见不一致。它也不防御敌对同用户进程并发替换锁或目标路径。
 
-## 检查命令 Rules
+## 检查可选 Autonomy Rules
 
 ```bash
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git commit -m test
@@ -125,6 +124,6 @@ python3 <setup-skill>/scripts/setup_rootloom.py upgrade
 
 可选 setup 的 `upgrade` 始终保持已安装 capability 选择。插件与资产已经一致时返回 `up_to_date`；只有插件版本变化时只更新 setup 状态，不创建多余资产备份；托管内容变化时仍会在写入前创建正常备份。新版目录已退役的托管目标只有在仍匹配安装 Hash 时才会被移除，并会先备份，使 rollback 能恢复；访问前还会重新规范并校验已安装状态路径。`status` 会报告 `installed_version`、`upgrade_available` 与 `drifted_paths`。升级不会覆盖漂移：请先恢复预期内容或回滚。`--replace-conflicts` 只用于新版本首次引入的用户文件冲突，并且需要精确授权。
 
-## 从 Enterprise Assurance 1.2.19 迁移
+## 从 Archived Assurance Edition 1.2.19 迁移
 
-两个 setup 契约有意不兼容。安装 Personal Core 前，请使用 `codex/enterprise-assurance` 上的 1.2.19 代码回滚旧 setup。不要让 Personal Core 猜测或删除自定义 Agents、高保障 profile、配置限制、Human Review 状态或恢复日志。
+两个 setup 契约有意不兼容。安装 Personal Core 前，请使用 `codex/enterprise-assurance` 上已归档的 1.2.19 代码回滚旧 setup。不要让 Personal Core 猜测或删除自定义 Agents、高保障 profile、配置限制、Human Review 状态或恢复日志。

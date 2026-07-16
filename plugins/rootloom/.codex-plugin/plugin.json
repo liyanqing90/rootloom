@@ -1,7 +1,7 @@
 {
   "name": "rootloom",
-  "version": "3.2.0",
-  "description": "A personal engineering quality layer for Codex: risk-aware, root-cause-driven, and verifiable.",
+  "version": "3.3.0",
+  "description": "An inspectable personal engineering workflow for Codex: scoped, risk-aware, and evidence-honest.",
   "author": {
     "name": "liyanqing",
     "url": "https://github.com/liyanqing90"
@@ -26,15 +26,15 @@
   "skills": "./skills/",
   "interface": {
     "displayName": "Rootloom",
-    "shortDescription": "Reliable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom gives individual developers low-friction Codex engineering with optional explainable risk analysis, owning-cause diagnosis, bounded review artifacts, behavior-specific verification, and relevant project lessons. Installation stays lightweight; deep review is explicit, single-agent, and separate from enterprise approval or audit machinery.",
+    "shortDescription": "Inspectable Codex engineering, woven from the roots up.",
+    "longDescription": "Rootloom gives individual developers a small Change, Review, and Guidance core. Low-confirmation Autonomy and bounded Evidence are optional; Project Memory is experimental. Installation stays lightweight, SessionStart context is read-only, and deep review remains explicit and separate from archived approval or audit machinery.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [
       "Automation",
       "Write",
       "Review",
-      "Engineering Memory"
+      "Experimental Project Memory"
     ],
     "websiteURL": "https://github.com/liyanqing90/rootloom",
     "brandColor": "#8A78FF",
@@ -43,7 +43,7 @@
     "logoDark": "./assets/logo-dark.svg",
     "defaultPrompt": [
       "Classify and execute a task with the right Rootloom workflow tier.",
-      "Seed and refine AGENTS.md guidance for this repository.",
+      "Inspect project context, and persist AGENTS.md guidance only when explicitly requested.",
       "Run an opt-in deep engineering review with a compact evidence summary."
     ]
   }

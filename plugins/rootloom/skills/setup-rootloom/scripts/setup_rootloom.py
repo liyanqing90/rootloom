@@ -30,27 +30,27 @@ STATE_PATH = f"{STATE_DIRNAME}/state.json"
 COMPONENT_POLICY_PATH = f"{STATE_DIRNAME}/components.json"
 COMPONENT_DESCRIPTIONS = {
     "global-guidance": "Install the personal engineering working agreement.",
-    "project-guidance-hook": "Seed evidence-backed project AGENTS.md guidance.",
-    "command-rules": "Separate reversible local work from destructive or remote commands.",
+    "project-guidance-hook": "Inject read-only evidence-backed project context at SessionStart.",
+    "command-rules": "Apply the optional low-confirmation authorization policy.",
 }
 CAPABILITY_DESCRIPTIONS = {
     "global-policy": "Apply the lean cross-project working agreement.",
-    "project-context": "Automatically seed repository-specific guidance.",
-    "command-safety": "Install command Rules plus their required global authorization policy.",
+    "project-context": "Detect and inject temporary repository context without writing files.",
+    "autonomy": "Install authorization Rules plus their required global policy.",
 }
+CAPABILITY_ALIASES = {"command-safety": "autonomy"}
 CAPABILITY_COMPONENTS = {
     "global-policy": ("global-guidance",),
     "project-context": ("project-guidance-hook",),
-    "command-safety": ("command-rules",),
+    "autonomy": ("command-rules",),
 }
 FULL_CAPABILITIES = tuple(CAPABILITY_DESCRIPTIONS)
 PRESETS = {
     "skills-only": (),
     "guidance": ("global-policy", "project-context"),
     "personal": FULL_CAPABILITIES,
-    # Migration alias for pre-2.0 users; it selects the same personal product.
-    "engineering": FULL_CAPABILITIES,
 }
+PRESET_ALIASES = {"engineering": "personal"}
 
 
 @dataclass(frozen=True)
@@ -101,11 +101,12 @@ def plugin_version(root: Path) -> str:
 
 
 def normalize_capabilities(values: tuple[str, ...] | list[str]) -> tuple[str, ...]:
-    unknown = sorted(set(values) - set(CAPABILITY_DESCRIPTIONS))
+    canonical = [CAPABILITY_ALIASES.get(value, value) for value in values]
+    unknown = sorted(set(canonical) - set(CAPABILITY_DESCRIPTIONS))
     if unknown:
         raise ValueError(f"unknown setup capabilities: {', '.join(unknown)}")
-    selected = set(values)
-    if "command-safety" in selected:
+    selected = set(canonical)
+    if "autonomy" in selected:
         selected.add("global-policy")
     return tuple(name for name in FULL_CAPABILITIES if name in selected)
 
@@ -648,6 +649,10 @@ def catalog_payload() -> dict[str, Any]:
         "presets": {name: list(values) for name, values in PRESETS.items()},
         "capabilities": CAPABILITY_DESCRIPTIONS,
         "components": COMPONENT_DESCRIPTIONS,
+        "compatibility_aliases": {
+            "capabilities": CAPABILITY_ALIASES,
+            "presets": PRESET_ALIASES,
+        },
         "default_preset": "personal",
     }
 
@@ -661,13 +666,25 @@ def print_payload(payload: dict[str, Any], json_output: bool) -> None:
 
 def add_selection_arguments(parser: argparse.ArgumentParser) -> None:
     group = parser.add_mutually_exclusive_group()
-    group.add_argument("--preset", choices=sorted(PRESETS))
+    group.add_argument(
+        "--preset",
+        type=normalize_preset,
+        metavar="{skills-only,guidance,personal}",
+    )
     group.add_argument("--capabilities", help="comma-separated capabilities or 'none'")
+
+
+def normalize_preset(value: str) -> str:
+    canonical = PRESET_ALIASES.get(value, value)
+    if canonical not in PRESETS:
+        choices = ", ".join(PRESETS)
+        raise argparse.ArgumentTypeError(f"preset must be one of: {choices}")
+    return canonical
 
 
 def selected_capabilities(args: argparse.Namespace, codex_home: Path) -> tuple[str, ...]:
     if getattr(args, "preset", None):
-        return PRESETS[args.preset]
+        return PRESETS[normalize_preset(args.preset)]
     raw = getattr(args, "capabilities", None)
     if raw is not None:
         if raw.strip().lower() == "none":

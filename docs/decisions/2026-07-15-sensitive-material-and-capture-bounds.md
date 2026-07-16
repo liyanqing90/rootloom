@@ -79,7 +79,7 @@ Public contract releases follow impact rather than schema numbering: compatible 
 
 - Focused regressions cover the supplied security-source and CamelCase material examples, the environment/public-certificate/DER matrices, exact reviewable Intake and v4 policy hashing, ignored/Index-suppressed/Hardlink/strong-name/Glob/directory/missing/Symlink/case-ambiguity/duplicate rejection, post-Intake Index-state rechecks, actual repository spelling, Finalizer-only consumption, Summary policy disclosure, material directory descendants, deletion behavior, risk signals, remaining Git timeout, one deadline across both passes, invalid budgets, baseline-v2/v3/v4 compatibility, and revision-5 summary fields/provenance.
 - `make check`, `make compatibility-smoke`, `git diff --check`, and strict governed finalization are release gates.
-- The release PR, merged `main`, tag peel, public Release metadata, publication record, and local installed-version/drift checks provide post-action evidence.
+- The release PR, merged `main`, tag peel, public Release metadata, and local installed-version/drift checks provide post-action evidence.
 
 ## Revisit when
 

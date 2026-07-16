@@ -9,7 +9,7 @@ codex plugin marketplace add liyanqing90/rootloom
 codex plugin add rootloom@rootloom
 ```
 
-Start a new task and inspect `/hooks`. The only Hook is local project-guidance seeding. It does nothing until a valid managed component policy enables it.
+Start a new task and inspect `/hooks`. The only Hook detects repository facts and injects temporary read-only project context. It does nothing until exact managed component policy version 1 enables it, and it never writes `AGENTS.md`.
 
 The plugin is fully usable at this point. No setup command, analyzer, baseline, contract, finalizer, or project-memory lookup is required.
 
@@ -19,8 +19,7 @@ The plugin is fully usable at this point. No setup command, analyzer, baseline, 
 | --- | --- |
 | `skills-only` | Skills only; Hook disabled |
 | `guidance` | `global-policy`, `project-context` |
-| `personal` | Guidance plus `command-safety`; default |
-| `engineering` | Compatibility alias for `personal` |
+| `personal` | Guidance plus `autonomy`; default |
 
 The empty capability selection used by `skills-only` is persisted as an intentional installed state. `status`, `plan`, and compatibility `apply` without a new explicit selection preserve it.
 
@@ -39,17 +38,17 @@ Exact capability selection is also available:
 
 ```bash
 python3 <setup-skill>/scripts/setup_rootloom.py plan \
-  --capabilities global-policy,project-context,command-safety
+  --capabilities global-policy,project-context,autonomy
 ```
 
-Selecting `command-safety` always includes `global-policy`; Rules that suppress duplicate prompts must not be installed without the guidance that owns Standard, Single action, and Full authorization.
+Selecting `autonomy` always includes `global-policy`; Rules that suppress duplicate prompts must not be installed without the guidance that owns Standard, Single action, and Full authorization. Legacy `engineering` and `command-safety` input remains accepted only for compatibility.
 
 ## Managed targets
 
 | Path | Purpose |
 | --- | --- |
 | `~/.codex/AGENTS.md` | Personal engineering working agreement |
-| `~/.codex/rules/rootloom.rules` | Command safety policy |
+| `~/.codex/rules/rootloom.rules` | Optional low-confirmation authorization policy |
 | `~/.codex/.rootloom/components.json` | Hook enablement |
 | `~/.codex/.rootloom/state.json` | Installed selection and target hashes |
 | `~/.codex/.rootloom/backups/` | Pre-mutation file copies and manifest |
@@ -72,7 +71,7 @@ Setup:
 
 This personal contract does not promise whole-transaction crash compensation. If the process stops between file replacements, run `status`, inspect `.rootloom/backups/`, and reconcile the visible mismatch. It also does not defend against a hostile same-user process replacing lock or target paths concurrently.
 
-## Command Rules check
+## Optional Autonomy Rules check
 
 ```bash
 codex execpolicy check --pretty --rules ~/.codex/rules/rootloom.rules -- git commit -m test
@@ -125,6 +124,6 @@ python3 <setup-skill>/scripts/setup_rootloom.py upgrade
 
 Optional setup `upgrade` always preserves the installed capability selection. It reports `up_to_date` when the current plugin and assets already match. If only the plugin version changed, it updates setup state without creating a redundant asset backup; if managed content changed, it creates the normal backup before writing. A managed target retired by the new catalog is removed only when it still matches its installed hash, and it is backed up so rollback restores it. Installed state paths are normalized and checked before access. `status` reports `installed_version`, `upgrade_available`, and `drifted_paths`. Drift is never overwritten by upgrade: restore the expected content or roll back first. `--replace-conflicts` is reserved for a newly introduced user-owned target after exact authorization.
 
-## Migrate from Enterprise Assurance 1.2.19
+## Migrate from Archived Assurance Edition 1.2.19
 
-The setup contracts are intentionally incompatible. Use the 1.2.19 code on `codex/enterprise-assurance` to roll back its setup before installing Personal Core. Do not ask the Personal Core setup to infer or remove custom agents, the high-assurance profile, configuration limits, Human Review state, or recovery journals.
+The setup contracts are intentionally incompatible. Use the archived 1.2.19 code on `codex/enterprise-assurance` to roll back its setup before installing Personal Core. Do not ask the Personal Core setup to infer or remove custom agents, the high-assurance profile, configuration limits, Human Review state, or recovery journals.

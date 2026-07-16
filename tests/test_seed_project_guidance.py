@@ -256,7 +256,7 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         result = seeder.seed(self.root, invalid_target, allow_untrusted=True)
         self.assertEqual(result["reason"], "not_a_module_boundary")
 
-    def test_hook_injects_new_guidance_but_plan_mode_does_not_write(self) -> None:
+    def test_hook_injects_temporary_context_without_writing_in_any_mode(self) -> None:
         self.init_repo()
         previous = os.environ.get("ROOTLOOM_ALLOW_UNTRUSTED")
         os.environ["ROOTLOOM_ALLOW_UNTRUSTED"] = "1"
@@ -271,10 +271,10 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         )
         self.assertIsNotNone(output)
         context = output["hookSpecificOutput"]["additionalContext"]
-        self.assertIn("<seeded_project_guidance>", context)
-        self.assertTrue((self.root / "AGENTS.md").exists())
+        self.assertIn("<rootloom_project_context>", context)
+        self.assertIn("without creating or updating AGENTS.md", context)
+        self.assertFalse((self.root / "AGENTS.md").exists())
 
-        (self.root / "AGENTS.md").unlink()
         output = seeder._hook_output(
             {
                 "source": "startup",
@@ -282,7 +282,11 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
                 "cwd": str(self.root),
             }
         )
-        self.assertIsNone(output)
+        self.assertIsNotNone(output)
+        self.assertIn(
+            "<rootloom_project_context>",
+            output["hookSpecificOutput"]["additionalContext"],
+        )
         self.assertFalse((self.root / "AGENTS.md").exists())
 
     def test_validation_detects_managed_drift_and_secrets(self) -> None:

@@ -821,32 +821,54 @@ def validate(file_path: Path) -> dict[str, Any]:
     return {"valid": not errors, "errors": errors, "path": str(file_path)}
 
 
+def temporary_project_context(
+    cwd: Path,
+    *,
+    allow_untrusted: bool = False,
+) -> dict[str, Any]:
+    """Render current repository facts for one session without writing files."""
+
+    data = probe(cwd)
+    if data.get("status") != "ready":
+        return data
+    project_root = Path(data["project_root"])
+    if _disabled(project_root):
+        return {**data, "status": "skipped", "reason": "disabled"}
+    if _unsafe_location(project_root):
+        return {**data, "status": "skipped", "reason": "unsafe_location"}
+    if not allow_untrusted and not _is_trusted(project_root):
+        return {**data, "status": "skipped", "reason": "untrusted_project"}
+    content = _render_managed(data)
+    if _contains_secret(content):
+        return {**data, "status": "error", "reason": "secret_like_content_detected"}
+    if len(content.encode("utf-8")) > MAX_GUIDANCE_BYTES:
+        return {**data, "status": "error", "reason": "generated_guidance_too_large"}
+    return {**data, "status": "context-ready", "context": content}
+
+
 def _hook_output(event: dict[str, Any]) -> dict[str, Any] | None:
     source = str(event.get("source", ""))
-    permission_mode = str(event.get("permission_mode", ""))
     cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
-    if source == "compact" or permission_mode == "plan":
+    if source == "compact":
         return None
     allow_untrusted = os.environ.get("ROOTLOOM_ALLOW_UNTRUSTED") == "1"
-    result = seed(cwd, allow_untrusted=allow_untrusted)
+    result = temporary_project_context(cwd, allow_untrusted=allow_untrusted)
     status = result.get("status")
-    if status not in {"created", "updated"}:
-        if status == "error" or result.get("reason") == "malformed_managed_block":
+    if status != "context-ready":
+        if status == "error":
             return {
                 "continue": True,
-                "systemMessage": f"Project guidance seeder skipped: {result.get('reason', 'unknown error')}",
+                "systemMessage": f"Project context detection skipped: {result.get('reason', 'unknown error')}",
             }
         return None
 
-    agents_path = Path(result["agents_path"])
-    content = _read_text(agents_path, MAX_GUIDANCE_BYTES)
+    content = result["context"]
     context = (
-        f"Project guidance was {status} at {agents_path} after the session instruction chain was built. "
-        "Treat the enclosed AGENTS.md as active developer guidance for this session. "
-        "For the first non-trivial implementation in this repository, use $refine-project-guidance once "
-        "to add only durable, evidence-backed architecture or invariant notes when they materially help. "
-        "Do not delay trivial or read-only work, do not overwrite unmarked guidance, and do not create subagents.\n\n"
-        f"<seeded_project_guidance>\n{content}\n</seeded_project_guidance>"
+        "Rootloom detected the following repository facts for this session without "
+        "creating or updating AGENTS.md. Treat them as advisory context subordinate "
+        "to current repository evidence and any existing project guidance. Persist "
+        "guidance only when the user explicitly invokes $seed-project-guidance.\n\n"
+        f"<rootloom_project_context>\n{content}\n</rootloom_project_context>"
     )
     return {
         "continue": True,

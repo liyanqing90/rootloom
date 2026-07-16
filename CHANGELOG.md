@@ -6,6 +6,27 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-07-16
+
+### Changed
+
+- Define the everyday product as Core Change/Review/Guidance, with Autonomy and Evidence explicitly optional and Project Memory experimental; describe the preserved 1.2.19 branch as Archived Assurance Edition.
+- Expose only `skills-only`, `guidance`, and `personal` as public setup presets, rename the canonical Rules capability to `autonomy`, and retain `engineering` / `command-safety` as input-only compatibility aliases.
+- Make the SessionStart project-guidance Hook read-only: it injects temporary detected context, while only an explicit `$seed-project-guidance` request may create or refresh `AGENTS.md`.
+- Reduce the installed global working agreement to root-cause repair, unrelated-work preservation, risk tiers, proportional verification, opt-in deep review, and minimal authorization semantics.
+- Position Personal Core as an inspectable engineering workflow rather than a verified-quality layer, and state the path-based secret-classification and independent-assurance limits explicitly.
+
+### Fixed
+
+- Require component Hook policy to contain exact integer `version: 1`; missing, string, zero, and future versions now fail closed.
+- Keep historical Baseline v4 wire validation separate from current execution policy. Finalizer returns `reintake-required` before reviewable content capture when an old declaration no longer satisfies current policy.
+- Derive `reviewability_policy.policy_provenance` from the actually validated intake chain and report final identity metadata as `captured_files_provenance: final-capture-observed`; the compatibility `source` field now uses the same honest value.
+- Enforce an independent 64-file Reviewable Path ceiling instead of reusing the much larger sensitive-path budget.
+
+### Security
+
+- Prevent reviewability overrides for `privkey.pem`, `privatekey.pem`, `rsa-key.pem`, `ec-key.pem`, `ecdsa-key.pem`, `ed25519-key.pem`, `encryption-key.pem`, and `decryption-key.pem`.
+
 ## [3.2.0] - 2026-07-15
 
 ### Fixed
@@ -643,7 +664,8 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A deterministic high-assurance `codex exec` runner with one writer, exact scope gates, structured outputs, real verification, independent review, and a bounded repair cycle.
 - Bilingual documentation, architecture and capability visuals, tests, CI, security policy, contribution guidance, and release governance.
 
-[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/liyanqing90/rootloom/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/liyanqing90/rootloom/compare/v3.2.0...v3.3.0
 [3.2.0]: https://github.com/liyanqing90/rootloom/compare/v3.1.0...v3.2.0
 [3.1.0]: https://github.com/liyanqing90/rootloom/compare/v3.0.0...v3.1.0
 [3.0.0]: https://github.com/liyanqing90/rootloom/compare/v2.4.0...v3.0.0

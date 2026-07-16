@@ -44,6 +44,9 @@ def hook_enabled(component: str, policy_path: Path | None = None) -> tuple[bool,
         return False, f"component policy could not be read: {exc}"
     if not isinstance(payload, dict) or payload.get("managed_by") != MANAGED_BY:
         return False, "component policy is not a managed Rootloom policy"
+    version = payload.get("version")
+    if type(version) is not int or version != 1:
+        return False, "component policy version must be the integer 1"
     hooks = payload.get("hooks")
     if not isinstance(hooks, dict) or type(hooks.get(component)) is not bool:
         return False, f"component policy has no boolean state for {component}"

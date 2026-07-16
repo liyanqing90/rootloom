@@ -16,6 +16,7 @@ from typing import Any
 PLUGIN_LIB = Path(__file__).resolve().parents[4] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
 from rootloom_paths import (
+    MAX_REVIEWABLE_PATHS,
     is_sensitive_material_path,
     normalize_repo_path,
     sensitive_material_git_pathspecs,
@@ -517,7 +518,7 @@ def canonical_reviewable_paths(
     paths: list[str] | set[str],
     *,
     allowed_missing: set[str] | None = None,
-    max_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    max_paths: int = MAX_REVIEWABLE_PATHS,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     capture_deadline: CaptureDeadline | None = None,
 ) -> list[str]:
@@ -924,6 +925,7 @@ def repository_snapshot(
     protect_changed_paths: bool = False,
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    max_reviewable_paths: int = MAX_REVIEWABLE_PATHS,
     capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[dict[str, Any], bytes]:
     if capture_deadline is not None:
@@ -939,7 +941,7 @@ def repository_snapshot(
         repo,
         normalized_reviewable,
         allowed_missing=allowed_missing_reviewable_paths,
-        max_paths=max_sensitive_paths,
+        max_paths=max_reviewable_paths,
         max_git_seconds=max_git_seconds,
         capture_deadline=capture_deadline,
     )
@@ -1124,6 +1126,7 @@ def stable_repository_capture(
     max_git_seconds: float = DEFAULT_MAX_GIT_SECONDS,
     max_capture_seconds: float = DEFAULT_MAX_CAPTURE_SECONDS,
     max_sensitive_paths: int = DEFAULT_MAX_SENSITIVE_PATHS,
+    max_reviewable_paths: int = MAX_REVIEWABLE_PATHS,
     capture_deadline: CaptureDeadline | None = None,
 ) -> tuple[dict[str, Any], bytes, bytes, dict[str, str], float, list[dict[str, Any]]]:
     """Require two identical bounded captures before trusting repository state."""
@@ -1153,6 +1156,7 @@ def stable_repository_capture(
             protect_changed_paths=protect_changed_paths,
             max_git_seconds=max_git_seconds,
             max_sensitive_paths=max_sensitive_paths,
+            max_reviewable_paths=max_reviewable_paths,
             capture_deadline=deadline,
         )
         remaining_patch = max_patch_bytes - len(untracked_patch)
@@ -1170,7 +1174,7 @@ def stable_repository_capture(
             repo,
             reviewable_paths or [],
             allowed_missing=allowed_missing_reviewable_paths,
-            max_paths=max_sensitive_paths,
+            max_paths=max_reviewable_paths,
             max_git_seconds=max_git_seconds,
             capture_deadline=deadline,
         )

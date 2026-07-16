@@ -16,12 +16,11 @@ python3 <skill-dir>/scripts/setup_rootloom.py list-components
 | Preset | Result |
 | --- | --- |
 | `skills-only` | Plugin Skills only; the project-guidance Hook is disabled |
-| `guidance` | Global working agreement plus project-guidance Hook |
-| `personal` | Guidance plus command safety; recommended and default |
-| `engineering` | Compatibility alias for `personal` |
+| `guidance` | Global working agreement plus read-only project-context Hook |
+| `personal` | Guidance plus optional Autonomy; recommended and default |
 
-Exact capabilities are `global-policy`, `project-context`, and `command-safety`.
-`command-safety` always includes `global-policy` because the Rules intentionally defer authorization mode and scope to that guidance.
+Exact capabilities are `global-policy`, `project-context`, and `autonomy`.
+`autonomy` always includes `global-policy` because the Rules intentionally defer authorization mode and scope to that guidance. Legacy `engineering` and `command-safety` inputs remain compatibility aliases but are not recommended names.
 
 ## Optional global layer
 
@@ -48,9 +47,9 @@ Setup is serialized by an ordinary local lock, refuses symlinked or user-owned t
 
 If the plan contains `conflict`, show the exact paths. Use `--replace-conflicts` only after the user authorizes those replacements. A backup does not replace authorization.
 
-## Verify command safety
+## Verify optional Autonomy
 
-When `command-safety` is selected, run `codex execpolicy check` for at least:
+When `autonomy` is selected, run `codex execpolicy check` for at least:
 
 - routine and high-risk commands represented in the Rules → allow, because static argv Rules cannot carry authorization-mode state;
 - catastrophic recursive deletion of root, home, the current directory, or its parent → forbidden.
@@ -84,4 +83,4 @@ python3 <skill-dir>/scripts/setup_rootloom.py rollback
 
 Rollback first validates that managed files still match the installed hashes. It refuses to overwrite post-setup edits, then restores the backed-up content and mode or removes files created by setup. A normal rollback returns to the previous simple backup; `rollback --all` follows the available backup chain to the pre-install state.
 
-To change presets, roll back, plan the new selection, and apply it. Enterprise Assurance 1.2.19 uses a different branch and installation contract; roll it back with that version before installing Personal Core.
+To change presets, roll back, plan the new selection, and apply it. Archived Assurance Edition 1.2.19 uses a different branch and installation contract; roll it back with that version before installing Personal Core.

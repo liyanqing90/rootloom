@@ -1,11 +1,11 @@
 ---
 name: project-memory
-description: Initialize, retrieve, and explicitly update Rootloom's repository-owned engineering memory for architecture, known risks, durable decisions, and evidence-backed failure lessons. Use when a task should reuse relevant project history or when verified knowledge will change a future engineering decision.
+description: Experimentally initialize, retrieve, and explicitly update Rootloom's repository-owned project memory for architecture, known risks, durable decisions, and evidence-backed failure lessons. Use only when explicitly requested and durable history will change a future engineering decision. Memory is advisory and outside stable Core.
 ---
 
-# Engineering memory
+# Experimental Project Memory
 
-Keep a small, local, reviewable memory in `.project-memory/`. It is an engineering aid, never an authority or an automatic activity log.
+Keep a small, local, reviewable memory in `.project-memory/`. It is an experimental engineering aid, never an authority, installation prerequisite, or automatic activity log.
 
 ## Rules
 

@@ -32,7 +32,7 @@ make check
 plugins/rootloom/       可安装 Codex 插件
   .codex-plugin/plugin.json            插件元数据
   assets/system/                       可安装的全局指导与命令 Rules
-  hooks/                               可选的 SessionStart 项目指导播种
+  hooks/                               可选的只读 SessionStart 项目 Context
   skills/                              个人工作流、记忆、Setup、指导、审查与风险 Skills
 tests/                                 单元与真实集成检查
 scripts/validate_repo.py               仓库契约校验
@@ -94,6 +94,8 @@ Rootloom 对可观察 JSON、CLI、持久证据、Setup 与插件行为执行 Se
 即使顶层 `format` 不变，Schema Revision 变化也不自动等于 Minor；必须评估真实 Producer/Consumer 契约与混合版本行为。自动化优先读取 `evidence_complete` 等稳定能力字段，把详细状态枚举视为诊断展示；不得为了兼容而保留具有误导性的权威状态别名。
 
 已经发布的 Tag 与 Release 保持不可变。发布后的普通修复使用新版本，不能移动或删除原 Tag。
+
+兼容的边界修复先积累在 `Unreleased`，再批量正式发布。发布事实由 GitHub PR、Actions、Tag 与 Release 管理；仓库不再加入一次性 `.codex/plans/`、Publication Record、Final Record、Release ID、Tag Object ID 或 CI Run ID。`CHANGELOG.md` 只记录用户可观察变化。
 
 ## Pull Request
 

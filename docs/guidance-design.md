@@ -13,7 +13,7 @@ That leads to four design rules:
 3. Put reusable multi-step procedures in Skills rather than repeating them in every task.
 4. Keep executable policy and proof in Rules, sandboxing, scripts, tests, and CI.
 
-The default 32 KiB project-instruction budget is a ceiling, not a target. This project's managed global template stays below 16 KiB, and generated project guidance is intentionally much smaller.
+The default 32 KiB project-instruction budget is a ceiling, not a target. This project's managed global template targets 3–4 KiB and 30–45 lines; generated project context is intentionally smaller.
 
 ## What we retain from GEB
 
@@ -28,10 +28,10 @@ This project translates those ideas into Codex-native layers:
 
 | GEB idea | Rootloom form |
 | --- | --- |
-| Project constitution | Root `AGENTS.md` managed facts plus durable invariants |
+| Project constitution | Root `AGENTS.md` with only repository-wide durable invariants |
 | Local module map | Nested `AGENTS.md` only at genuine module boundaries |
 | Code/document feedback loop | Update guidance when commands, contracts, ownership, or architecture change |
-| Cold-start seeding | Deterministic `SessionStart` scanner |
+| Cold-start context | Deterministic read-only `SessionStart` scanner |
 
 ## What we reject from GEB
 
@@ -49,22 +49,20 @@ Those patterns create prompt weight, stale duplication, noisy diffs, and false c
 
 ## The refined global result
 
-The global working agreement has eight compact concerns:
+The global working agreement keeps only six compact concerns:
 
-- authority and source-of-truth precedence;
-- autonomy boundaries for answer/review versus implementation requests;
-- focused engineering defaults and working-tree protection;
-- evidence and completion standards;
-- workflow routing to installed Skills;
-- automatic project-guidance behavior;
-- personal risk analysis and verification intelligence;
-- explicit-only delegation and concise communication.
+- root-cause repair at the owning boundary;
+- preservation of unrelated work;
+- three proportional risk tiers;
+- proportional evidence and honest completion claims;
+- deep review as an explicit exception, not the routine path;
+- minimal Single action, Standard, and Full authorization semantics.
 
 It intentionally contains no repository commands, framework preferences, project architecture, personality prose, or duplicated tool manuals.
 
 ## The refined project result
 
-The deterministic managed block owns facts that can be regenerated safely:
+The SessionStart Hook may inject these regenerated facts temporarily without writing the repository:
 
 - purpose from canonical metadata;
 - source-of-truth paths;
@@ -72,7 +70,7 @@ The deterministic managed block owns facts that can be regenerated safely:
 - package manager and canonical commands;
 - verification contract.
 
-The user-owned section below it may contain only durable, evidence-cited invariants such as ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture or migration documents. Optional `.project-memory/` complements guidance with reviewable risks and failure lessons; it never replaces `AGENTS.md` authority or current repository evidence.
+Only an explicit `$seed-project-guidance` request persists a managed block. The user-owned section below it may contain only durable, evidence-cited invariants such as ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture or migration documents. Experimental `.project-memory/` may complement guidance with reviewable risks and failure lessons; it never replaces `AGENTS.md` authority or current repository evidence.
 
 Nested guidance is created lazily. A folder deserves its own `AGENTS.md` only when it has a distinct manifest, commands, ownership, contracts, or operational rules. Ordinary directories and individual files do not.
 

@@ -26,7 +26,7 @@ class ComponentHookTests(unittest.TestCase):
         self.policy = self.codex_home / ".rootloom" / "components.json"
 
     def write_policy(self, project: bool) -> None:
-        self.policy.parent.mkdir(parents=True)
+        self.policy.parent.mkdir(parents=True, exist_ok=True)
         self.policy.write_text(
             json.dumps(
                 {
@@ -34,7 +34,7 @@ class ComponentHookTests(unittest.TestCase):
                         "project-guidance-hook": project,
                     },
                     "managed_by": component_hook.MANAGED_BY,
-                    "schema_version": 1,
+                    "version": 1,
                     "selected_capabilities": [],
                     "selected_components": [],
                 }
@@ -54,6 +54,24 @@ class ComponentHookTests(unittest.TestCase):
             component_hook.hook_enabled("project-guidance-hook", self.policy),
             (True, None),
         )
+
+    def test_policy_version_must_be_exact_integer_one(self) -> None:
+        for version in (0, "1", 999, None):
+            with self.subTest(version=version):
+                self.write_policy(project=True)
+                payload = json.loads(self.policy.read_text(encoding="utf-8"))
+                if version is None:
+                    payload.pop("version")
+                else:
+                    payload["version"] = version
+                self.policy.write_text(json.dumps(payload), encoding="utf-8")
+
+                enabled, error = component_hook.hook_enabled(
+                    "project-guidance-hook", self.policy
+                )
+
+                self.assertFalse(enabled)
+                self.assertIn("version must be the integer 1", error or "")
 
     def test_invalid_or_symlinked_policy_fails_closed(self) -> None:
         self.policy.parent.mkdir(parents=True)

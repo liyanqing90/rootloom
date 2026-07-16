@@ -122,6 +122,19 @@ def validate_manifest(errors: list[str]) -> None:
         errors.append("plugin defaultPrompt must be a list with at most three entries")
     elif any(not isinstance(item, str) or len(item) > 128 for item in prompts):
         errors.append("plugin defaultPrompt entries must be strings <= 128 chars")
+    public_copy = " ".join(
+        str(value)
+        for value in (
+            payload.get("description", ""),
+            interface.get("shortDescription", ""),
+            interface.get("longDescription", ""),
+        )
+    ).casefold()
+    if "inspectable" not in public_copy:
+        errors.append("plugin positioning must describe an inspectable workflow")
+    for overclaim in ("quality layer", "verifiable", "verified change"):
+        if overclaim in public_copy:
+            errors.append(f"plugin positioning overclaims assurance: {overclaim}")
     for field in ("composerIcon", "logo", "logoDark"):
         raw = interface.get(field)
         if not isinstance(raw, str) or not raw.startswith("./"):
@@ -192,7 +205,36 @@ def validate_hooks(errors: list[str]) -> None:
 
 
 def validate_personal_contracts(errors: list[str]) -> None:
+    global_guidance = SYSTEM / "AGENTS.md"
+    global_text = global_guidance.read_text(encoding="utf-8")
+    global_lines = len(global_text.splitlines())
+    global_bytes = len(global_text.encode("utf-8"))
+    if not 30 <= global_lines <= 45 or not 3_000 <= global_bytes <= 4_096:
+        errors.append(
+            "global AGENTS.md must remain approximately 3-4 KiB and 30-45 lines"
+        )
+    root_guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
+    root_rules = [line for line in root_guidance.splitlines() if line.startswith("- ")]
+    if not 5 <= len(root_rules) <= 8:
+        errors.append("root AGENTS.md must contain only 5-8 repository-wide rules")
+    for directory, label in (
+        (ROOT / ".codex" / "plans", "one-time task plans"),
+        (ROOT / "docs" / "releases", "repository publication records"),
+    ):
+        if directory.exists() and any(path.is_file() for path in directory.rglob("*")):
+            errors.append(f"repository must not retain {label}: {directory.relative_to(ROOT)}")
+
     contracts = {
+        PLUGIN / "hooks" / "run_component_hook.py": (
+            "type(version) is not int",
+            "version != 1",
+            "component policy version must be the integer 1",
+        ),
+        SKILLS / "seed-project-guidance" / "scripts" / "seed_project_guidance.py": (
+            "temporary_project_context",
+            "creating or updating AGENTS.md",
+            "guidance only when the user explicitly invokes",
+        ),
         SKILLS / "engineering-change" / "SKILL.md": (
             "Evidence → Diagnosis → Change Contract → Implementation → Verification",
             "ROOT_CAUSE_ALIGNMENT: PASS",
@@ -306,6 +348,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "DEFAULT_MAX_GIT_SECONDS",
             "DEFAULT_MAX_CAPTURE_SECONDS",
             "DEFAULT_MAX_SENSITIVE_PATHS",
+            "MAX_REVIEWABLE_PATHS",
             "sensitive_material_git_pathspecs",
             "CaptureDeadline",
             "run_command",
@@ -348,11 +391,15 @@ def validate_personal_contracts(errors: list[str]) -> None:
             '"capture_limits"',
             '"capture_duration_seconds"',
             '"reviewability_policy"',
+            '"policy_provenance"',
+            '"captured_files_provenance"',
             '"semantic_review"',
             "REVIEW_EVIDENCE_COMPLETE",
             "REVIEW_REQUIRED_WITH_REDACTIONS",
             "SEMANTIC_REVIEW_ASSERTED",
             "DANGEROUS_DELETE_EXIT",
+            "REINTAKE_REQUIRED_EXIT",
+            "reintake-required",
         ),
         SKILLS / "project-memory" / "SKILL.md": (
             ".project-memory/",
@@ -378,6 +425,10 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "AMBIGUOUS_SENSITIVE_MATERIAL_SUFFIXES",
             "AMBIGUOUS_STRONG_KEY_CONTEXTS",
             "STRONG_SENSITIVE_MATERIAL_SUFFIXES",
+            "MAX_REVIEWABLE_PATHS",
+            "privkey.pem",
+            "privatekey.pem",
+            "ed25519-key.pem",
             "service-account.json",
             "is_sensitive_material_path",
             "is_security_domain_path",
@@ -389,6 +440,9 @@ def validate_personal_contracts(errors: list[str]) -> None:
         ),
         SKILLS / "setup-rootloom" / "scripts" / "setup_rootloom.py": (
             '"personal": FULL_CAPABILITIES',
+            '"autonomy"',
+            'CAPABILITY_ALIASES = {"command-safety": "autonomy"}',
+            'PRESET_ALIASES = {"engineering": "personal"}',
             "simple_lock",
             "rootloom-simple-backup-v1",
             "refusing rollback because",
@@ -403,17 +457,15 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "Rules avoid duplicating that semantic decision",
         ),
         SYSTEM / "AGENTS.md": (
-            "Personal risk analyzer",
-            "engineering-change",
-            "Verification Intelligence",
-            ".project-memory/",
-            "Installing or upgrading Rootloom does not authorize automatic",
-            "Do not turn optional assurance into a universal precondition",
-            "persistent cross-task default",
+            "Diagnose the observable path",
+            "Preserve unrelated user changes",
+            "Tier 0 Direct",
+            "proportional evidence",
+            "deep `engineering-change` workflow",
             "Single action",
             "Standard",
             "Full",
-            "Never infer **Full**",
+            "Never infer Full",
         ),
         SYSTEM / "rules" / "rootloom.rules": (
             "never grants task authority",
@@ -425,11 +477,15 @@ def validate_personal_contracts(errors: list[str]) -> None:
         ),
         ROOT / "README.md": (
             "Rootloom Personal Core",
+            "An inspectable personal engineering workflow for Codex.",
             "codex/enterprise-assurance",
+            "Archived Assurance Edition",
+            "Optional Autonomy",
+            "Optional Evidence",
+            "Experimental Project Memory",
             "$engineering-change",
             "$project-memory",
             "analyze_change.py",
-            "Engineering memory",
             "quality_status",
             "--write-baseline",
             "--strict",
@@ -448,11 +504,19 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "is_sensitive_material_path",
             "--reviewable-path",
             "reviewability_policy",
+            "policy_provenance",
+            "reintake-required",
             "assume-unchanged",
+            "not a content-aware secret scanner",
         ),
         ROOT / "README.zh-CN.md": (
             "Rootloom Personal Core",
+            "面向 Codex 的可检查个人工程工作流。",
             "codex/enterprise-assurance",
+            "Archived Assurance Edition",
+            "Optional Autonomy",
+            "Optional Evidence",
+            "Experimental Project Memory",
             "$engineering-change",
             "$project-memory",
             "analyze_change.py",
@@ -475,7 +539,10 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "is_sensitive_material_path",
             "--reviewable-path",
             "reviewability_policy",
+            "policy_provenance",
+            "reintake-required",
             "assume-unchanged",
+            "不是内容感知型 Secret Scanner",
         ),
         ROOT / "docs" / "setup.md": (
             "gh pr merge 123 --merge",
@@ -503,6 +570,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "Git common directory",
             "tiered authorization decision",
             "reviewability_policy",
+            "policy_provenance",
+            "reintake-required",
             "skip-worktree",
         ),
         ROOT / "docs" / "architecture.zh-CN.md": (
@@ -519,6 +588,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "Git Common Directory",
             "分级授权决策",
             "reviewability_policy",
+            "policy_provenance",
+            "reintake-required",
             "skip-worktree",
         ),
         ROOT / "docs" / "decisions" / "2026-07-14-tiered-authorization-modes.md": (
@@ -552,6 +623,31 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "OpenSSL",
             "evidence_complete",
         ),
+        ROOT / "docs" / "decisions" / "2026-07-16-personal-core-product-boundaries.md": (
+            "Status: accepted",
+            "Core — Change, Review, Guidance",
+            "Optional Autonomy",
+            "Optional Evidence",
+            "Experimental Project Memory",
+            "Archived Assurance Edition",
+            "reintake-required",
+            "verified-quality layer",
+        ),
+        PLUGIN / "AGENTS.md": (
+            "exact integer `version: 1`",
+            "SessionStart project-context Hook is read-only",
+        ),
+        SKILLS / "engineering-change" / "AGENTS.md": (
+            "wire formats are frozen",
+            "reintake-required",
+        ),
+        SKILLS / "setup-rootloom" / "AGENTS.md": (
+            "Public presets are only",
+            "`autonomy` is the canonical",
+        ),
+        SKILLS / "project-memory" / "AGENTS.md": (
+            "Project Memory is experimental",
+        ),
         ROOT / "CONTRIBUTING.md": (
             "Versioning public contracts",
             "Patch:",
@@ -568,69 +664,14 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "evidence_complete",
             "Tag 与 Release 保持不可变",
         ),
-        ROOT / "docs" / "releases" / "2.2.0.md": (
-            "Status: published",
-            "7018c317e59a6e44081e07c1d68d277c469f0cfb",
-            "RE_kwDOTVQo6M4VEtd1",
-        ),
-        ROOT / "docs" / "releases" / "2.2.1.md": (
-            "Status: published",
-            "da1c174f524c61f53d1ff3cc8650165eb10246ab",
-            "RE_kwDOTVQo6M4VE4K1",
-        ),
-        ROOT / "docs" / "releases" / "2.2.2.md": (
-            "Status: published",
-            "a8e3fdf5592781d455683c61b26bc36351213c4d",
-            "RE_kwDOTVQo6M4VFYr5",
-        ),
-        ROOT / "docs" / "releases" / "2.3.0.md": (
-            "Status: published",
-            "bb35433fb938ac3bfdff5339954dff6b44472fc8",
-            "RE_kwDOTVQo6M4VFlGv",
-        ),
-        ROOT / "docs" / "releases" / "2.4.0.md": (
-            "Status: published",
-            "e434654958109ef6f6a3878ef8a3db36226cec54",
-            "df0bb82d8253724b362988a8540e099e903df627",
-            "RE_kwDOTVQo6M4VHEQf",
-            "29383392662",
-            "29383564033",
-            "29385444153",
-        ),
-        ROOT / "docs" / "releases" / "3.0.0.md": (
-            "Status: published",
-            "61c1d8202350442721644345678e1525461c7d08",
-            "72091416819a5b16436f2be0b7862dc965856f49",
-            "RE_kwDOTVQo6M4VHOPs",
-            "29390214510",
-            "29390437387",
-            "29390839339",
-        ),
-        ROOT / "docs" / "releases" / "3.1.0.md": (
-            "Status: published",
-            "4e010ea26c871a603a955b88ede8c5cea5066572",
-            "fe8c834d5e9d450210cfdb33de0d6e8f688a7ae3",
-            "RE_kwDOTVQo6M4VH8wK",
-            "29408409629",
-            "29408654603",
-            "29413872318",
-        ),
-        ROOT / "docs" / "releases" / "3.2.0.md": (
-            "Status: published",
-            "9935bbd8f8ab80ae49f9e2e626a5c62e8e4ac51c",
-            "b2a6bfa043847d9462607a67a84c7ac5f8f96611",
-            "RE_kwDOTVQo6M4VIbQT",
-            "29426683030",
-            "29427110772",
-            "29427797183",
-        ),
         ROOT / "docs" / "diagram" / "architecture-en.svg": (
             "Authorization Modes",
             "Single Action",
             "Standard",
             "Full",
             "Personal Core",
-            "Enterprise Assurance",
+            "Archived Assurance Edition",
+            "Inspectable",
         ),
         ROOT / "docs" / "diagram" / "architecture-zh.svg": (
             "授权模式",
@@ -638,7 +679,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "普通权限",
             "所有权限",
             "个人核心",
-            "企业保障",
+            "已归档保障版",
+            "可检查",
         ),
     }
     for path, needles in contracts.items():
@@ -731,8 +773,6 @@ def validate_assets(errors: list[str]) -> None:
             errors.append(f"Chinese architecture diagram contains English text: {path.relative_to(ROOT)}")
     required_images = {
         ROOT / "assets" / "rootloom-brand.webp": b"RIFF",
-        ROOT / "assets" / "rootloom-xiaohei-loom-en.png": b"\x89PNG\r\n\x1a\n",
-        ROOT / "assets" / "rootloom-xiaohei-loom-zh.png": b"\x89PNG\r\n\x1a\n",
         ROOT / "docs" / "diagram" / "architecture-en.svg": b"<svg",
         ROOT / "docs" / "diagram" / "architecture-en@2x.png": b"\x89PNG\r\n\x1a\n",
         ROOT / "docs" / "diagram" / "architecture-zh.svg": b"<svg",

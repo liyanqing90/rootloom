@@ -1,6 +1,6 @@
 ---
 name: seed-project-guidance
-description: Deterministically create, refresh, and validate a concise evidence-backed AGENTS.md managed block for a Git repository or a genuine nested module boundary. Use when a repository lacks project guidance, manifests or canonical commands changed, the SessionStart hook reports stale guidance, or the user asks to seed project instructions automatically. Preserve unmarked existing guidance and route semantic polishing to refine-project-guidance.
+description: Explicitly create, refresh, and validate a concise evidence-backed AGENTS.md managed block for a Git repository or a genuine nested module boundary. Use only when the user asks to persist project guidance. The SessionStart Hook provides temporary read-only context and never invokes this writer. Preserve unmarked existing guidance and route semantic polishing to refine-project-guidance.
 ---
 
 # Seed Project Guidance

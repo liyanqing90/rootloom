@@ -37,7 +37,11 @@ from runner.state import (
     canonical_reviewable_paths,
     stable_repository_capture,
 )
-from rootloom_paths import normalize_reviewable_paths, validate_reviewable_paths
+from rootloom_paths import (
+    MAX_REVIEWABLE_PATHS,
+    normalize_reviewable_paths,
+    validate_reviewable_paths,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,12 +137,12 @@ def main(argv: list[str] | None = None) -> int:
         requested_reviewable_paths = normalize_reviewable_paths(
             args.reviewable_path,
             extra_sensitive=set(args.sensitive_path),
-            max_paths=args.max_sensitive_paths,
+            max_paths=MAX_REVIEWABLE_PATHS,
         )
         reviewable_paths = canonical_reviewable_paths(
             repo,
             requested_reviewable_paths,
-            max_paths=args.max_sensitive_paths,
+            max_paths=MAX_REVIEWABLE_PATHS,
             max_git_seconds=args.max_git_seconds,
             capture_deadline=capture_deadline,
         )
@@ -146,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             repo,
             reviewable_paths,
             extra_sensitive=set(args.sensitive_path),
-            max_paths=args.max_sensitive_paths,
+            max_paths=MAX_REVIEWABLE_PATHS,
         )
     except (OSError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
@@ -165,6 +169,7 @@ def main(argv: list[str] | None = None) -> int:
             max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            max_reviewable_paths=MAX_REVIEWABLE_PATHS,
             capture_deadline=capture_deadline,
         )
     except (OSError, ValueError) as exc:
@@ -190,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         recaptured_reviewable_paths = canonical_reviewable_paths(
             repo,
             reviewable_paths,
-            max_paths=args.max_sensitive_paths,
+            max_paths=MAX_REVIEWABLE_PATHS,
             max_git_seconds=args.max_git_seconds,
             capture_deadline=capture_deadline,
         )
@@ -198,7 +203,7 @@ def main(argv: list[str] | None = None) -> int:
             repo,
             recaptured_reviewable_paths,
             extra_sensitive=set(args.sensitive_path),
-            max_paths=args.max_sensitive_paths,
+            max_paths=MAX_REVIEWABLE_PATHS,
         ) != reviewable_paths:
             raise ValueError("reviewable path policy changed during capture")
     except (OSError, ValueError) as exc:
