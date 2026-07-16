@@ -6,7 +6,7 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 
 ## What is executable
 
-- deterministic, bounded, network-free project-context scanning, with repository writes reserved for explicit seeding;
+- deterministic, network-free project-context scanning with a 4 KiB SessionStart cap, Plan-session skip, and repository writes reserved for explicit seeding;
 - fail-closed Hook enablement from managed local policy with exact integer `version: 1`;
 - explicit install/upgrade/status/rollback behavior for the personal setup targets, with installed-hash drift refusal;
 - ordinary local lock serialization and per-file atomic replacement;
@@ -18,9 +18,9 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 - ordinary untracked content fingerprints, task-partitioned applyable bounded text patches and risk signals, with separate targeted-candidate and classified-result path ceilings, recursive metadata-observed sensitive capture, and sensitive-change quarantine;
 - evidence-honest revision-4 review states that keep the operator semantic assertion separate and make redacted reviews non-passing;
 - exact dangerous-path deletion confirmation;
-- explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and active-memory signals;
+- explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and explicitly included active-memory signals;
 - risk-specific verification recommendations kept separate from executed test evidence;
-- bounded, relevant, stale-aware project-memory context plus locked explicit updates and one shared strict reader contract;
+- bounded, relevant, stale-aware project-memory context plus explicit Analyzer/Finalizer opt-in, locked explicit updates, and one shared strict reader contract;
 - repository validation, unit tests, and an offline Codex compatibility smoke.
 
 ## What remains semantic

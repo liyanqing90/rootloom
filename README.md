@@ -102,7 +102,7 @@ The observable final summary stays small:
 
 | Capability | Result |
 | --- | --- |
-| Task intelligence | Static task/path/diff/memory signals, an explainable minimum Tier, and workflow selection |
+| Task intelligence | Static task/path/diff signals, explicitly included Memory signals, an explainable minimum Tier, and workflow selection |
 | Engineering workflow | Evidence, diagnosis, change contract, implementation, verification, and review |
 | Verification intelligence | Risk-specific behavior checklist plus detected repository commands, kept separate from executed proof |
 | Project guidance | Read-only session context plus explicit `AGENTS.md` seeding and semantic refinement |
@@ -155,7 +155,7 @@ Rootloom uses three authorization modes:
 
 Standard is the installed default, so requests such as “publish this plugin” or “deploy this service” do not trigger command-by-command confirmation for routine implementation, publication, rollout, or verification steps. Full is never inferred. Static Rules allow commands so they do not repeat the semantic authorization decision; only catastrophic recursive deletion remains a bundled hard deny. Rules never create authority, Standard never permits self-initiated work, and platform, sandbox, organization, credential, and other active Rules remain authoritative.
 
-Review the one bundled `SessionStart` Hook before trusting it. When enabled by exact managed component policy version 1, it only detects repository facts and injects temporary read-only context; it never creates or refreshes `AGENTS.md`. Persisting guidance requires an explicit `$seed-project-guidance` request. Missing, malformed, symlinked, wrong-type, or unsupported-version policy disables the Hook.
+Review the one bundled `SessionStart` Hook before trusting it. When enabled by exact managed component policy version 1, it injects at most 4 KiB of incremental read-only project identity, primary-manifest, and guidance-presence facts, plus up to three verification commands only when project guidance is absent. It skips Plan sessions and never creates or refreshes `AGENTS.md`. Persisting guidance requires an explicit `$seed-project-guidance` request. Missing, malformed, symlinked, wrong-type, or unsupported-version policy disables the Hook.
 
 See [setup, update, and rollback](docs/setup.md).
 
@@ -179,7 +179,7 @@ python3 <engineering-change-skill>/scripts/analyze_change.py \
   --path src/relay.py
 ```
 
-The result explains the signals, minimum Tier, matching active memory, stale history, and required verification behaviors. It is deliberately advisory: semantic evidence may raise the Tier further.
+The result explains the signals, minimum Tier, and required verification behaviors. Experimental Project Memory is excluded by default; pass `--include-project-memory` to Analyzer and Finalizer only when the user explicitly requests relevant active/stale memory for that review. The result remains advisory: semantic evidence may raise the Tier further.
 
 For lightweight reusable project knowledge:
 

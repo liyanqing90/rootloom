@@ -6,6 +6,11 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Bound SessionStart additional context to 4 KiB with a dedicated compact renderer, skip Plan sessions, omit repository maps/module candidates/generic verification prose, and inject commands only when project guidance is absent.
+- Keep Experimental Project Memory out of Analyzer and Finalizer assessments by default; relevant memory is read only when the caller explicitly passes `--include-project-memory`.
+
 ## [3.3.0] - 2026-07-16
 
 ### Changed

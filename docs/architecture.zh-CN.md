@@ -35,7 +35,7 @@ Rootloom Personal Core
 
 ## Task Intelligence
 
-风险判断依据影响，而不只是任务大小。`analyze_change.py` 检查任务文本、预期/当前路径、Git 操作、有界 tracked patch、仓库命令和相关活跃项目记忆，输出具体信号、检测/有效风险、最低 Tier、置信度、匹配/过期记忆与验证计划。
+风险判断依据影响，而不只是任务大小。`analyze_change.py` 检查任务文本、预期/当前路径、Git 操作、有界 tracked patch 与仓库命令。只有显式传入 `--include-project-memory` 时，相关活跃/过期 Project Memory 才会进入 Assessment；仅仅存在 `.project-memory/` 不代表当前任务选择使用它。Analyzer 输出具体信号、检测/有效风险、最低 Tier、置信度、可选 Memory 匹配与验证计划。
 
 路径上下文避免明显误判：单独的 `docs/auth.md` 或 auth 测试仍属于文档/测试范围，`src/auth/token.py` 等产品代码则会提高下限。持久状态、资金、认证/授权、并发、状态机、迁移、公共契约、基础设施、破坏性操作或跨越多个所属边界都会提高 Tier。人工风险声明只能提高、不能降低静态下限。
 
@@ -90,7 +90,7 @@ Runner 辅助模块保持小型：
 
 ## Experimental Project Memory
 
-只有显式调用 `seed-project-guidance` 才会把可复现事实写入托管 `AGENTS.md` 区块；SessionStart Hook 绝不写入。Experimental `.project-memory/` 保存可选、可审查的架构、风险、决策索引和失败经验。`project_memory.py context` 根据任务/路径做词法相关性选择，限制输出，并把过期/已解决/已替代条目与活跃上下文分开。新记录带确定性 ID、证据引用、生命周期状态与可选过期时间；完全重复会被抑制。记忆只会显式创建/更新，并且永远不能高于当前可执行证据。
+只有显式调用 `seed-project-guidance` 才会把可复现事实写入托管 `AGENTS.md` 区块；SessionStart Hook 绝不写入。Experimental `.project-memory/` 保存可选、可审查的架构、风险、决策索引和失败经验。`project_memory.py context` 根据任务/路径做词法相关性选择，限制输出，并把过期/已解决/已替代条目与活跃上下文分开。Analyzer 与 Finalizer 同样要求显式传入 `--include-project-memory`，不会因为目录存在就读取 Memory。新记录带确定性 ID、证据引用、生命周期状态与可选过期时间；完全重复会被抑制。记忆只会显式创建/更新，并且永远不能高于当前可执行证据。
 
 持久 envelope 继续使用 `rootloom-project-memory-v1`。没有 ID 或生命周期元数据的旧条目继续可读，`context` 永远不会重写它们。CLI 与 Analyzer 共用同一套严格 no-follow descriptor reader、Schema、条目上限、Legacy ID、相关性、状态与过期契约；某个消费者不会再静默截断另一个消费者判为非法的文件。显式写入会在持有 `.project-memory/memory.lock` 时重新读取、去重并原子替换。
 
@@ -104,7 +104,7 @@ Codex 添加插件后安装即完成：Skills 可用，但全局指导、命令 
 
 该设计不提供跨文件崩溃原子性、敌对同用户保护或恢复日志重放。中断造成的部分 apply 会通过 `status` 暴露，备份内容仍可检查。
 
-唯一生命周期 Hook 是只读 `SessionStart` 项目 Context 检测。它要求托管组件策略包含精确整数 `version: 1`；策略缺失、损坏、类型错误、未来版本或符号链接都会关闭执行。扫描器继续保持确定性、有界、仅标准库、无网络与仓库内执行。持久指导是单独的显式 Skill 动作。
+唯一生命周期 Hook 是只读 `SessionStart` 项目 Context 检测。它要求托管组件策略包含精确整数 `version: 1`；策略缺失、损坏、类型错误、未来版本或符号链接都会关闭执行。它会跳过 Plan Session，并使用独立的增量 Renderer，把完整 Additional Context 限制在 4 KiB 内；目录地图、Module Candidate 与通用验证规则不会注入，验证命令也只在项目 Guidance 缺失时出现。扫描器继续保持确定性、有界、仅标准库、无网络与仓库内执行。持久指导是单独的显式 Skill 动作。
 
 ## 依赖与可移植性
 

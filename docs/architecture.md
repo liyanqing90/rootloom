@@ -35,7 +35,7 @@ The complete pre-split implementation is retained as the **Archived Assurance Ed
 
 ## Task intelligence
 
-Risk classification uses effects rather than task size alone. `analyze_change.py` inspects task text, anticipated/current paths, Git operations, a bounded tracked patch, repository-owned commands, and relevant active project memory. It reports concrete signals, detected/effective risk, a minimum Tier, confidence, matching/stale memory, and a verification plan.
+Risk classification uses effects rather than task size alone. `analyze_change.py` inspects task text, anticipated/current paths, Git operations, a bounded tracked patch, and repository-owned commands. Relevant active/stale Project Memory enters the assessment only with explicit `--include-project-memory`; the existence of `.project-memory/` alone never opts a task in. The analyzer reports concrete signals, detected/effective risk, a minimum Tier, confidence, optional memory matches, and a verification plan.
 
 Path context prevents obvious over-classification: `docs/auth.md` or an auth test alone stays documentation/test scope, while product code such as `src/auth/token.py` raises the floor. Persisted state, money, authentication/authorization, concurrency, state machines, migrations, public contracts, infrastructure, destructive operations, or broad ownership span raise Tier. A declared risk can increase but never reduce the static floor.
 
@@ -90,7 +90,7 @@ Runner helpers are deliberately small:
 
 ## Experimental Project Memory
 
-An explicit `seed-project-guidance` call writes reproducible facts to managed `AGENTS.md` blocks; the SessionStart Hook never does. Experimental `.project-memory/` stores optional reviewable architecture, risks, decision indexes, and failure lessons. `project_memory.py context` selects relevant entries lexically by task/path, bounds output, and separates expired/resolved/superseded matches from active context. New records have deterministic identity, evidence references, lifecycle state, and optional expiry; exact duplicates are suppressed. Memory is explicitly created/updated and never outranks current executable evidence.
+An explicit `seed-project-guidance` call writes reproducible facts to managed `AGENTS.md` blocks; the SessionStart Hook never does. Experimental `.project-memory/` stores optional reviewable architecture, risks, decision indexes, and failure lessons. `project_memory.py context` selects relevant entries lexically by task/path, bounds output, and separates expired/resolved/superseded matches from active context. Analyzer and Finalizer also require explicit `--include-project-memory`; they do not read Memory merely because the directory exists. New records have deterministic identity, evidence references, lifecycle state, and optional expiry; exact duplicates are suppressed. Memory is explicitly created/updated and never outranks current executable evidence.
 
 The persisted envelope remains `rootloom-project-memory-v1`. Legacy entries without identity or lifecycle metadata remain readable and context never rewrites them. The CLI and analyzer share one strict no-follow descriptor reader, schema, entry limit, legacy identity, relevance, status, and expiry contract; malformed or over-limit files are never silently truncated by one consumer. Explicit writers reload, deduplicate, and atomically replace while holding `.project-memory/memory.lock`.
 
@@ -104,7 +104,7 @@ The copied global guidance owns semantic authorization: Standard permission pers
 
 This design does not provide cross-file crash atomicity, hostile same-user protection, or recovery-journal replay. A partial interrupted apply is visible through `status`; backup contents remain inspectable.
 
-The only lifecycle Hook is read-only `SessionStart` project-context detection. It requires managed component policy with exact integer `version: 1`; missing, malformed, wrong-type, future-version, or symlinked policy disables it. The scanner stays deterministic, bounded, standard-library-only, network-free, and repository-contained. Persisting guidance is a separate explicit Skill action.
+The only lifecycle Hook is read-only `SessionStart` project-context detection. It requires managed component policy with exact integer `version: 1`; missing, malformed, wrong-type, future-version, or symlinked policy disables it. It skips Plan sessions and uses a dedicated incremental renderer whose complete additional context is capped at 4 KiB; repository maps, module candidates, and generic verification prose are omitted, while commands are included only when project guidance is absent. The scanner stays deterministic, bounded, standard-library-only, network-free, and repository-contained. Persisting guidance is a separate explicit Skill action.
 
 ## Dependency and portability boundary
 

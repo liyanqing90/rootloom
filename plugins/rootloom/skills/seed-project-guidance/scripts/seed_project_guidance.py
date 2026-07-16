@@ -35,6 +35,7 @@ PRESERVE_NOTE = (
 )
 MAX_READ_BYTES = 256 * 1024
 MAX_GUIDANCE_BYTES = 24 * 1024
+MAX_SESSION_CONTEXT_BYTES = 4 * 1024
 MAX_MODULE_DEPTH = 3
 MAX_MODULE_CANDIDATES = 12
 
@@ -671,6 +672,88 @@ def _render_managed(data: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _existing_project_guidance(project_root: Path, cwd: Path) -> list[str]:
+    project_root = project_root.resolve()
+    try:
+        relative_cwd = cwd.resolve().relative_to(project_root)
+    except ValueError:
+        relative_cwd = Path()
+    directories = [project_root]
+    current = project_root
+    for part in relative_cwd.parts:
+        current /= part
+        directories.append(current)
+
+    names: list[str] = []
+    for directory in directories:
+        for name in ("AGENTS.override.md", "AGENTS.md"):
+            path = directory / name
+            if path.is_symlink() or not path.is_file():
+                continue
+            names.append(path.relative_to(project_root).as_posix())
+    return names
+
+
+def _render_session_context(data: dict[str, Any], *, cwd: Path) -> str:
+    """Render only incremental cold-start facts, never persistent guidance."""
+
+    scope_root = Path(data["scope_root"])
+    guidance_names = _existing_project_guidance(Path(data["project_root"]), cwd)
+    name = _clean_inline(data.get("name"), 100) or scope_root.name
+    scope = _clean_inline(data.get("scope"), 160) or "."
+    manifests = [
+        value
+        for raw in data.get("manifests", [])
+        if (value := _clean_inline(raw, 160))
+    ]
+    primary_manifest = manifests[0] if manifests else None
+
+    lines = [
+        "# Temporary project facts",
+        "",
+        f"- Project: {name}.",
+        f"- Scope: `{scope}`.",
+    ]
+    if primary_manifest:
+        lines.append(f"- Primary manifest: `{primary_manifest}`.")
+    elif data.get("package_manager"):
+        package_manager = _clean_inline(data["package_manager"], 40)
+        lines.append(f"- Detected package manager: `{package_manager}`.")
+    else:
+        lines.append("- No primary manifest was safely detected.")
+
+    if guidance_names:
+        rendered = ", ".join(f"`{item}`" for item in guidance_names)
+        lines.append(
+            f"- Existing project guidance: {rendered}; treat it as authoritative."
+        )
+    else:
+        lines.append(
+            "- No project guidance was detected; use these facts temporarily and "
+            "persist guidance only through an explicit `$seed-project-guidance` request."
+        )
+
+    commands: list[str] = []
+    if not guidance_names:
+        for item in data.get("commands", []):
+            command = _clean_inline(item.get("command"), 180)
+            if not command:
+                continue
+            commands.append(command)
+            if len(commands) == 3:
+                break
+    if commands:
+        lines.extend(["", "## Incremental verification commands", ""])
+        lines.extend(f"- `{command}`" for command in commands)
+    elif guidance_names:
+        lines.append("- Verification commands are omitted because project guidance already exists.")
+    else:
+        lines.append(
+            "- No canonical verification command was safely detected; inspect repository docs and CI."
+        )
+    return "\n".join(lines)
+
+
 def _replace_managed(existing: str, managed: str) -> tuple[str | None, str | None]:
     start = existing.find(MANAGED_START_PREFIX)
     end = existing.find(MANAGED_END)
@@ -838,18 +921,23 @@ def temporary_project_context(
         return {**data, "status": "skipped", "reason": "unsafe_location"}
     if not allow_untrusted and not _is_trusted(project_root):
         return {**data, "status": "skipped", "reason": "untrusted_project"}
-    content = _render_managed(data)
+    content = _render_session_context(data, cwd=cwd)
     if _contains_secret(content):
         return {**data, "status": "error", "reason": "secret_like_content_detected"}
-    if len(content.encode("utf-8")) > MAX_GUIDANCE_BYTES:
-        return {**data, "status": "error", "reason": "generated_guidance_too_large"}
+    if len(content.encode("utf-8")) > MAX_SESSION_CONTEXT_BYTES:
+        return {
+            **data,
+            "status": "error",
+            "reason": "generated_session_context_too_large",
+        }
     return {**data, "status": "context-ready", "context": content}
 
 
 def _hook_output(event: dict[str, Any]) -> dict[str, Any] | None:
     source = str(event.get("source", ""))
+    permission_mode = str(event.get("permission_mode", ""))
     cwd = Path(str(event.get("cwd") or os.getcwd())).expanduser()
-    if source == "compact":
+    if source == "compact" or permission_mode == "plan":
         return None
     allow_untrusted = os.environ.get("ROOTLOOM_ALLOW_UNTRUSTED") == "1"
     result = temporary_project_context(cwd, allow_untrusted=allow_untrusted)
@@ -870,6 +958,11 @@ def _hook_output(event: dict[str, Any]) -> dict[str, Any] | None:
         "guidance only when the user explicitly invokes $seed-project-guidance.\n\n"
         f"<rootloom_project_context>\n{content}\n</rootloom_project_context>"
     )
+    if len(context.encode("utf-8")) > MAX_SESSION_CONTEXT_BYTES:
+        return {
+            "continue": True,
+            "systemMessage": "Project context detection skipped: generated session context exceeded 4 KiB",
+        }
     return {
         "continue": True,
         "hookSpecificOutput": {

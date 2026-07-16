@@ -32,6 +32,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--task", default="")
     parser.add_argument("--path", action="append", default=[])
     parser.add_argument("--declared-risk", choices=RISK_LEVELS)
+    parser.add_argument(
+        "--include-project-memory",
+        action="store_true",
+        help="explicitly include relevant Experimental Project Memory signals",
+    )
     parser.add_argument("--sensitive-path", action="append", default=[])
     parser.add_argument("--write-baseline", type=Path)
     parser.add_argument(
@@ -134,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
             + _untracked_patch
         ),
         declared_risk=args.declared_risk,
+        include_project_memory=args.include_project_memory,
         allow_repository_reads=not bool(
             snapshot["bounds"].get("sensitive_change_quarantine")
         ),

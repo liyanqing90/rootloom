@@ -62,13 +62,13 @@ It intentionally contains no repository commands, framework preferences, project
 
 ## The refined project result
 
-The SessionStart Hook may inject these regenerated facts temporarily without writing the repository:
+Outside Plan sessions, the SessionStart Hook may inject at most 4 KiB of regenerated incremental facts without writing the repository:
 
-- purpose from canonical metadata;
-- source-of-truth paths;
-- top-level map;
-- package manager and canonical commands;
-- verification contract.
+- project identity and primary manifest;
+- whether project guidance already exists;
+- up to three detected verification commands only when project guidance is absent.
+
+The temporary renderer deliberately omits the full source-of-truth inventory, top-level map, module candidates, and generic verification contract. The complete persistent renderer remains available only through explicit seeding.
 
 Only an explicit `$seed-project-guidance` request persists a managed block. The user-owned section below it may contain only durable, evidence-cited invariants such as ownership direction, generated-code boundaries, public or persisted contracts, and canonical architecture or migration documents. Experimental `.project-memory/` may complement guidance with reviewable risks and failure lessons; it never replaces `AGENTS.md` authority or current repository evidence.
 

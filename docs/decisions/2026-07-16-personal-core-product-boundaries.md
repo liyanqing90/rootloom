@@ -17,6 +17,8 @@ The reset must preserve existing Baseline v2–v4 and Summary revision 5 consume
 | Global guidance was 9,147 bytes and 100 lines, and root guidance contained 17 component ownership rules | verified fact | pre-change `plugins/rootloom/assets/system/AGENTS.md` and root `AGENTS.md` | 2026-07-16 | local repository evidence |
 | Setup publicly exposed four preset names and described command Rules as `command-safety` | verified fact | pre-change `setup_rootloom.py`, README, and setup docs | 2026-07-16 | `engineering` duplicated `personal` |
 | SessionStart called the repository writer and could create or update `AGENTS.md` | verified fact | pre-change `seed_project_guidance.py` and tests | 2026-07-16 | enabled only by managed policy, but still implicit persistence |
+| The read-only SessionStart path reused the complete persistent renderer, retained a 24 KiB ceiling, and ran in Plan sessions | verified fact | `seed_project_guidance.py` plus fail-before Hook/context tests | 2026-07-16 | current repository evidence; ordinary Rootloom output was 1,699 bytes but the public maximum and complex-repository surface were much larger |
+| Analyzer and Finalizer consumed matching `.project-memory/` entries without an explicit caller choice | verified fact | `runner/intelligence.py`, CLI call sites, and fail-before analyzer test | 2026-07-16 | contradicted the Experimental/explicit product boundary |
 | One-time plans and publication records duplicated facts already owned by GitHub | verified fact | tracked `.codex/plans/`, `docs/releases/`, and `scripts/validate_repo.py` | 2026-07-16 | included historical tag, Release, and CI identifiers |
 | Product review identified configuration and code complexity as relocated prompt debt | product judgment | user-provided repository audit | 2026-07-16 | accepted direction, not a controlled quality measurement |
 
@@ -33,7 +35,9 @@ Public trust language keeps three boundaries separate: model-guided workflow jud
 
 The public preset list is `skills-only`, `guidance`, and `personal`. `engineering` remains a hidden compatibility alias for `personal`.
 
-The SessionStart Hook may detect repository facts and inject temporary context, but it must not write repository files. Creating or refreshing `AGENTS.md` requires an explicit `seed-project-guidance` invocation.
+The SessionStart Hook may detect repository facts and inject temporary context, but it must not write repository files. It skips Plan sessions and uses a dedicated incremental renderer with a 4 KiB cap over the complete additional context. The renderer includes project identity, one primary manifest, and guidance presence; only when guidance is absent does it add at most three verification commands. It omits the persistent renderer's source inventory, repository map, module candidates, generic verification contract, and any inferred project-type taxonomy. Creating or refreshing `AGENTS.md` requires an explicit `seed-project-guidance` invocation.
+
+Experimental Project Memory is consumed only after an explicit current-task choice. Analyzer and Finalizer default to no Memory reads and accept `--include-project-memory` when the user requests matching active/stale signals. Directory presence is not consent, the opt-in is not persisted into frozen Baseline formats, and sensitive-change quarantine still prevents the requested read.
 
 Historical Baseline Readers validate wire structure and hashes separately from current execution policy. Finalizer applies current Reviewable policy and returns `reintake-required` before reading Reviewable content when a historical declaration is no longer allowed; no new Baseline or Summary revision is created for this correction.
 
@@ -51,20 +55,25 @@ The preserved `codex/enterprise-assurance` branch is named **Archived Assurance 
 - Add new Baseline, Summary, or quality-state versions while correcting compatibility — rejected because wire-format expansion is the problem being frozen.
 - Keep automatic `AGENTS.md` writes only for trusted repositories — rejected because trust of a path does not equal user intent to persist generated guidance.
 - Read repository contents inside the privacy classifier — rejected because content-aware scanning is a different trust boundary and would violate the current content-unread invariant. A future local scanner must be evaluated independently and expose only redacted findings.
+- Reuse the persistent Guidance renderer with a smaller byte limit — rejected because it would retain duplicated sections and convert complex repositories into skipped/truncated context instead of selecting the few facts needed at cold start.
+- Persist Memory opt-in in Baseline v4 — rejected because the current task can pass the choice to Analyzer and Finalizer directly, while changing Baseline would violate the Evidence format freeze.
 
 ## Consequences
 
 - Positive: the everyday product and optional mechanisms are distinguishable before installation or use.
 - Positive: repository startup becomes read-only, while explicit seeding remains available.
+- Positive: Plan sessions carry no project-context Hook cost, and ordinary SessionStart context has an executable 4 KiB ceiling independent of persistent Guidance.
+- Positive: merely checking in `.project-memory/` no longer changes Analyzer or Finalizer risk output.
 - Positive: historical Evidence artifacts can remain readable without weakening current execution policy.
 - Positive: product language distinguishes inspectable workflow mechanics from semantic or security assurance.
 - Negative: legacy names and Evidence formats still carry compatibility code until a later evidence-based contraction decision.
 - Negative: unusual secrets stored under ordinary paths remain outside Rootloom's path-classifier guarantee unless a separate scanner is introduced.
+- Negative: callers that intentionally relied on implicit Memory matching must now pass `--include-project-memory` to Analyzer and Finalizer.
 - Operational: documentation, setup catalogs, Hook tests, nested guidance, validator contracts, and the changelog must remain aligned with these boundaries.
 
 ## Verification and revisit triggers
 
-Repository validation must enforce the compact guidance bounds, three public presets, canonical `autonomy` capability, exact component-policy version, absence of tracked one-time plan/release-record trees, and frozen Evidence format markers. Focused tests must prove read-only SessionStart behavior and legacy alias compatibility.
+Repository validation must enforce the compact guidance bounds, 4 KiB SessionStart budget, Plan-session skip, explicit Memory flag/default, three public presets, canonical `autonomy` capability, exact component-policy version, absence of tracked one-time plan/release-record trees, and frozen Evidence format markers. Focused tests must prove read-only/incremental SessionStart behavior, default-no-read and explicit Memory paths, quarantine precedence, and legacy alias compatibility.
 
 Revisit plugin separation or Memory removal only after representative real tasks compare Vanilla Codex with the reduced Rootloom Core on completion quality, intervention cost, context size, and failure modes. Evaluate a separate content-aware scanner only when real tasks show material path-classifier misses and the scanner can emit redacted findings without expanding model exposure. Raise security-assurance language only after targeted independent review or fuzzing produces durable evidence. Revisit Archived status only after the branch gains an independent maintainer, release cadence, and compatibility policy.
 

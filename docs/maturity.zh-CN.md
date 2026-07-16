@@ -6,7 +6,7 @@ Rootloom Personal Core 是早期、单维护者产品。目标是在不把深度
 
 ## 可执行保证
 
-- 确定性、有界、无网络的项目 Context 扫描，仓库写入只来自显式播种；
+- 确定性、无网络的项目 Context 扫描，SessionStart 上限为 4 KiB 且跳过 Plan Session，仓库写入只来自显式播种；
 - 由精确整数 `version: 1` 托管本地策略控制的 fail-closed Hook；
 - 个人 setup 目标的显式 install/upgrade/status/rollback，以及已安装 Hash 漂移拒绝；
 - 普通本地锁串行与逐文件原子替换；
@@ -18,9 +18,9 @@ Rootloom Personal Core 是早期、单维护者产品。目标是在不把深度
 - 普通 Untracked 内容指纹、按任务分区的可应用有界文本 Patch 与风险信号，以及具有独立定向候选/分类结果上限、递归的 Metadata-observed 敏感捕获与敏感变化隔离；
 - 证据诚实的 Revision 4 审查状态：操作方语义断言独立表达，发生遮蔽的审查不通过；
 - 敏感删除路径精确确认；
-- 综合任务、路径、Tracked/非敏感 Untracked Diff、操作与活跃记忆信号的可解释静态风险下限；
+- 综合任务、路径、Tracked/非敏感 Untracked Diff、操作与显式纳入的活跃记忆信号的可解释静态风险下限；
 - 与已执行测试证据分离的风险专属验证建议；
-- 有界、相关性检索、过期感知的项目记忆上下文、加锁显式更新与统一严格 reader contract；
+- 有界、相关性检索、过期感知的项目记忆上下文、Analyzer/Finalizer 显式选择、加锁显式更新与统一严格 reader contract；
 - 仓库校验、单元测试与离线 Codex 兼容冒烟。
 
 ## 仍属于语义判断的部分
