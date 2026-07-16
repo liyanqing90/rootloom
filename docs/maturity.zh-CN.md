@@ -6,7 +6,7 @@ Rootloom Personal Core 是早期、单维护者产品。目标是在不把深度
 
 ## 可执行保证
 
-- 确定性、有界、无网络的项目 Context 扫描，仓库写入只来自显式播种；
+- 确定性、无网络的项目 Context 扫描，SessionStart 上限为 4 KiB 且跳过 Plan Session，仓库写入只来自显式播种；
 - 由精确整数 `version: 1` 托管本地策略控制的 fail-closed Hook；
 - 个人 setup 目标的显式 install/upgrade/status/rollback，以及已安装 Hash 漂移拒绝；
 - 普通本地锁串行与逐文件原子替换；
@@ -18,9 +18,9 @@ Rootloom Personal Core 是早期、单维护者产品。目标是在不把深度
 - 普通 Untracked 内容指纹、按任务分区的可应用有界文本 Patch 与风险信号，以及具有独立定向候选/分类结果上限、递归的 Metadata-observed 敏感捕获与敏感变化隔离；
 - 证据诚实的 Revision 4 审查状态：操作方语义断言独立表达，发生遮蔽的审查不通过；
 - 敏感删除路径精确确认；
-- 综合任务、路径、Tracked/非敏感 Untracked Diff、操作与活跃记忆信号的可解释静态风险下限；
+- 综合任务、路径、Tracked/非敏感 Untracked Diff、操作与显式纳入的活跃记忆信号的可解释静态风险下限；
 - 与已执行测试证据分离的风险专属验证建议；
-- 有界、相关性检索、过期感知的项目记忆上下文、加锁显式更新与统一严格 reader contract；
+- 有界、相关性检索、过期感知的项目记忆上下文、Analyzer/Finalizer 显式选择、加锁显式更新与统一严格 reader contract；
 - 仓库校验、单元测试与离线 Codex 兼容冒烟。
 
 ## 仍属于语义判断的部分
@@ -63,3 +63,5 @@ Personal Core 3.1 在不改变 Summary Revision 5 的前提下收窄秘密材料
 Personal Core 3.2 保持 v3/v4 Wire Format，但拒绝 Ignored 或被 Git Index 标志隐藏的 Reviewable Target、Hardlink、大小写歧义和常见私钥名称。DER 与 PEM 一样默认属于 Metadata-only 歧义材料，因为两种编码都可能包含私钥。Summary Revision 5 以附加字段披露密封的 Reviewability Policy 与捕获的文件身份元数据；按仓库 SemVer 规则，该可选字段使 3.2 成为 Minor Release。
 
 Personal Core 3.3 批量交付 Core Reset，同时继续冻结这些 Wire Version。历史 Baseline Reader 只校验结构与 Hash，不再套用最新 Reviewability 分类器；Finalizer 独立执行当前策略，并在读取不兼容 Reviewable 内容前返回 `reintake-required`。Reviewable 声明使用固定 64 项上限，Provenance 区分已验证 Intake Policy 与最终 Capture Observation，SessionStart Context 改为只读，Project Memory 明确标为 Experimental。
+
+Personal Core 3.4 在不改变 Baseline 或 Summary Format 的前提下，闭合动态 Context 与 Experimental Project Memory 的可执行边界。SessionStart 使用独立的增量 Renderer，把完整 Additional Context 限制在 4 KiB，并跳过 Plan Session。Analyzer 与 Finalizer 不再根据仓库中存在 `.project-memory/` 推断同意；调用方通过新增的 `--include-project-memory` Flag 显式选择，敏感变化隔离仍会阻止仓库读取。不依赖隐式 Memory 读取的现有自动化继续沿用原有 CLI 与 Evidence Contract。

@@ -2275,7 +2275,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 {"behavioral-code"},
             )
 
-    def test_analyzer_loads_active_memory_but_not_expired_memory_as_risk(self) -> None:
+    def test_analyzer_requires_explicit_memory_opt_in(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
             repo = self.make_repo(Path(temporary))
             memory = repo / ".project-memory"
@@ -2302,7 +2302,22 @@ class EngineeringChangeTests(unittest.TestCase):
                 ],
             }
             (memory / "known-risks.json").write_text(json.dumps(collection), encoding="utf-8")
-            completed = self.analyze(repo, "--path", "src/relay.py")
+            default = self.analyze(repo, "--path", "src/relay.py")
+            self.assertEqual(default.returncode, 0, default.stderr)
+            default_assessment = json.loads(default.stdout)
+            self.assertEqual(default_assessment["memory"]["matches"], [])
+            self.assertEqual(default_assessment["memory"]["stale"], [])
+            self.assertNotIn(
+                "project-memory",
+                {item["id"] for item in default_assessment["signals"]},
+            )
+
+            completed = self.analyze(
+                repo,
+                "--path",
+                "src/relay.py",
+                "--include-project-memory",
+            )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             assessment = json.loads(completed.stdout)
             self.assertEqual(
@@ -2346,6 +2361,7 @@ class EngineeringChangeTests(unittest.TestCase):
                 changes=[],
                 tracked_patch=b"",
                 declared_risk=None,
+                include_project_memory=True,
                 allow_repository_reads=False,
             )
             serialized = json.dumps(assessment, ensure_ascii=True)
@@ -2400,7 +2416,12 @@ class EngineeringChangeTests(unittest.TestCase):
             (memory / "known-risks.json").write_text(
                 json.dumps(collection), encoding="utf-8"
             )
-            analyzed = self.analyze(repo, "--path", "src/relay.py")
+            analyzed = self.analyze(
+                repo,
+                "--path",
+                "src/relay.py",
+                "--include-project-memory",
+            )
             self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
             payload = json.loads(analyzed.stdout)
             self.assertEqual(payload["memory"]["matches"], [])
@@ -2441,7 +2462,12 @@ class EngineeringChangeTests(unittest.TestCase):
                 ],
             }
             (memory / "failures.json").write_text(json.dumps(collection), encoding="utf-8")
-            analyzed = self.analyze(repo, "--path", "src/relay.py")
+            analyzed = self.analyze(
+                repo,
+                "--path",
+                "src/relay.py",
+                "--include-project-memory",
+            )
             self.assertEqual(analyzed.returncode, 0, analyzed.stderr)
             analyzer_id = json.loads(analyzed.stdout)["memory"]["matches"][0]["id"]
             context = subprocess.run(
@@ -2483,7 +2509,12 @@ class EngineeringChangeTests(unittest.TestCase):
             (memory / "decisions.json").write_text(json.dumps(collection), encoding="utf-8")
             subprocess.run(["git", "add", ".project-memory/decisions.json"], cwd=repo, check=True)
             subprocess.run(["git", "commit", "-qm", "memory"], cwd=repo, check=True)
-            completed = self.analyze(repo, "--path", "docs/auth.md")
+            completed = self.analyze(
+                repo,
+                "--path",
+                "docs/auth.md",
+                "--include-project-memory",
+            )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             assessment = json.loads(completed.stdout)
             self.assertEqual(assessment["detected_risk"], "low")
@@ -2508,13 +2539,91 @@ class EngineeringChangeTests(unittest.TestCase):
                 encoding="utf-8",
             )
             (repo / ".project-memory").symlink_to(outside, target_is_directory=True)
-            completed = self.analyze(repo, "--path", "src/relay.py")
+            completed = self.analyze(
+                repo,
+                "--path",
+                "src/relay.py",
+                "--include-project-memory",
+            )
             self.assertEqual(completed.returncode, 0, completed.stderr)
             assessment = json.loads(completed.stdout)
             self.assertEqual(assessment["memory"]["matches"], [])
             self.assertEqual(
                 assessment["memory"]["warnings"],
                 ["ignored symlinked .project-memory directory"],
+            )
+
+    def test_finalizer_requires_explicit_memory_opt_in(self) -> None:
+        with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
+            root = Path(temporary)
+            repo = self.make_repo(root)
+            memory = repo / ".project-memory"
+            memory.mkdir()
+            (memory / "known-risks.json").write_text(
+                json.dumps(
+                    {
+                        "format": "rootloom-project-memory-v1",
+                        "kind": "risks",
+                        "entries": [
+                            {
+                                "id": "app-lifecycle-risk",
+                                "date": "2026-01-01",
+                                "summary": "app lifecycle ordering",
+                                "mitigation": "check transitions",
+                                "paths": ["app.py"],
+                            }
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            subprocess.run(
+                ["git", "add", ".project-memory/known-risks.json"],
+                cwd=repo,
+                check=True,
+            )
+            subprocess.run(["git", "commit", "-qm", "memory"], cwd=repo, check=True)
+            (repo / "app.py").write_text("value = 2\n", encoding="utf-8")
+            command = f"{sys.executable} -c 'assert 2 == 2'"
+
+            def finalize(name: str, *extra: str) -> dict[str, object]:
+                output = root / name
+                completed = subprocess.run(
+                    [
+                        sys.executable,
+                        str(SCRIPT),
+                        "--repo",
+                        str(repo),
+                        "--output",
+                        str(output),
+                        "--task",
+                        "change app lifecycle",
+                        "--verify",
+                        command,
+                        *extra,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                return json.loads(
+                    (output / "summary.json").read_text(encoding="utf-8")
+                )
+
+            default = finalize("default-run")
+            self.assertEqual(
+                default["risk_assessment"]["memory"]["matches"],
+                [],
+            )
+
+            explicit = finalize("explicit-run", "--include-project-memory")
+            self.assertEqual(
+                [
+                    item["id"]
+                    for item in explicit["risk_assessment"]["memory"]["matches"]
+                ],
+                ["app-lifecycle-risk"],
             )
 
     def test_writes_compact_summary_and_verification_bundle(self) -> None:

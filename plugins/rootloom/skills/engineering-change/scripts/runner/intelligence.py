@@ -432,6 +432,7 @@ def analyze_change(
     tracked_patch: bytes,
     declared_risk: str | None,
     reviewable_paths: list[str] | None = None,
+    include_project_memory: bool = False,
     allow_repository_reads: bool = True,
 ) -> dict[str, Any]:
     repo = repo.expanduser().resolve()
@@ -695,15 +696,17 @@ def analyze_change(
             paths=signal_paths,
         )
 
-    if allow_repository_reads:
+    if include_project_memory and allow_repository_reads:
         memory_matches, stale_memory, memory_warnings = load_memory_matches(
             repo, paths=paths, task=task
         )
-    else:
+    elif include_project_memory:
         memory_matches, stale_memory = [], []
         memory_warnings = [
-            "repository memory and command discovery were not read during sensitive-change quarantine"
+            "project memory was not read during sensitive-change quarantine"
         ]
+    else:
+        memory_matches, stale_memory, memory_warnings = [], [], []
     if memory_matches and not docs_or_tests_only:
         add_signal(
             signals,
@@ -758,7 +761,7 @@ def analyze_change(
         ),
         "limitations": [
             "Static signals cannot prove semantic risk or test sufficiency.",
-            "Memory is advisory and must be checked against current repository evidence.",
+            "Project Memory is read only with explicit opt-in and remains advisory.",
             "Suggested verification is not executed by the analyzer.",
         ],
     }

@@ -213,6 +213,30 @@ def validate_personal_contracts(errors: list[str]) -> None:
         errors.append(
             "global AGENTS.md must remain approximately 3-4 KiB and 30-45 lines"
         )
+    seeder_text = (
+        SKILLS / "seed-project-guidance" / "scripts" / "seed_project_guidance.py"
+    ).read_text(encoding="utf-8")
+    if "MAX_SESSION_CONTEXT_BYTES = 4 * 1024" not in seeder_text:
+        errors.append("SessionStart additional context must remain capped at 4 KiB")
+    if 'permission_mode == "plan"' not in seeder_text:
+        errors.append("SessionStart project context must remain disabled in Plan sessions")
+    intelligence_text = (
+        SKILLS / "engineering-change" / "scripts" / "runner" / "intelligence.py"
+    ).read_text(encoding="utf-8")
+    if "include_project_memory: bool = False" not in intelligence_text:
+        errors.append("Analyzer Project Memory must remain an explicit default-off input")
+    for path, label in (
+        (
+            SKILLS / "engineering-change" / "scripts" / "analyze_change.py",
+            "Analyzer",
+        ),
+        (
+            SKILLS / "engineering-change" / "scripts" / "finalize_change.py",
+            "Finalizer",
+        ),
+    ):
+        if '"--include-project-memory"' not in path.read_text(encoding="utf-8"):
+            errors.append(f"{label} must expose explicit Project Memory opt-in")
     root_guidance = (ROOT / "AGENTS.md").read_text(encoding="utf-8")
     root_rules = [line for line in root_guidance.splitlines() if line.startswith("- ")]
     if not 5 <= len(root_rules) <= 8:
@@ -232,6 +256,9 @@ def validate_personal_contracts(errors: list[str]) -> None:
         ),
         SKILLS / "seed-project-guidance" / "scripts" / "seed_project_guidance.py": (
             "temporary_project_context",
+            "MAX_SESSION_CONTEXT_BYTES",
+            "_render_session_context",
+            'permission_mode == "plan"',
             "creating or updating AGENTS.md",
             "guidance only when the user explicitly invokes",
         ),
@@ -256,6 +283,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
         SKILLS / "engineering-change" / "scripts" / "analyze_change.py": (
             "analyze_change",
             "--declared-risk",
+            "--include-project-memory",
             "--write-baseline",
             "tracked_patch",
             "--max-capture-seconds",
@@ -288,6 +316,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "dependency-supply-chain",
             "suggested-not-executed",
             "Static signals cannot prove semantic risk",
+            "include_project_memory: bool = False",
             "allow_repository_reads",
             "read_bounded_repository_text",
         ),
@@ -373,6 +402,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
             '"exit_policy"',
             '"mode"',
             "--strict",
+            "--include-project-memory",
             "--strict-bundle-only",
             "--require-verified",
             '"sensitive_integrity"',

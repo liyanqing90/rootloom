@@ -256,7 +256,7 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         result = seeder.seed(self.root, invalid_target, allow_untrusted=True)
         self.assertEqual(result["reason"], "not_a_module_boundary")
 
-    def test_hook_injects_temporary_context_without_writing_in_any_mode(self) -> None:
+    def test_hook_injects_bounded_context_and_skips_plan_mode(self) -> None:
         self.init_repo()
         previous = os.environ.get("ROOTLOOM_ALLOW_UNTRUSTED")
         os.environ["ROOTLOOM_ALLOW_UNTRUSTED"] = "1"
@@ -273,21 +273,131 @@ class ProjectGuidanceSeederTests(unittest.TestCase):
         context = output["hookSpecificOutput"]["additionalContext"]
         self.assertIn("<rootloom_project_context>", context)
         self.assertIn("without creating or updating AGENTS.md", context)
+        self.assertLessEqual(
+            len(context.encode("utf-8")),
+            seeder.MAX_SESSION_CONTEXT_BYTES,
+        )
         self.assertFalse((self.root / "AGENTS.md").exists())
 
-        output = seeder._hook_output(
-            {
-                "source": "startup",
-                "permission_mode": "plan",
-                "cwd": str(self.root),
-            }
-        )
-        self.assertIsNotNone(output)
-        self.assertIn(
-            "<rootloom_project_context>",
-            output["hookSpecificOutput"]["additionalContext"],
-        )
+        with mock.patch.object(seeder, "temporary_project_context") as renderer:
+            output = seeder._hook_output(
+                {
+                    "source": "startup",
+                    "permission_mode": "plan",
+                    "cwd": str(self.root),
+                }
+            )
+        self.assertIsNone(output)
+        renderer.assert_not_called()
         self.assertFalse((self.root / "AGENTS.md").exists())
+
+    def test_hook_bounds_the_complete_additional_context(self) -> None:
+        body = "x" * (seeder.MAX_SESSION_CONTEXT_BYTES - 100)
+        with mock.patch.object(
+            seeder,
+            "temporary_project_context",
+            return_value={"status": "context-ready", "context": body},
+        ):
+            output = seeder._hook_output(
+                {
+                    "source": "startup",
+                    "permission_mode": "default",
+                    "cwd": str(self.root),
+                }
+            )
+
+        self.assertIsNotNone(output)
+        self.assertNotIn("hookSpecificOutput", output)
+        self.assertIn("exceeded 4 KiB", output["systemMessage"])
+
+    def test_temporary_context_uses_a_compact_renderer(self) -> None:
+        self.init_repo()
+        long = "x" * 80
+        data = {
+            "status": "ready",
+            "project_root": str(self.root),
+            "scope_root": str(self.root),
+            "scope": ".",
+            "agents_path": str(self.root / "AGENTS.md"),
+            "fingerprint": "a" * 20,
+            "name": "Large Sample",
+            "description": "A large synthetic repository.",
+            "metadata_source": "README.md",
+            "manifests": [f"manifest-{index}-{long}.json" for index in range(15)],
+            "lockfiles": [],
+            "commands": [
+                {
+                    "command": f"tool run check-{index}-{long}",
+                    "source": f"manifest-{index}-{long}.json",
+                    "category": "check",
+                }
+                for index in range(16)
+            ],
+            "documents": [f"docs/guide-{index}-{long}.md" for index in range(16)],
+            "ci": [f".github/workflows/ci-{index}-{long}.yml" for index in range(20)],
+            "directories": [
+                {"path": f"module-{index}-{long}/", "purpose": long}
+                for index in range(20)
+            ],
+            "module_candidates": [
+                {
+                    "path": f"packages/module-{index}-{long}/",
+                    "manifests": [f"manifest-{index}-{long}.json"],
+                }
+                for index in range(12)
+            ],
+            "package_manager": "npm",
+        }
+
+        with mock.patch.object(seeder, "probe", return_value=data):
+            result = seeder.temporary_project_context(
+                self.root,
+                allow_untrusted=True,
+            )
+
+        self.assertEqual(result["status"], "context-ready")
+        context = result["context"]
+        self.assertLessEqual(
+            len(context.encode("utf-8")),
+            seeder.MAX_SESSION_CONTEXT_BYTES,
+        )
+        self.assertNotIn("Repository map", context)
+        self.assertNotIn("Independent module candidates", context)
+        self.assertNotIn("Verification contract", context)
+
+    def test_temporary_context_omits_commands_when_guidance_exists(self) -> None:
+        self.init_repo()
+        (self.root / "AGENTS.md").write_text(
+            "# Team guidance\n\n- Run `pnpm run test` before handoff.\n",
+            encoding="utf-8",
+        )
+
+        result = seeder.temporary_project_context(
+            self.root,
+            allow_untrusted=True,
+        )
+
+        self.assertEqual(result["status"], "context-ready")
+        self.assertNotIn("`pnpm run test`", result["context"])
+        self.assertIn("Existing project guidance", result["context"])
+
+    def test_temporary_context_detects_nested_guidance_for_current_directory(self) -> None:
+        self.init_repo()
+        module = self.root / "packages" / "api"
+        module.mkdir(parents=True)
+        (module / "AGENTS.md").write_text(
+            "# API guidance\n\n- Run the module checks.\n",
+            encoding="utf-8",
+        )
+
+        result = seeder.temporary_project_context(
+            module,
+            allow_untrusted=True,
+        )
+
+        self.assertEqual(result["status"], "context-ready")
+        self.assertIn("`packages/api/AGENTS.md`", result["context"])
+        self.assertNotIn("`pnpm run test`", result["context"])
 
     def test_validation_detects_managed_drift_and_secrets(self) -> None:
         self.init_repo()

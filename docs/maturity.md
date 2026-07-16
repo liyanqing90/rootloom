@@ -6,7 +6,7 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 
 ## What is executable
 
-- deterministic, bounded, network-free project-context scanning, with repository writes reserved for explicit seeding;
+- deterministic, network-free project-context scanning with a 4 KiB SessionStart cap, Plan-session skip, and repository writes reserved for explicit seeding;
 - fail-closed Hook enablement from managed local policy with exact integer `version: 1`;
 - explicit install/upgrade/status/rollback behavior for the personal setup targets, with installed-hash drift refusal;
 - ordinary local lock serialization and per-file atomic replacement;
@@ -18,9 +18,9 @@ Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Window
 - ordinary untracked content fingerprints, task-partitioned applyable bounded text patches and risk signals, with separate targeted-candidate and classified-result path ceilings, recursive metadata-observed sensitive capture, and sensitive-change quarantine;
 - evidence-honest revision-4 review states that keep the operator semantic assertion separate and make redacted reviews non-passing;
 - exact dangerous-path deletion confirmation;
-- explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and active-memory signals;
+- explainable static risk floors over task, path, tracked/non-sensitive-untracked diff, operation, and explicitly included active-memory signals;
 - risk-specific verification recommendations kept separate from executed test evidence;
-- bounded, relevant, stale-aware project-memory context plus locked explicit updates and one shared strict reader contract;
+- bounded, relevant, stale-aware project-memory context plus explicit Analyzer/Finalizer opt-in, locked explicit updates, and one shared strict reader contract;
 - repository validation, unit tests, and an offline Codex compatibility smoke.
 
 ## What remains semantic
@@ -63,3 +63,5 @@ Personal Core 3.1 narrows secret-material naming without changing Summary revisi
 Personal Core 3.2 keeps the v3/v4 wire formats but rejects ignored or Git-index-suppressed reviewable targets, hardlinks, case ambiguity, and common private-key names. DER joins PEM as ambiguous metadata-only material because either encoding may contain private keys. Summary revision 5 additively exposes the sealed reviewability policy and captured file identity metadata; under the repository's SemVer policy, that optional field makes 3.2 a Minor release.
 
 Personal Core 3.3 batches the Core Reset while keeping those wire versions frozen. Historical Baseline readers validate structure and hashes without applying the latest reviewability classifier; Finalizer applies current policy separately and returns `reintake-required` before reading incompatible reviewable content. Reviewable declarations have a fixed 64-path ceiling, provenance distinguishes validated intake policy from final capture observation, SessionStart context is read-only, and Project Memory is explicitly experimental.
+
+Personal Core 3.4 completes the executable boundary for dynamic context and Experimental Project Memory without changing Baseline or Summary formats. SessionStart uses a dedicated incremental renderer, caps the complete additional context at 4 KiB, and skips Plan sessions. Analyzer and Finalizer no longer infer consent from a checked-in `.project-memory/`; callers opt in with the additive `--include-project-memory` flag, while sensitive-change quarantine still prevents repository reads. Existing automation that did not rely on implicit Memory reads keeps its prior CLI and evidence contracts.
