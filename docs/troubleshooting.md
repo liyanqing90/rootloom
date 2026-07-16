@@ -2,7 +2,7 @@
 
 ## The project-guidance Hook does nothing
 
-Check that the personal or guidance preset is installed and that `~/.codex/.rootloom/components.json` contains a managed boolean `project-guidance-hook: true`. Missing, malformed, or symlinked policy disables the Hook. Start a new Codex task after plugin or setup changes and review `/hooks` again.
+Check that the personal or guidance preset is installed and that `~/.codex/.rootloom/components.json` contains exact integer `version: 1` plus managed boolean `project-guidance-hook: true`. Missing, malformed, wrong-type, unsupported-version, or symlinked policy disables the Hook. The Hook only injects temporary context and never writes `AGENTS.md`; use `$seed-project-guidance` explicitly when persistence is intended. Start a new Codex task after plugin or setup changes and review `/hooks` again.
 
 The scanner also skips untrusted repositories unless the platform marks them trusted. `ROOTLOOM_ALLOW_UNTRUSTED=1` is intended only for controlled tests.
 

@@ -1,13 +1,13 @@
 # Maturity, guarantees, and compatibility
 
-Rootloom Personal Core is an early-stage, single-maintainer product. Its goal is to make Codex engineering behavior more deliberate and inspectable without imposing deep-review cost on installation or routine work; the repository does not yet contain controlled evidence that it reduces defects or review time.
+Rootloom Personal Core is an early-stage, single-maintainer product. Its goal is to make Codex engineering behavior more deliberate and inspectable without imposing deep-review cost on installation or routine work; the repository does not yet contain controlled evidence that it reduces defects or review time, or a third-party security audit or fuzzing report.
 
 Release `v2.0.0` passed the repository's Linux Python 3.11–3.14, macOS, Windows, and pinned Codex CLI contract matrix. That proves the checked mechanics on those environments, not model-level engineering quality.
 
 ## What is executable
 
-- deterministic, bounded, network-free project-guidance scanning;
-- fail-closed Hook enablement from managed local policy;
+- deterministic, bounded, network-free project-context scanning, with repository writes reserved for explicit seeding;
+- fail-closed Hook enablement from managed local policy with exact integer `version: 1`;
 - explicit install/upgrade/status/rollback behavior for the personal setup targets, with installed-hash drift refusal;
 - ordinary local lock serialization and per-file atomic replacement;
 - drift-refusing backup restoration;
@@ -40,9 +40,9 @@ Skills guide these decisions; current repository and runtime evidence must verif
 
 ## Personal safety boundary
 
-The personal artifact bundle is mutable and local. Verification commands are trusted operator input, not sandboxed workloads; argv and output are retained verbatim and must not carry credentials. Capture does not cover non-sensitive ignored files, Git administrative files, external state, detached managers, or a secret copied to an ordinary path without an observable change at its sensitive source. The setup lock is cooperative and ordinary. Setup is atomic per file but not across the complete target set. Backup/rollback is designed for normal local mistakes, not power-loss recovery, hostile same-user races, signed approval, immutable audit, regulated retention, or multi-operator environments.
+The personal artifact bundle is mutable and local. Verification commands are trusted operator input, not sandboxed workloads; argv and output are retained verbatim and must not carry credentials. Capture does not cover non-sensitive ignored files, Git administrative files, external state, detached managers, or a secret copied to an ordinary path without an observable change at its sensitive source. Rootloom's privacy classifier is path-based, not a content-aware secret scanner; broader detection requires a separate trusted local scanner whose findings are redacted before they enter Rootloom evidence. The setup lock is cooperative and ordinary. Setup is atomic per file but not across the complete target set. Backup/rollback is designed for normal local mistakes, not power-loss recovery, hostile same-user races, signed approval, immutable audit, regulated retention, or multi-operator environments.
 
-Those assurance mechanisms remain on `codex/enterprise-assurance`; they are not implied by Personal Core.
+Those assurance mechanisms remain as the unmaintained Archived Assurance Edition on `codex/enterprise-assurance`; they are not implied by Personal Core or presented as an active product line.
 
 ## Compatibility
 
@@ -61,3 +61,5 @@ Personal Core 3.0 advances the same summary format to revision 5 and changes pro
 Personal Core 3.1 narrows secret-material naming without changing Summary revision 5. Environment templates and public certificate formats remain patch-readable security-domain evidence, while unrelated `.env*` names are ordinary. Default Intake output remains baseline v3. The additive Intake-only `--reviewable-path` capability emits baseline v4 only when used, seals exact declarations into the policy hash, can pin already-reviewable artifacts or downgrade ambiguous material, and refuses strong or explicitly declared secrets. Baseline v2/v3/v4 readers and sealers coexist; consumers that do not opt into the new flag receive the existing v3 contract.
 
 Personal Core 3.2 keeps the v3/v4 wire formats but rejects ignored or Git-index-suppressed reviewable targets, hardlinks, case ambiguity, and common private-key names. DER joins PEM as ambiguous metadata-only material because either encoding may contain private keys. Summary revision 5 additively exposes the sealed reviewability policy and captured file identity metadata; under the repository's SemVer policy, that optional field makes 3.2 a Minor release.
+
+Personal Core 3.3 batches the Core Reset while keeping those wire versions frozen. Historical Baseline readers validate structure and hashes without applying the latest reviewability classifier; Finalizer applies current policy separately and returns `reintake-required` before reading incompatible reviewable content. Reviewable declarations have a fixed 64-path ceiling, provenance distinguishes validated intake policy from final capture observation, SessionStart context is read-only, and Project Memory is explicitly experimental.

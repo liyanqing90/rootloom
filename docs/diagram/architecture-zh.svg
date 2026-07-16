@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
   <title id="title">根织个人工程架构</title>
-  <desc id="desc">一张浅色专业架构图。明确目标进入三档授权之一，再流经个人核心日常工程闭环，形成一次可信修改。下方展示支持上下文、交付层与独立的企业保障产品线。</desc>
+  <desc id="desc">一张浅色专业架构图。明确目标可选使用三档授权，再流经个人核心的修改、审查与指导闭环。下方展示可选证据、实验性记忆与已归档保障版。</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
@@ -22,7 +22,7 @@
   <rect x="80" y="48" width="10" height="58" rx="5" fill="#2563eb"/>
   <text x="112" y="72" class="section" fill="#2563eb">根织</text>
   <text x="112" y="108" class="title">个人工程架构</text>
-  <text x="650" y="88" class="subtitle">明确目标 → 选择授权 → 证据驱动闭环 → 可信修改</text>
+  <text x="650" y="88" class="subtitle">明确目标 → 比例化工作流 → 可检查修改</text>
 
   <rect x="70" y="178" width="1460" height="370" rx="24" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
   <text x="100" y="216" class="section" fill="#64748b">主流程</text>
@@ -56,19 +56,19 @@
   <path d="M710 353 L750 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
 
   <rect x="770" y="232" width="570" height="242" rx="18" fill="#ffffff" stroke="#c4b5fd" stroke-width="2"/>
-  <text x="796" y="270" class="card-title">个人核心 · 日常工程闭环</text>
+  <text x="796" y="270" class="card-title">个人核心 · 修改 / 审查 / 指导</text>
   <path d="M815 353 L1297 353" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round"/>
 
   <g>
     <rect x="794" y="310" width="78" height="86" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
     <circle cx="833" cy="334" r="13" fill="#e2e8f0"/>
     <path d="M827 334 L839 334" stroke="#64748b" stroke-width="2"/>
-    <text x="833" y="375" text-anchor="middle" class="node">任务路由</text>
+    <text x="833" y="375" text-anchor="middle" class="node">项目指导</text>
 
     <rect x="882" y="310" width="82" height="86" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
     <circle cx="923" cy="334" r="13" fill="#2563eb"/>
     <circle cx="923" cy="334" r="4" fill="#ffffff"/>
-    <text x="923" y="375" text-anchor="middle" class="node">证据</text>
+    <text x="923" y="375" text-anchor="middle" class="node">检查</text>
 
     <rect x="974" y="310" width="88" height="86" rx="12" fill="#fff7ed" stroke="#fdba74"/>
     <circle cx="1018" cy="334" r="13" fill="#f59e0b"/>
@@ -97,23 +97,25 @@
 
   <path d="M1340 353 L1380 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
 
-  <rect x="1400" y="278" width="100" height="150" rx="18" fill="#ecfdf5" stroke="#34d399" stroke-width="2"/>
-  <circle cx="1450" cy="319" r="20" fill="#059669"/>
-  <path d="M1440 319 L1447 326 L1461 311" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="1450" y="361" text-anchor="middle" class="label">可信</text>
+  <rect x="1400" y="278" width="100" height="150" rx="18" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+  <circle cx="1450" cy="319" r="20" fill="#2563eb"/>
+  <text x="1450" y="326" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">查</text>
+  <text x="1450" y="361" text-anchor="middle" class="label">可检查</text>
   <text x="1450" y="380" text-anchor="middle" class="label">修改</text>
-  <text x="1450" y="406" text-anchor="middle" class="small">可审查</text>
+  <text x="1450" y="406" text-anchor="middle" class="small">证据有界</text>
 
   <rect x="70" y="578" width="960" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
   <text x="98" y="615" class="section" fill="#64748b">支持上下文</text>
   <rect x="98" y="636" width="205" height="46" rx="12" fill="#eff6ff"/>
   <text x="200" y="664" text-anchor="middle" class="label">项目指导</text>
   <rect x="318" y="636" width="205" height="46" rx="12" fill="#f5f3ff"/>
-  <text x="420" y="664" text-anchor="middle" class="label">工程记忆</text>
+  <text x="420" y="656" text-anchor="middle" class="label">实验性记忆</text>
+  <text x="420" y="674" text-anchor="middle" class="small">显式 · 建议式</text>
   <rect x="538" y="636" width="205" height="46" rx="12" fill="#fff7ed"/>
   <text x="640" y="664" text-anchor="middle" class="label">持久决策</text>
   <rect x="758" y="636" width="244" height="46" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="6 5"/>
-  <text x="880" y="664" text-anchor="middle" class="label">按需严格审查</text>
+  <text x="880" y="656" text-anchor="middle" class="label">可选证据</text>
+  <text x="880" y="674" text-anchor="middle" class="small">分析 · 基线 · 汇总</text>
 
   <rect x="1060" y="578" width="470" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
   <text x="1088" y="615" class="section" fill="#64748b">交付层</text>
@@ -122,7 +124,7 @@
   <text x="1178" y="674" text-anchor="middle" class="small">仅技能</text>
   <rect x="1282" y="636" width="220" height="46" rx="12" fill="#f5f3ff"/>
   <text x="1392" y="656" text-anchor="middle" class="label">可选个人设置</text>
-  <text x="1392" y="674" text-anchor="middle" class="small">指导 · 规则 · 项目钩子</text>
+  <text x="1392" y="674" text-anchor="middle" class="small">指导 · 自主授权 · 临时上下文</text>
 
   <rect x="70" y="742" width="960" height="92" rx="18" fill="#eff6ff" stroke="#bfdbfe"/>
   <circle cx="108" cy="788" r="15" fill="#2563eb"/>
@@ -131,6 +133,6 @@
   <text x="138" y="804" class="small">全局指导管理模式与范围语义，平台约束始终优先。</text>
 
   <rect x="1060" y="742" width="470" height="92" rx="18" fill="#ffffff" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8 6"/>
-  <text x="1088" y="780" class="card-title">企业保障</text>
-  <text x="1088" y="805" class="small">独立产品线 · 不依赖个人核心运行时</text>
+  <text x="1088" y="780" class="card-title">已归档保障版</text>
+  <text x="1088" y="805" class="small">未维护快照 · 可恢复源码</text>
 </svg>

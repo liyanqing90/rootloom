@@ -1,6 +1,6 @@
 ---
 name: operating-high-risk-change
-description: Plan and execute high-risk engineering changes involving public APIs, schemas, migrations, persisted data, security, architecture, production dependencies, infrastructure, release, deployment, or destructive effects. Requires impact analysis, an ExecPlan, compatibility, rollout, rollback, and explicit authorization for external actions.
+description: Plan and execute high-risk engineering changes involving public APIs, schemas, migrations, persisted data, security, architecture, production dependencies, infrastructure, release, deployment, or destructive effects. Requires impact analysis, compatibility, rollout, rollback, and explicit authorization for external actions; plans stay task-local unless durable planning is explicitly requested.
 ---
 
 # High-Risk Change Workflow
@@ -25,9 +25,9 @@ Ask only when missing authorization or a materially ambiguous product/operationa
 
 Produce a concise governed task packet for Tier 2. It must be executable now, identify the exact missing prerequisite or user decision, or route to the repository workflow that makes it executable. Do not produce a prose-only plan.
 
-## 2. Create an ExecPlan
+## 2. Maintain a task-local execution plan
 
-Use `assets/EXECPLAN.template.md`. Store the active plan in the repository's established planning location, or `.codex/plans/<task>.md` when none exists.
+Use `assets/EXECPLAN.template.md` as a checklist when its gates materially change implementation, rollout, rollback, or stop decisions. Keep the active plan in the current task by default. Persist it only when the user explicitly requests a durable plan or the repository already requires a tracked planning artifact; do not create a one-time `.codex/plans/` file merely because the change is Tier 2.
 
 The plan must be self-contained, grounded in verified paths and commands, and updated as evidence changes. Include observable success, baseline, invariants, impact map, staged implementation, compatibility, migration, rollout, rollback, verification, and decision log.
 

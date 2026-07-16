@@ -15,15 +15,24 @@ SENSITIVE_MATERIAL_EXACT_NAMES = {
     ".npmrc",
     ".pypirc",
     "credentials.json",
+    "decryption-key.pem",
+    "ec-key.pem",
+    "ecdsa-key.pem",
+    "ed25519-key.pem",
+    "encryption-key.pem",
     "id_dsa",
     "id_ecdsa",
     "id_ed25519",
     "id_rsa",
     "kubeconfig",
+    "privatekey.pem",
+    "privkey.pem",
+    "rsa-key.pem",
     "service-account.json",
     "secrets.yaml",
     "secrets.yml",
 }
+MAX_REVIEWABLE_PATHS = 64
 PUBLIC_CERTIFICATE_SUFFIXES = {
     ".cer",
     ".crt",
@@ -448,6 +457,10 @@ def normalize_reviewable_paths(
 ) -> list[str]:
     """Validate path-only declarations before repository spelling is resolved."""
 
+    if max_paths is not None and len(paths) > max_paths:
+        raise ValueError(
+            f"reviewable paths exceed configured {max_paths}-path budget"
+        )
     normalized = [
         validate_reviewable_policy_path(path, extra_sensitive=extra_sensitive)
         for path in paths

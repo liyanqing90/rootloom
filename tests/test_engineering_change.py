@@ -39,9 +39,11 @@ sys.path.insert(0, str(SCRIPT.parent))
 import begin_review as begin_review_module
 import finalize_change as finalize_change_module
 from rootloom_paths import (
+    MAX_REVIEWABLE_PATHS,
     is_protected_deletion_path,
     is_security_domain_path,
     is_sensitive_material_path,
+    normalize_reviewable_paths,
 )
 from runner.baseline import payload_sha256, read_baseline_payload_with_hash
 from runner.change_contract import load_change_contract, path_matches
@@ -809,7 +811,15 @@ class EngineeringChangeTests(unittest.TestCase):
             reviewability = summary["reviewability_policy"]
             self.assertEqual(
                 set(reviewability),
-                {"captured_files", "enabled", "paths", "policy_sha256", "source"},
+                {
+                    "captured_files",
+                    "captured_files_provenance",
+                    "enabled",
+                    "paths",
+                    "policy_provenance",
+                    "policy_sha256",
+                    "source",
+                },
             )
             self.assertTrue(reviewability["enabled"])
             self.assertEqual(reviewability["paths"], baseline["reviewable_paths"])
@@ -818,6 +828,13 @@ class EngineeringChangeTests(unittest.TestCase):
                 baseline["sensitive_policy_sha256"],
             )
             self.assertEqual(reviewability["source"], "intake-sealed")
+            self.assertEqual(
+                reviewability["policy_provenance"], "intake-sealed"
+            )
+            self.assertEqual(
+                reviewability["captured_files_provenance"],
+                "final-capture-observed",
+            )
             self.assertEqual(
                 [
                     item["path"]
@@ -861,6 +878,39 @@ class EngineeringChangeTests(unittest.TestCase):
                 (output / "diff.patch").read_text(encoding="utf-8"),
             )
 
+            advisory_output = root / "reviewable-advisory-run"
+            advisory = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(advisory_output),
+                    "--task",
+                    "change product behavior",
+                    "--baseline",
+                    str(baseline_path),
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(advisory.returncode, 0, advisory.stderr)
+            advisory_summary = json.loads(
+                (advisory_output / "summary.json").read_text(encoding="ascii")
+            )
+            self.assertEqual(
+                advisory_summary["reviewability_policy"]["policy_provenance"],
+                "self-declared",
+            )
+            self.assertEqual(
+                advisory_summary["reviewability_policy"]["source"],
+                "self-declared",
+            )
+
             policy_tamper = json.loads(json.dumps(baseline))
             policy_tamper["reviewable_paths"] = ["other-public.pem"]
             policy_tamper_path = root / "policy-tampered-v4.json"
@@ -868,19 +918,42 @@ class EngineeringChangeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "sensitive_policy_sha256"):
                 read_baseline_payload_with_hash(policy_tamper_path)
 
-            tampered = json.loads(json.dumps(baseline))
-            tampered["reviewable_paths"] = ["private.key"]
-            tampered["sensitive_policy_sha256"] = payload_sha256(
+            historical = json.loads(json.dumps(baseline))
+            historical["reviewable_paths"] = ["server-key.pem"]
+            historical["sensitive_policy_sha256"] = payload_sha256(
                 {
-                    "extra_sensitive": tampered["sensitive_paths"],
-                    "reviewable_paths": tampered["reviewable_paths"],
-                    "snapshot_sensitive_paths": tampered["snapshot"]["sensitive_paths"],
+                    "extra_sensitive": historical["sensitive_paths"],
+                    "reviewable_paths": historical["reviewable_paths"],
+                    "snapshot_sensitive_paths": historical["snapshot"]["sensitive_paths"],
                 }
             )
-            tampered_path = root / "tampered-v4.json"
-            tampered_path.write_text(json.dumps(tampered), encoding="ascii")
-            with self.assertRaisesRegex(ValueError, "strong sensitive material"):
-                read_baseline_payload_with_hash(tampered_path)
+            historical_path = root / "historical-v4.json"
+            historical_path.write_text(json.dumps(historical), encoding="ascii")
+            loaded_historical, _ = read_baseline_payload_with_hash(historical_path)
+            self.assertEqual(loaded_historical["reviewable_paths"], ["server-key.pem"])
+
+            reintake = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--repo",
+                    str(repo),
+                    "--output",
+                    str(root / "historical-run"),
+                    "--task",
+                    "change product behavior",
+                    "--baseline",
+                    str(historical_path),
+                    "--verify",
+                    command,
+                ],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(reintake.returncode, 11, reintake.stderr)
+            self.assertEqual(json.loads(reintake.stdout)["status"], "reintake-required")
+            self.assertFalse((root / "historical-run").exists())
 
     def test_begin_review_rejects_invalid_reviewable_path_overrides(self) -> None:
         with tempfile.TemporaryDirectory(prefix="rootloom-change-", dir=Path.home()) as temporary:
@@ -902,6 +975,14 @@ class EngineeringChangeTests(unittest.TestCase):
                 "ssh-key.der",
                 "identity-key.pem",
                 "identity-key.der",
+                "privkey.pem",
+                "privatekey.pem",
+                "rsa-key.pem",
+                "ec-key.pem",
+                "ecdsa-key.pem",
+                "ed25519-key.pem",
+                "encryption-key.pem",
+                "decryption-key.pem",
             ):
                 (repo / name).write_text("synthetic-private-key\n", encoding="utf-8")
             (repo / ".env").write_text("TOKEN=synthetic\n", encoding="utf-8")
@@ -939,6 +1020,14 @@ class EngineeringChangeTests(unittest.TestCase):
                         "ssh-key.der",
                         "identity-key.pem",
                         "identity-key.der",
+                        "privkey.pem",
+                        "privatekey.pem",
+                        "rsa-key.pem",
+                        "ec-key.pem",
+                        "ecdsa-key.pem",
+                        "ed25519-key.pem",
+                        "encryption-key.pem",
+                        "decryption-key.pem",
                     )
                 ),
                 ("strong-env", ["--reviewable-path", ".env"], "strong sensitive material"),
@@ -1268,6 +1357,11 @@ class EngineeringChangeTests(unittest.TestCase):
                     Path("/repository"),
                     ["CERTS/PUBLIC.PEM"],
                 )
+
+    def test_reviewable_paths_have_an_independent_small_budget(self) -> None:
+        paths = [f"certs/public-{index}.pem" for index in range(MAX_REVIEWABLE_PATHS + 1)]
+        with self.assertRaisesRegex(ValueError, "64-path budget"):
+            normalize_reviewable_paths(paths, max_paths=MAX_REVIEWABLE_PATHS)
 
     def test_reviewable_spelling_resolver_requires_prior_fingerprint_for_missing(self) -> None:
         with (
@@ -2479,8 +2573,10 @@ class EngineeringChangeTests(unittest.TestCase):
                 summary["reviewability_policy"],
                 {
                     "captured_files": [],
+                    "captured_files_provenance": None,
                     "enabled": False,
                     "paths": [],
+                    "policy_provenance": None,
                     "policy_sha256": None,
                     "source": None,
                 },
@@ -4089,6 +4185,14 @@ class EngineeringChangeTests(unittest.TestCase):
             "keys/host-key.pem",
             "keys/ssh-key.pem",
             "keys/identity-key.pem",
+            "keys/privkey.pem",
+            "keys/privatekey.pem",
+            "keys/rsa-key.pem",
+            "keys/ec-key.pem",
+            "keys/ecdsa-key.pem",
+            "keys/ed25519-key.pem",
+            "keys/encryption-key.pem",
+            "keys/decryption-key.pem",
         )
         for path in strong_material:
             with self.subTest(strong=path):

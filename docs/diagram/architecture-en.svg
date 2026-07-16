@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
   <title id="title">Rootloom personal engineering architecture</title>
-  <desc id="desc">A light professional architecture diagram. An explicit goal flows through one of three authorization modes, the Personal Core daily engineering loop, and into a verified change. Supporting context, delivery layers, and the separate Enterprise Assurance line are shown below.</desc>
+  <desc id="desc">A light professional architecture diagram. An explicit goal may use optional authorization modes, then flows through the Personal Core change, review, and guidance loop. Optional Evidence, experimental Memory, and the Archived Assurance Edition are shown below.</desc>
   <defs>
     <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
       <path d="M0 0 L10 5 L0 10 Z" fill="#64748b"/>
@@ -22,7 +22,7 @@
   <rect x="80" y="48" width="10" height="58" rx="5" fill="#2563eb"/>
   <text x="112" y="72" class="section" fill="#2563eb">ROOTLOOM</text>
   <text x="112" y="108" class="title">Personal Engineering Architecture</text>
-  <text x="650" y="88" class="subtitle">One explicit goal → chosen authorization → evidence-led loop → verified change</text>
+  <text x="650" y="88" class="subtitle">One explicit goal → proportional workflow → inspectable change</text>
 
   <!-- Primary flow -->
   <rect x="70" y="178" width="1460" height="370" rx="24" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
@@ -57,19 +57,19 @@
   <path d="M710 353 L750 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
 
   <rect x="770" y="232" width="570" height="242" rx="18" fill="#ffffff" stroke="#c4b5fd" stroke-width="2"/>
-  <text x="796" y="270" class="card-title">Personal Core · Daily Engineering Loop</text>
+  <text x="796" y="270" class="card-title">Personal Core · Change / Review / Guidance</text>
   <path d="M815 353 L1297 353" stroke="#cbd5e1" stroke-width="4" stroke-linecap="round"/>
 
   <g>
     <rect x="794" y="310" width="78" height="86" rx="12" fill="#f8fafc" stroke="#cbd5e1"/>
     <circle cx="833" cy="334" r="13" fill="#e2e8f0"/>
     <text x="833" y="339" text-anchor="middle" class="node">R</text>
-    <text x="833" y="375" text-anchor="middle" class="node">Route</text>
+    <text x="833" y="375" text-anchor="middle" class="node">Guide</text>
 
     <rect x="882" y="310" width="82" height="86" rx="12" fill="#eff6ff" stroke="#93c5fd"/>
     <circle cx="923" cy="334" r="13" fill="#2563eb"/>
     <text x="923" y="339" text-anchor="middle" font-size="12" font-weight="700" fill="#ffffff">E</text>
-    <text x="923" y="375" text-anchor="middle" class="node">Evidence</text>
+    <text x="923" y="375" text-anchor="middle" class="node">Inspect</text>
 
     <rect x="974" y="310" width="88" height="86" rx="12" fill="#fff7ed" stroke="#fdba74"/>
     <circle cx="1018" cy="334" r="13" fill="#f59e0b"/>
@@ -98,12 +98,12 @@
 
   <path d="M1340 353 L1380 353" stroke="#64748b" stroke-width="2.5" marker-end="url(#arrow)"/>
 
-  <rect x="1400" y="278" width="100" height="150" rx="18" fill="#ecfdf5" stroke="#34d399" stroke-width="2"/>
-  <circle cx="1450" cy="319" r="20" fill="#059669"/>
-  <path d="M1440 319 L1447 326 L1461 311" fill="none" stroke="#ffffff" stroke-width="3.5" stroke-linecap="round" stroke-linejoin="round"/>
-  <text x="1450" y="361" text-anchor="middle" class="label">Verified</text>
+  <rect x="1400" y="278" width="100" height="150" rx="18" fill="#eff6ff" stroke="#60a5fa" stroke-width="2"/>
+  <circle cx="1450" cy="319" r="20" fill="#2563eb"/>
+  <text x="1450" y="326" text-anchor="middle" font-size="20" font-weight="700" fill="#ffffff">i</text>
+  <text x="1450" y="361" text-anchor="middle" class="label">Inspectable</text>
   <text x="1450" y="380" text-anchor="middle" class="label">Change</text>
-  <text x="1450" y="406" text-anchor="middle" class="small">reviewable</text>
+  <text x="1450" y="406" text-anchor="middle" class="small">bounded evidence</text>
 
   <!-- Supporting context and delivery -->
   <rect x="70" y="578" width="960" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
@@ -111,11 +111,13 @@
   <rect x="98" y="636" width="205" height="46" rx="12" fill="#eff6ff"/>
   <text x="200" y="664" text-anchor="middle" class="label">Project Guidance</text>
   <rect x="318" y="636" width="205" height="46" rx="12" fill="#f5f3ff"/>
-  <text x="420" y="664" text-anchor="middle" class="label">Engineering Memory</text>
+  <text x="420" y="656" text-anchor="middle" class="label">Experimental Memory</text>
+  <text x="420" y="674" text-anchor="middle" class="small">explicit · advisory</text>
   <rect x="538" y="636" width="205" height="46" rx="12" fill="#fff7ed"/>
   <text x="640" y="664" text-anchor="middle" class="label">Decision Records</text>
   <rect x="758" y="636" width="244" height="46" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-dasharray="6 5"/>
-  <text x="880" y="664" text-anchor="middle" class="label">Optional Strict Review</text>
+  <text x="880" y="656" text-anchor="middle" class="label">Optional Evidence</text>
+  <text x="880" y="674" text-anchor="middle" class="small">analyze · baseline · finalize</text>
 
   <rect x="1060" y="578" width="470" height="132" rx="20" fill="#ffffff" stroke="#e2e8f0" stroke-width="2"/>
   <text x="1088" y="615" class="section" fill="#64748b">DELIVERY LAYERS</text>
@@ -124,7 +126,7 @@
   <text x="1178" y="674" text-anchor="middle" class="small">skills only</text>
   <rect x="1282" y="636" width="220" height="46" rx="12" fill="#f5f3ff"/>
   <text x="1392" y="656" text-anchor="middle" class="label">Optional Personal Setup</text>
-  <text x="1392" y="674" text-anchor="middle" class="small">guidance · rules · hook</text>
+  <text x="1392" y="674" text-anchor="middle" class="small">guidance · autonomy · context</text>
 
   <rect x="70" y="742" width="960" height="92" rx="18" fill="#eff6ff" stroke="#bfdbfe"/>
   <circle cx="108" cy="788" r="15" fill="#2563eb"/>
@@ -133,6 +135,6 @@
   <text x="138" y="804" class="small">Global guidance owns mode and scope semantics. Platform controls remain authoritative.</text>
 
   <rect x="1060" y="742" width="470" height="92" rx="18" fill="#ffffff" stroke="#a78bfa" stroke-width="2" stroke-dasharray="8 6"/>
-  <text x="1088" y="780" class="card-title">Enterprise Assurance</text>
-  <text x="1088" y="805" class="small">Separate product line · no Personal Core runtime dependency</text>
+  <text x="1088" y="780" class="card-title">Archived Assurance Edition</text>
+  <text x="1088" y="805" class="small">Unmaintained snapshot · recoverable source</text>
 </svg>

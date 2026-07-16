@@ -19,7 +19,12 @@ from typing import Any
 
 PLUGIN_LIB = Path(__file__).resolve().parents[3] / "lib"
 sys.path.insert(0, str(PLUGIN_LIB))
-from rootloom_paths import is_protected_deletion_path, normalize_repo_path
+from rootloom_paths import (
+    MAX_REVIEWABLE_PATHS,
+    is_protected_deletion_path,
+    normalize_repo_path,
+    normalize_reviewable_paths,
+)
 
 from runner.baseline import (
     BASELINE_FORMAT_V2,
@@ -40,6 +45,7 @@ from runner.change_contract import (
 )
 from runner.contracts import (
     DANGEROUS_DELETE_EXIT,
+    REINTAKE_REQUIRED_EXIT,
     RISK_LEVELS,
     SUMMARY_FORMAT,
     SUMMARY_SCHEMA_REVISION,
@@ -750,6 +756,28 @@ def main(argv: list[str] | None = None) -> int:
             )
             baseline_extra = list(baseline["sensitive_paths"])
             baseline_reviewable = list(baseline.get("reviewable_paths", []))
+            try:
+                current_reviewable = normalize_reviewable_paths(
+                    baseline_reviewable,
+                    extra_sensitive=set(baseline_extra),
+                    max_paths=MAX_REVIEWABLE_PATHS,
+                )
+                if current_reviewable != baseline_reviewable:
+                    raise ValueError(
+                        "reviewable paths do not match current canonical policy"
+                    )
+            except ValueError as exc:
+                print(
+                    json.dumps(
+                        {
+                            "status": "reintake-required",
+                            "reason": str(exc),
+                        },
+                        ensure_ascii=True,
+                        sort_keys=True,
+                    )
+                )
+                return REINTAKE_REQUIRED_EXIT
             baseline_reviewable_set = set(baseline_reviewable)
             baseline_missing_reviewable = {
                 item["path"]
@@ -857,6 +885,7 @@ def main(argv: list[str] | None = None) -> int:
             max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            max_reviewable_paths=MAX_REVIEWABLE_PATHS,
             capture_deadline=capture_deadline_before,
         )
     except (OSError, ValueError) as exc:
@@ -1104,6 +1133,7 @@ def main(argv: list[str] | None = None) -> int:
             max_capture_seconds=args.max_capture_seconds,
             max_git_seconds=args.max_git_seconds,
             max_sensitive_paths=args.max_sensitive_paths,
+            max_reviewable_paths=MAX_REVIEWABLE_PATHS,
             capture_deadline=capture_deadline_after,
         )
     except (OSError, ValueError) as exc:
@@ -1281,7 +1311,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "3.2.0",
+        "producer_version": "3.3.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,
@@ -1337,7 +1367,23 @@ def main(argv: list[str] | None = None) -> int:
         "reviewability_policy": {
             "enabled": bool(baseline_reviewable),
             "paths": baseline_reviewable,
-            "source": "intake-sealed" if baseline_reviewable else None,
+            "policy_provenance": (
+                "intake-sealed"
+                if baseline_reviewable and baseline_intake_sealed
+                else "self-declared"
+                if baseline_reviewable
+                else None
+            ),
+            "captured_files_provenance": (
+                "final-capture-observed" if baseline_reviewable else None
+            ),
+            "source": (
+                "intake-sealed"
+                if baseline_reviewable and baseline_intake_sealed
+                else "self-declared"
+                if baseline_reviewable
+                else None
+            ),
             "policy_sha256": (
                 baseline.get("sensitive_policy_sha256")
                 if baseline is not None and baseline_reviewable

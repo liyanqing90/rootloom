@@ -32,7 +32,7 @@ There are no runtime or test dependencies outside the Python standard library.
 plugins/rootloom/       Installable Codex plugin
   .codex-plugin/plugin.json            Plugin metadata
   assets/system/                       Installable global guidance and command Rules
-  hooks/                               Optional SessionStart project-guidance seeding
+  hooks/                               Optional read-only SessionStart project context
   skills/                              Personal workflow, memory, setup, guidance, review, and risk Skills
 tests/                                 Unit and live integration checks
 scripts/validate_repo.py               Repository contract validation
@@ -94,6 +94,8 @@ Rootloom applies Semantic Versioning to observable JSON, CLI, persisted evidence
 A schema revision inside the same top-level `format` does not automatically make a change Minor. Review the real producer/consumer contract and mixed-version behavior. Prefer stable capability fields such as `evidence_complete` for automation; treat detailed status enums as diagnostic presentation. Never preserve a misleading status as an authoritative compatibility alias.
 
 Published tags and Releases are immutable. A post-release correction receives a new version; it never moves or deletes the existing tag during ordinary release maintenance.
+
+Accumulate compatible boundary fixes under `Unreleased` and batch formal releases. GitHub PRs, Actions, tags, and Releases own publication facts; do not add one-time `.codex/plans/`, Publication Records, Final Records, Release IDs, tag-object IDs, or CI run IDs to the repository. `CHANGELOG.md` records only user-observable changes.
 
 ## Pull requests
 

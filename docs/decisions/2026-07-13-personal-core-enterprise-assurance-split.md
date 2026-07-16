@@ -19,7 +19,7 @@ The accepted product direction is to keep the personal loop—risk classificatio
 | --- | --- | --- | --- | --- | --- |
 | The complete Assurance baseline is retained independently | fact | local Git repository | 2026-07-13 | branch `codex/enterprise-assurance` at commit `7da82dc8ad0faee0aa6a51c569bab8a60c233b8a` | current; no sensitive data |
 | Assurance machinery dominated the former implementation and public contract | fact | local repository baseline | 2026-07-13 | former `plugins/rootloom/skills/high-assurance-coding-change/`, setup, Hooks, tests, CI, and 1.2.19 docs on the retained branch | current baseline; no sensitive data |
-| The requested direction is default Core with separated enterprise capability | fact | user-provided product plan | 2026-07-13 | task attachment summarized in `.codex/plans/personal-core-split.md` | current; no sensitive data |
+| The requested direction is default Core with separated enterprise capability | fact | user-provided product plan | 2026-07-13 | accepted decision context and branch implementation | current; no sensitive data |
 | Both product branches and the Personal Core release are public | fact | GitHub `liyanqing90/rootloom` | 2026-07-13 | `main` at `7667ae5`; `codex/enterprise-assurance` at `7da82dc`; annotated tag and Release `v2.0.0`; CI run `29261706308` | current; no sensitive data |
 
 ## Decision
@@ -39,9 +39,9 @@ This is a breaking product and setup boundary. Personal Core does not silently m
 ## Consequences
 
 - Positive: individual users get a smaller default product centered on daily engineering decisions and reusable memory.
-- Positive: enterprise work remains recoverable and can evolve as a distinct product line.
+- Positive: the archived Assurance implementation remains recoverable if independent maintenance resumes.
 - Negative: high-assurance Skill, Runner CLI, Human Review formats, and setup/recovery interfaces are not compatible on `main`.
-- Negative: Enterprise Assurance is distributed as a preserved branch rather than an independently versioned plugin, so installation remains an advanced path.
+- Negative: Archived Assurance Edition is preserved as a branch rather than maintained as an independently versioned plugin, so it is not an active product line.
 - Operational: public behavior changes require synchronized English/Chinese documentation; migration must instruct users to roll back with the product version that created their setup.
 - Operational: release 2.0.0 publishes both `main` and `codex/enterprise-assurance`; future changes must keep their contracts and versions visibly separate.
 
@@ -54,6 +54,6 @@ This is a breaking product and setup boundary. Personal Core does not silently m
 
 ## Revisit when
 
-- users need Enterprise Assurance distributed as an independently versioned plugin rather than a branch;
+- users need the Archived Assurance Edition restored as an actively maintained, independently versioned plugin rather than a branch;
 - Personal Core usage evidence shows that one removed mechanism is necessary for ordinary individual workflows;
 - the platform provides a substantially simpler native approval, immutable audit, or multi-agent enforcement boundary.

@@ -2,7 +2,7 @@
 
 ## 项目指导 Hook 没有执行
 
-确认已安装 personal 或 guidance preset，并且 `~/.codex/.rootloom/components.json` 中存在托管布尔值 `project-guidance-hook: true`。策略缺失、损坏或为符号链接时 Hook 会关闭。插件或 setup 变化后新建 Codex 任务，并重新检查 `/hooks`。
+确认已安装 personal 或 guidance preset，并且 `~/.codex/.rootloom/components.json` 同时包含精确整数 `version: 1` 与托管布尔值 `project-guidance-hook: true`。策略缺失、损坏、类型错误、版本不支持或为符号链接时 Hook 会关闭。Hook 只注入临时 Context，绝不写入 `AGENTS.md`；需要持久化时显式调用 `$seed-project-guidance`。插件或 setup 变化后新建 Codex 任务，并重新检查 `/hooks`。
 
 仓库未被平台信任时扫描器也会跳过。`ROOTLOOM_ALLOW_UNTRUSTED=1` 仅用于受控测试。
 

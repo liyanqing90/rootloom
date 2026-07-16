@@ -16,7 +16,7 @@ import uuid
 
 from .state import DEFAULT_MAX_GIT_SECONDS, git_bounded, git_identity
 from .strict_json import parse_json_object
-from rootloom_paths import validate_reviewable_policy_path
+from rootloom_paths import MAX_REVIEWABLE_PATHS, validate_reviewable_policy_path
 
 
 BASELINE_FORMAT = "rootloom-change-baseline-v1"
@@ -24,7 +24,7 @@ BASELINE_FORMAT_V2 = "rootloom-change-baseline-v2"
 BASELINE_FORMAT_V3 = "rootloom-change-baseline-v3"
 BASELINE_FORMAT_V4 = "rootloom-change-baseline-v4"
 MAX_BASELINE_BYTES = 16 * 1024 * 1024
-PRODUCER_VERSION = "3.2.0"
+PRODUCER_VERSION = "3.3.0"
 MAX_FUTURE_CLOCK_SKEW_SECONDS = 300
 SHA256_PATTERN = re.compile(r"[0-9a-f]{64}")
 GIT_OBJECT_PATTERN = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
@@ -168,6 +168,11 @@ def baseline_payload(
         _normalized_repo_path(path, field="reviewable_paths")
         for path in reviewable_paths or []
     )
+    if len(normalized_reviewable) > MAX_REVIEWABLE_PATHS:
+        raise ValueError(
+            "baseline reviewable_paths exceed configured "
+            f"{MAX_REVIEWABLE_PATHS}-path budget"
+        )
     if len({path.casefold() for path in normalized_reviewable}) != len(
         normalized_reviewable
     ):
@@ -223,18 +228,21 @@ def write_new_baseline(path: Path, payload: dict[str, Any]) -> None:
             payload,
             version=2,
             sealed_provenance="operator-sealed",
+            enforce_current_reviewability_policy=True,
         )
     elif payload.get("format") == BASELINE_FORMAT_V3:
         _validate_versioned_baseline(
             payload,
             version=3,
             sealed_provenance="intake-sealed",
+            enforce_current_reviewability_policy=True,
         )
     elif payload.get("format") == BASELINE_FORMAT_V4:
         _validate_versioned_baseline(
             payload,
             version=4,
             sealed_provenance="intake-sealed",
+            enforce_current_reviewability_policy=True,
         )
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists() or path.is_symlink():
@@ -378,6 +386,7 @@ def _validate_versioned_baseline(
     *,
     version: int,
     sealed_provenance: str,
+    enforce_current_reviewability_policy: bool,
 ) -> None:
     expected_fields = (
         VERSIONED_BASELINE_V4_FIELDS if version == 4 else VERSIONED_BASELINE_FIELDS
@@ -546,11 +555,17 @@ def _validate_versioned_baseline(
             raise ValueError(
                 "baseline reviewable_paths must not contain case-insensitive duplicates"
             )
-        for path in normalized_reviewable:
-            validate_reviewable_policy_path(
-                path,
-                extra_sensitive=set(normalized_sensitive),
-            )
+        if enforce_current_reviewability_policy:
+            if len(normalized_reviewable) > MAX_REVIEWABLE_PATHS:
+                raise ValueError(
+                    "baseline reviewable_paths exceed configured "
+                    f"{MAX_REVIEWABLE_PATHS}-path budget"
+                )
+            for path in normalized_reviewable:
+                validate_reviewable_policy_path(
+                    path,
+                    extra_sensitive=set(normalized_sensitive),
+                )
         snapshot_sensitive_paths = {
             item["path"] for item in snapshot["sensitive_paths"]
         }
@@ -595,18 +610,21 @@ def read_baseline_payload_with_hash(path: Path) -> tuple[dict[str, Any], str]:
             payload,
             version=2,
             sealed_provenance="operator-sealed",
+            enforce_current_reviewability_policy=False,
         )
     elif payload.get("format") == BASELINE_FORMAT_V3:
         _validate_versioned_baseline(
             payload,
             version=3,
             sealed_provenance="intake-sealed",
+            enforce_current_reviewability_policy=False,
         )
     elif payload.get("format") == BASELINE_FORMAT_V4:
         _validate_versioned_baseline(
             payload,
             version=4,
             sealed_provenance="intake-sealed",
+            enforce_current_reviewability_policy=False,
         )
     snapshot = payload.get("snapshot")
     if not isinstance(snapshot, dict) or not isinstance(
