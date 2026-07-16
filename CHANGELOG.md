@@ -15,6 +15,7 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Make the SessionStart project-guidance Hook read-only: it injects temporary detected context, while only an explicit `$seed-project-guidance` request may create or refresh `AGENTS.md`.
 - Reduce the installed global working agreement to root-cause repair, unrelated-work preservation, risk tiers, proportional verification, opt-in deep review, and minimal authorization semantics.
 - Position Personal Core as an inspectable engineering workflow rather than a verified-quality layer, and state the path-based secret-classification and independent-assurance limits explicitly.
+- Move the pinned `actions/setup-node` runtime to v6.4.0 so CI no longer relies on GitHub's deprecated Node 20 action runtime.
 
 ### Fixed
 
