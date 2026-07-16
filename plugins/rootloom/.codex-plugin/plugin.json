@@ -1,7 +1,7 @@
 {
   "name": "rootloom",
   "version": "3.4.0",
-  "description": "An inspectable personal engineering workflow for Codex: scoped, risk-aware, and evidence-honest.",
+  "description": "Make OpenAI Codex show its work: scoped changes, root-cause review, explicit guidance, and evidence-honest verification.",
   "author": {
     "name": "liyanqing",
     "url": "https://github.com/liyanqing90"
@@ -17,17 +17,22 @@
     "automation",
     "hooks",
     "skills",
+    "agent-skills",
+    "openai-codex",
     "personal-engineering",
     "project-memory",
     "engineering-memory",
     "risk-analysis",
+    "root-cause-analysis",
+    "software-engineering",
+    "verification",
     "code-review"
   ],
   "skills": "./skills/",
   "interface": {
     "displayName": "Rootloom",
-    "shortDescription": "Inspectable Codex engineering, woven from the roots up.",
-    "longDescription": "Rootloom gives individual developers a small Change, Review, and Guidance core. Low-confirmation Autonomy and bounded Evidence are optional; Project Memory is experimental. Installation stays lightweight, SessionStart context is read-only, and deep review remains explicit and separate from archived approval or audit machinery.",
+    "shortDescription": "Scoped, evidence-honest engineering for OpenAI Codex.",
+    "longDescription": "Rootloom is a local, inspectable OpenAI Codex engineering workflow for scoped changes, root-cause review, explicit AGENTS.md guidance, and honest verification records. Everyday Change, Review, and Guidance stay lightweight; Autonomy and bounded Evidence are optional, and Project Memory remains experimental.",
     "developerName": "liyanqing",
     "category": "Productivity",
     "capabilities": [
@@ -42,9 +47,9 @@
     "logo": "./assets/logo.svg",
     "logoDark": "./assets/logo-dark.svg",
     "defaultPrompt": [
-      "Classify and execute a task with the right Rootloom workflow tier.",
-      "Inspect project context, and persist AGENTS.md guidance only when explicitly requested.",
-      "Run an opt-in deep engineering review with a compact evidence summary."
+      "Fix this defect at its owning boundary and verify the primary, invariant, and adjacent paths.",
+      "Review this change and separate suggested checks from verification that actually ran.",
+      "Create concise, evidence-backed AGENTS.md guidance for this repository."
     ]
   }
 }

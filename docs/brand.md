@@ -7,6 +7,14 @@ Rootloom combines two ideas:
 
 The violet woven-root mark is the canonical symbol. It should communicate one coherent engineering workflow, not product tiers or mandatory agent orchestration.
 
+## Messaging
+
+- Primary line: **Make Codex show its work.**
+- Discovery description: **A local OpenAI Codex plugin for scoped code changes, root-cause review, explicit project guidance, and evidence-honest verification.**
+- Concrete promise: distinguish suggested checks, commands that actually ran, final repository state, and operator semantic judgment.
+
+Use `evidence-honest`, `inspectable`, and `scoped` for the public product. Do not describe Rootloom as proving correctness, security, or a “verified change.” Case studies must name the observed decision and link executable evidence.
+
 ## Assets
 
 | Asset | Use |
