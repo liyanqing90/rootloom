@@ -1317,7 +1317,7 @@ def main(argv: list[str] | None = None) -> int:
     summary = {
         "format": SUMMARY_FORMAT,
         "schema_revision": SUMMARY_SCHEMA_REVISION,
-        "producer_version": "3.3.0",
+        "producer_version": "3.4.0",
         "changed_files": changed_files,
         "risk": assessment["effective_risk"],
         "risk_assessment": risk_assessment,

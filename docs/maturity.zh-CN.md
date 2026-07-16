@@ -63,3 +63,5 @@ Personal Core 3.1 在不改变 Summary Revision 5 的前提下收窄秘密材料
 Personal Core 3.2 保持 v3/v4 Wire Format，但拒绝 Ignored 或被 Git Index 标志隐藏的 Reviewable Target、Hardlink、大小写歧义和常见私钥名称。DER 与 PEM 一样默认属于 Metadata-only 歧义材料，因为两种编码都可能包含私钥。Summary Revision 5 以附加字段披露密封的 Reviewability Policy 与捕获的文件身份元数据；按仓库 SemVer 规则，该可选字段使 3.2 成为 Minor Release。
 
 Personal Core 3.3 批量交付 Core Reset，同时继续冻结这些 Wire Version。历史 Baseline Reader 只校验结构与 Hash，不再套用最新 Reviewability 分类器；Finalizer 独立执行当前策略，并在读取不兼容 Reviewable 内容前返回 `reintake-required`。Reviewable 声明使用固定 64 项上限，Provenance 区分已验证 Intake Policy 与最终 Capture Observation，SessionStart Context 改为只读，Project Memory 明确标为 Experimental。
+
+Personal Core 3.4 在不改变 Baseline 或 Summary Format 的前提下，闭合动态 Context 与 Experimental Project Memory 的可执行边界。SessionStart 使用独立的增量 Renderer，把完整 Additional Context 限制在 4 KiB，并跳过 Plan Session。Analyzer 与 Finalizer 不再根据仓库中存在 `.project-memory/` 推断同意；调用方通过新增的 `--include-project-memory` Flag 显式选择，敏感变化隔离仍会阻止仓库读取。不依赖隐式 Memory 读取的现有自动化继续沿用原有 CLI 与 Evidence Contract。
