@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-17T18:14:02+08:00",
+  "title": "Design System: Rootloom",
+  "extensions": {
+    "colorMeta": {
+      "canvas": {
+        "role": "neutral",
+        "displayName": "Canvas White",
+        "canonical": "oklch(100% 0 0)",
+        "tonalRamp": ["#ffffff", "#fafafa", "#f5f5f6", "#ececef", "#d9d8df", "#aba9b2", "#62616a", "#17161b"]
+      },
+      "ink": {
+        "role": "primary",
+        "displayName": "Workshop Ink",
+        "canonical": "oklch(18% 0.015 285)",
+        "tonalRamp": ["#f2f1f4", "#d9d7de", "#b8b5c0", "#8e8a98", "#62616a", "#3d3b44", "#29272f", "#17161b"]
+      },
+      "violet": {
+        "role": "primary",
+        "displayName": "Rootloom Violet",
+        "canonical": "oklch(61% 0.19 292)",
+        "tonalRamp": ["#f5f1ff", "#e5daff", "#c9b5ff", "#ad8cff", "#8d68ec", "#7150c8", "#563aa1", "#39226f"]
+      },
+      "green": {
+        "role": "semantic",
+        "displayName": "Verified Green",
+        "canonical": "oklch(48% 0.13 150)",
+        "tonalRamp": ["#eefaf3", "#d2f1df", "#a7e0bd", "#74c997", "#42a873", "#238555", "#17663f", "#0b4429"]
+      }
+    },
+    "typographyMeta": {
+      "display": {
+        "displayName": "Display",
+        "purpose": "One hero statement and major section arguments."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Plainspoken explanations capped at 68 characters per line."
+      },
+      "code": {
+        "displayName": "Literal Code",
+        "purpose": "Commands, Skill names, and machine output only."
+      }
+    },
+    "shadows": [],
+    "motion": [
+      {
+        "name": "state",
+        "value": "180ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "Hover, focus, copy confirmation, and language changes."
+      },
+      {
+        "name": "entrance",
+        "value": "520ms cubic-bezier(0.22, 1, 0.36, 1)",
+        "purpose": "One orchestrated first-load reveal, disabled for reduced motion."
+      }
+    ],
+    "breakpoints": [
+      {"name": "mobile", "value": "720px"},
+      {"name": "wide", "value": "1120px"}
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "The single dominant action within a section.",
+      "html": "<button class=\"ds-button-primary\">Install Rootloom</button>",
+      "css": ".ds-button-primary{background:#177346;color:#fff;border:0;border-radius:8px;padding:14px 20px;font:650 14px/1.2 Avenir Next,Segoe UI,sans-serif;transition:transform 180ms cubic-bezier(.22,1,.36,1)}.ds-button-primary:hover{transform:translateY(-1px)}.ds-button-primary:focus-visible{outline:3px solid #8d68ec;outline-offset:3px}"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "refersTo": "button-secondary",
+      "description": "A quieter action next to the section primary.",
+      "html": "<button class=\"ds-button-secondary\">View on GitHub</button>",
+      "css": ".ds-button-secondary{background:#fff;color:#17161b;border:1px solid #17161b;border-radius:8px;padding:13px 19px;font:650 14px/1.2 Avenir Next,Segoe UI,sans-serif}.ds-button-secondary:hover{background:#f5f5f6}.ds-button-secondary:focus-visible{outline:3px solid #8d68ec;outline-offset:3px}"
+    },
+    {
+      "name": "Command Block",
+      "kind": "custom",
+      "refersTo": "command",
+      "description": "A literal, copyable installation command.",
+      "html": "<div class=\"ds-command\"><code>codex plugin add rootloom@rootloom</code><button>Copy command</button></div>",
+      "css": ".ds-command{display:flex;align-items:center;gap:16px;background:#f7f7fa;color:#17161b;border-radius:12px;padding:16px 18px;font:500 14px/1.5 SFMono-Regular,Consolas,monospace}.ds-command code{flex:1}.ds-command button{background:none;border:0;color:#563aa1;font:650 13px/1.2 Avenir Next,Segoe UI,sans-serif}.ds-command button:focus-visible{outline:3px solid #8d68ec;outline-offset:3px}"
+    },
+    {
+      "name": "Language Control",
+      "kind": "button",
+      "description": "Switches English and Chinese without reloading the page.",
+      "html": "<button class=\"ds-language\" lang=\"zh-CN\">中文</button>",
+      "css": ".ds-language{background:transparent;color:#17161b;border:0;border-bottom:1px solid #d9d8df;padding:6px 2px;font:650 14px/1.2 Avenir Next,Segoe UI,sans-serif}.ds-language:hover{border-color:#17161b}.ds-language:focus-visible{outline:3px solid #8d68ec;outline-offset:3px}"
+    },
+    {
+      "name": "Workflow Step",
+      "kind": "custom",
+      "description": "One owned step in the engineering sequence, placed on a shared rail.",
+      "html": "<div class=\"ds-workflow-step\"><span aria-hidden=\"true\"></span><strong>Find the owner</strong><p>Trace the symptom to the boundary that owns the behavior.</p></div>",
+      "css": ".ds-workflow-step{display:grid;grid-template-columns:12px minmax(0,1fr);column-gap:16px;color:#17161b;font-family:Avenir Next,Segoe UI,sans-serif}.ds-workflow-step span{width:12px;height:12px;margin-top:5px;border-radius:50%;background:#e77800}.ds-workflow-step strong{font-size:18px;line-height:1.2}.ds-workflow-step p{grid-column:2;margin:8px 0 0;max-width:48ch;color:#62616a;font-size:16px;line-height:1.6}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Working Loom",
+    "overview": "A precise workshop tool shown on a clean bench. The hand-drawn loom carries the human character while open bands, black rules, and restrained spot colors keep the interface exact and inspectable.",
+    "keyCharacteristics": [
+      "True white canvas with near-black structural ink",
+      "One decisive raster illustration",
+      "Open layouts connected by rules and thread paths",
+      "Plainspoken copy and real commands",
+      "Spot color used only for meaning"
+    ],
+    "rules": [
+      {"name": "The Spot Color Rule", "body": "Accent colors explain state or sequence and occupy less than 12% of a viewport.", "section": "colors"},
+      {"name": "The Literal Mono Rule", "body": "Monospace is reserved for commands, Skill names, and machine output.", "section": "typography"},
+      {"name": "The Bench Rule", "body": "Content rests on the page; it does not float in glass or shadow stacks.", "section": "elevation"}
+    ],
+    "dos": [
+      "Keep the installation action visible in the first viewport.",
+      "Use the cat-at-the-loom image as the single signature illustration.",
+      "State limits with the same visual weight as capabilities."
+    ],
+    "donts": [
+      "Do not use generic purple-gradient SaaS pages, glass panels, or soft glowing blobs.",
+      "Do not build repetitive feature-card grids or giant rounded wrappers.",
+      "Do not use terminal cosplay, fake metrics, inflated AI claims, or dense audit terminology in the first viewport."
+    ]
+  }
+}

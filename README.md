@@ -5,16 +5,16 @@
 <h1 align="center">Rootloom</h1>
 
 <p align="center">
-  <strong>Make Codex show its work.</strong>
+  <strong>Turn Codex code changes into inspectable engineering work.</strong>
 </p>
 
 <p align="center">
-  A local OpenAI Codex plugin for scoped code changes, root-cause review,<br>
-  explicit project guidance, and evidence-honest verification.
+  A local OpenAI Codex plugin for finding the right place to change,<br>
+  keeping the patch in scope, and showing what was actually verified.
 </p>
 
 <p align="center">
-  <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
+  <a href="https://liyanqing90.github.io/rootloom/">Website</a> · <a href="README.zh-CN.md">简体中文</a> · <strong>English</strong>
 </p>
 
 <p align="center">
@@ -24,114 +24,143 @@
   <img src="https://img.shields.io/badge/Python-3.11%2B-39B98F" alt="Python 3.11+">
 </p>
 
-Coding agents can run a test and still leave the wrong invariant unfixed. They can suggest a verification command without executing it, or execute it after the repository state has changed. Rootloom gives Codex a small engineering workflow that makes those distinctions visible.
+<p align="center">
+  <img src="assets/rootloom-xiaohei-loom-en.png" width="1000" alt="Rootloom weaves risk, defects, and project context together with evidence, scope, and tests to produce a verified change">
+</p>
 
-Rootloom helps an individual developer:
+## What is Rootloom?
 
-- trace a defect to the boundary that owns the behavior before editing;
-- keep the change inside an explicit, reviewable scope;
-- derive verification from the changed behavior and risk;
-- separate suggested checks, executed commands, captured state, and human semantic judgment;
-- keep reusable `AGENTS.md` guidance and project memory explicit rather than silently persistent.
+Rootloom is a local plugin for OpenAI Codex. It is not another coding agent and it does not replace your editor, tests, or CI. It gives Codex a small set of Skills for changing code, reviewing changes, maintaining repository guidance, and—when you explicitly ask for it—capturing a machine-readable evidence bundle.
 
-> Rootloom makes workflow mechanics inspectable. It does not prove that a model's diagnosis is correct, that a change is secure, or that passing tests establish semantic correctness. See [maturity and guarantees](docs/maturity.md).
+You still describe the task in plain language. Rootloom changes how Codex approaches it:
 
-## A real case: the command passed, the review failed
+1. read the repository and its local rules before editing;
+2. judge the risk and define a sensible scope;
+3. for a defect, trace the symptom to the boundary that owns the behavior;
+4. make the smallest coherent change;
+5. verify the main path, the owning invariant, and an adjacent path;
+6. report the commands that actually ran, their results, and what remains uncertain.
 
-During Rootloom's own development, a verification command returned exit code 0 after creating a newly ignored `.env` file and copying its synthetic value into an ordinary file. Treating command success as task success would have accepted a capture that no longer represented the reviewed state.
-
-Rootloom's post-verification capture changed the decision:
-
-- the new sensitive path activated quarantine;
-- changed content stayed out of `diff.patch`;
-- the copied file became metadata-only;
-- `capture_preserved` became false;
-- the strict review returned failure instead of a passing completion claim.
-
-The focused regression is executable today:
-
-```bash
-python3 -m unittest \
-  tests.test_engineering_change.EngineeringChangeTests.test_new_ignored_sensitive_path_is_a_scoped_task_change \
-  tests.test_engineering_change.EngineeringChangeTests.test_verification_new_ignored_sensitive_path_quarantines_before_recapture
-```
-
-Read the complete, evidence-linked [case study](docs/case-studies/passing-command-failed-review.md).
-
-## Start in 60 seconds
-
-Requirements: Codex CLI or desktop with plugin support, Git, and Python 3.11+.
-
-```bash
-codex plugin marketplace add liyanqing90/rootloom
-codex plugin add rootloom@rootloom
-```
-
-Installation is complete after those two commands. The plugin does not silently enable any optional layer.
-
-Start a new Codex task, then choose the lightest workflow that fits:
+For most work, this is the only invocation you need:
 
 ```text
 $operating-coding-change
 Fix the reconnect race and verify reconnect, clean disconnect, and cancellation.
 ```
 
-For an explicitly requested machine evidence bundle:
+## Why use it?
 
-```text
-$engineering-change
-Audit the reconnect change and report what verification actually ran.
+Coding agents are good at producing plausible patches. Plausible is not the same as correct, reviewable, or complete.
+
+| A common failure | What Rootloom asks Codex to do instead |
+| --- | --- |
+| Patch the line closest to the error | Find the component that owns the violated behavior |
+| Keep editing until one test passes | State the intended scope and preserve unrelated work |
+| Test only the happy path | Check the primary path, the invariant, and a nearby alternate or failure path |
+| Say “tests passed” without a useful record | Name the exact commands that ran and the result of each |
+| Treat exit code 0 as proof of completion | Check whether scope, repository state, or captured evidence changed afterward |
+| Add process to every task | Use a lightweight daily workflow; opt into deeper evidence only when it changes a decision |
+
+The practical value is simple: fewer fixes at the wrong layer, smaller diffs, clearer reviews, and completion claims you can inspect.
+
+> Rootloom makes the work easier to examine. It does not make a model infallible or turn passing tests into proof of correctness.
+
+## Quick start
+
+You need Codex CLI or desktop with plugin support, Git, and Python 3.11+.
+
+### 1. Install the plugin
+
+```bash
+codex plugin marketplace add liyanqing90/rootloom
+codex plugin add rootloom@rootloom
 ```
 
-Plugin installation only makes the Skills available. It does not write `~/.codex/AGENTS.md`, install command Rules, enable a Hook, run analyzers, or read Project Memory.
+Installation is complete after those two commands.
 
-## Choose the lightest workflow
+### 2. Start a new Codex task
 
-| Need | Rootloom Skill | Default |
+Plugin Skills are discovered when a task starts. No project configuration, daemon, or separate Rootloom command is required.
+
+### 3. Ask for the work
+
+```text
+$operating-coding-change
+The worker can reconnect after cancellation and create two active sessions.
+Find the cause, fix it without changing the public API, and run the relevant tests.
+```
+
+A useful completion report should now answer four concrete questions:
+
+```text
+Cause        Where did the behavior originate, and which invariant was broken?
+Change       Which files and behavior changed?
+Verification Which commands actually ran, and what did each prove?
+Risk         What remains unverified or uncertain?
+```
+
+That is Rootloom's everyday path. You do not need an evidence bundle, global setup, or every Skill in the plugin to use it.
+
+## Choose the workflow that matches the task
+
+| You want Codex to… | Use | When to reach for it |
 | --- | --- | --- |
-| Ordinary implementation or defect repair | `$operating-coding-change` | Core |
-| Review a diff, PR, migration, or architecture change | `$operating-code-review` | Core |
-| Govern a public API, migration, security, infrastructure, release, or destructive change | `$operating-high-risk-change` | Core |
-| Produce bounded capture and a machine-readable evidence summary | `$engineering-change` | Explicit opt-in |
-| Create or refine repository `AGENTS.md` guidance | `$seed-project-guidance`, `$refine-project-guidance` | Explicit write |
-| Retrieve or record durable project lessons | `$project-memory` | Experimental and explicit |
+| Build, fix, or refactor ordinary code | `$operating-coding-change` | The default for daily implementation |
+| Review a diff, PR, migration, or design without editing | `$operating-code-review` | You want findings and evidence, not a patch |
+| Handle a public API, migration, security, infrastructure, release, or destructive change | `$operating-high-risk-change` | A wrong change would have a meaningful blast radius |
+| Create or improve repository `AGENTS.md` guidance | `$seed-project-guidance`, then `$refine-project-guidance` | Project-specific commands or invariants should persist |
+| Capture bounded state and a machine-readable evidence summary | `$engineering-change` | You explicitly need a stronger review record |
+| Retrieve or record a durable project lesson | `$project-memory` | Experimental; current repository evidence still wins |
 
-Ordinary work stays on the repository's normal edit-and-test path. The deep evidence loop is not an installation-time gate.
+These Skills are alternatives and layers, not a checklist. Start with the lightest one that fits the task.
 
-## How Rootloom works
+## How an ordinary change works
 
 ```text
-Task
-  ↓
-Risk and scope
-  ↓
-Evidence → Diagnosis → Change Contract → Implementation
-  ↓
-Behavior-based verification → Honest completion claim
+Your request
+    ↓
+Repository evidence and local guidance
+    ↓
+Risk + scope
+    ↓
+Root cause for a defect / intended behavior for a feature
+    ↓
+Focused change
+    ↓
+Behavior-based verification
+    ↓
+Evidence-backed completion report
 ```
 
-For routine Tier 0/1 work, the active Codex agent applies the workflow directly with repository evidence and proportional tests. For a high-risk or explicitly governed review, Rootloom can additionally bind:
+For a defect, Rootloom pushes the investigation toward an explicit chain:
 
-- repository and Git state before the change;
+```text
+symptom → trigger → owning boundary → violated invariant → cause
+```
+
+For a feature, there is no invented “root cause”; the workflow states the intended behavior and ownership instead. Verification is derived from what changed rather than from whichever test command is easiest to run.
+
+## Why “the command passed” is not enough
+
+Rootloom's own development produced a useful example. A verification command exited successfully, but while running it created a newly ignored `.env` file and copied its synthetic value into an ordinary file. The command passed; the reviewed repository state did not remain the same.
+
+The post-verification capture caught that difference, quarantined the sensitive path, kept changed content out of the patch bundle, and failed the strict review instead of issuing a passing completion claim.
+
+The full scenario and executable regression are documented in [The command passed, the review failed](docs/case-studies/passing-command-failed-review.md).
+
+## When you need stronger evidence
+
+Most tasks should stay on the normal edit-and-test path. When a review or high-risk change needs a reproducible local record, invoke `$engineering-change` explicitly.
+
+The optional evidence path can bind:
+
+- the Git and repository state before the change;
 - allowed and forbidden paths;
 - behavior claims to commands that actually ran;
-- final repository capture after verification;
-- machine-observed evidence separately from operator semantic judgment.
+- a second repository capture after verification;
+- machine-observed results separately from human semantic judgment.
 
-<p align="center">
-  <img src="docs/diagram/architecture-en.svg" width="980" alt="Rootloom Personal Core architecture: Change, Review, Guidance, optional Autonomy and Evidence, and experimental Project Memory">
-</p>
-
-## What evidence-honest means
-
-- A generated verification plan is labeled suggested, not executed.
-- A command appears as passed only after Rootloom observes a successful run.
-- A passing command is insufficient when repository state, scope, evidence, or capture changed.
-- Sensitive material is classified by path and retained as metadata-only; Rootloom is not a content-aware secret scanner.
-- `REVIEW_EVIDENCE_COMPLETE` means the documented evidence chain is complete. It does not mean correctness has been proven.
-- Verification commands are trusted operator input and run with bounded process-tree controls, not an untrusted-code sandbox.
-
-The wire formats and detailed limits live in [architecture](docs/architecture.md), [maturity and guarantees](docs/maturity.md), and [troubleshooting](docs/troubleshooting.md).
+It produces a local bundle containing the captured patch, test log, and machine-readable summary. This is an inspectable review record, not a security proof or an immutable audit system. See [Architecture](docs/architecture.md) and [Maturity and guarantees](docs/maturity.md) for the exact contract.
 
 <details>
 <summary><strong>Technical contract reference</strong></summary>
@@ -150,22 +179,30 @@ Evidence and bundle paths must be outside both the repository worktree and the r
 
 ## Optional personal setup
 
-The plugin is useful without setup. If you explicitly want a cross-project working agreement, invoke:
+Installing Rootloom only exposes its Skills. It does **not** write `~/.codex/AGENTS.md`, install command Rules, enable a Hook, run an analyzer, or read Project Memory.
+
+If you want Rootloom's working agreement across projects, ask for the optional setup explicitly:
 
 ```text
 $setup-rootloom
-Plan and install the optional personal preset.
+Show me the personal preset plan, then install it if there are no conflicts.
 ```
 
-| Preset | Adds |
-| --- | --- |
-| `skills-only` | No global assets; project-guidance Hook disabled |
-| `guidance` | Global working agreement and bounded read-only project context |
-| `personal` | Guidance plus optional low-confirmation Autonomy |
+Setup is plan-first, backup-backed, conflict-refusing, and reversible within its documented limits. It does not change your model, reasoning effort, sandbox, approval policy, providers, MCP servers, plugins, or apps. See [Setup, update, and rollback](docs/setup.md).
 
-The managed preset touches only `~/.codex/AGENTS.md`, `~/.codex/rules/rootloom.rules`, and Rootloom's small component/state files. It does not change the model, reasoning effort, sandbox, approval policy, MCP servers, providers, plugins, or apps. Setup is plan-first, backup-backed, conflict-refusing, and reversible within its documented limits.
+## What Rootloom is—and is not
 
-## Product boundaries
+Rootloom is deliberately narrow:
+
+- **It is** a single-agent engineering workflow for OpenAI Codex.
+- **It is** local, inspectable, and Python-standard-library-only at runtime.
+- **It is not** a specification framework, test runner, linter, secret scanner, CI system, or replacement for human review.
+- **It is not** a sandbox for untrusted verification commands.
+- **It does not** currently ship integrations for Claude Code, Cursor, or other coding agents.
+
+Specification tools such as [GitHub Spec Kit](https://github.com/github/spec-kit) and [OpenSpec](https://github.com/Fission-AI/OpenSpec) help define work before implementation. Tests, linters, scanners, and CI execute their own checks. Rootloom sits at the execution and review boundary: why this change, why here, what ran, and what evidence supports completion.
+
+## Product shape
 
 ```text
 Rootloom Personal Core
@@ -175,46 +212,7 @@ Rootloom Personal Core
 └── Experimental: Project Memory
 ```
 
-Rootloom is single-agent by default. Human approval state machines, immutable audit chains, multi-agent audit runners, and recovery journals are not part of `main`. The unmaintained 1.2.19 implementation is preserved as the [Archived Assurance Edition](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance), not as an active product line.
-
-## Where Rootloom fits
-
-Rootloom complements adjacent AI coding workflows:
-
-| If your primary need is... | Start with... |
-| --- | --- |
-| Specification-driven planning and task decomposition | [GitHub Spec Kit](https://github.com/github/spec-kit) or [OpenSpec](https://github.com/Fission-AI/OpenSpec) |
-| A broad, multi-agent software-development methodology | [Superpowers](https://github.com/obra/superpowers) |
-| Codex-specific scope control, root-cause review, project guidance, and evidence-honest completion | Rootloom |
-| Test execution, linting, security scanning, or CI | The native tool; Rootloom records and reasons over its evidence |
-
-Rootloom does not replace specifications, tests, linters, security scanners, CI, or human review.
-
-## FAQ
-
-### Is Rootloom an OpenAI Codex plugin?
-
-Yes. It packages Codex Skills, optional global guidance, optional command Rules, and one bounded read-only SessionStart Hook. Runtime helpers are local, network-free, and Python-standard-library-only.
-
-### Does Rootloom support Claude Code, Cursor, or other coding agents?
-
-Not currently. Rootloom targets the Codex plugin and `AGENTS.md` model deliberately. The engineering ideas are portable, but the shipped integration is Codex-specific.
-
-### Is Rootloom an alternative to Spec Kit, OpenSpec, or Superpowers?
-
-No. Spec Kit and OpenSpec focus on specification-driven development; Superpowers provides a broader development methodology. Rootloom focuses on the execution and review boundary: what changed, why, what actually ran, and what evidence supports completion.
-
-### Does Rootloom prove that a change is correct or secure?
-
-No. It can mechanically observe bounded repository state, command results, scope, provenance, and drift. Diagnosis, semantic review, correctness, and security still require trustworthy evidence and human judgment.
-
-### Does installing Rootloom modify my global Codex configuration?
-
-No. Installation exposes the Skills only. Global guidance, Rules, and Hook enablement require an explicit `$setup-rootloom` request and a reviewed plan.
-
-### Can I use only the lightweight workflow?
-
-Yes. Core Change, Review, and Guidance are the everyday path. Analyzer, Baseline, Contract, Seal, Finalizer, Autonomy, and Project Memory remain optional or experimental.
+The unmaintained 1.2.19 implementation is preserved as the [Archived Assurance Edition](https://github.com/liyanqing90/rootloom/tree/codex/enterprise-assurance). Human approval state machines, immutable audit chains, multi-agent audit runners, and recovery journals are not part of `main`.
 
 ## Documentation
 
@@ -232,6 +230,9 @@ make validate
 make test
 make check
 make compatibility-smoke
+
+# Preview the website at http://localhost:8000
+python3 -m http.server 8000
 ```
 
 ## License

@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en" data-lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#ffffff">
+    <meta name="color-scheme" content="light">
+    <link rel="icon" href="./site/assets/rootloom-mark.svg" type="image/svg+xml">
+    <meta
+      name="description"
+      content="Rootloom is a local OpenAI Codex plugin for scoped changes, root-cause review, and verification you can inspect."
+    >
+    <link rel="canonical" href="https://liyanqing90.github.io/rootloom/">
+    <meta property="og:type" content="website">
+    <meta property="og:site_name" content="Rootloom">
+    <meta property="og:title" content="Rootloom — Make code changes you can explain">
+    <meta
+      property="og:description"
+      content="A disciplined path from repository evidence to a focused change and verification you can inspect."
+    >
+    <meta property="og:url" content="https://liyanqing90.github.io/rootloom/">
+    <meta
+      property="og:image"
+      content="https://liyanqing90.github.io/rootloom/site/assets/rootloom-loom.webp"
+    >
+    <meta property="og:image:alt" content="A black cat using a loom to weave tangled engineering inputs into a verified result">
+    <meta name="twitter:card" content="summary_large_image">
+    <title>Rootloom — Make code changes you can explain</title>
+    <link rel="stylesheet" href="./site/styles.css">
+    <script src="./site/main.js" defer></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main" data-i18n="skip">Skip to main content</a>
+
+    <header class="site-header" data-site-header>
+      <div class="header-inner">
+        <a class="brand" href="#top" aria-label="Rootloom home">
+          <span class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+          <span>Rootloom</span>
+        </a>
+
+        <button
+          class="menu-toggle"
+          type="button"
+          aria-expanded="false"
+          aria-controls="site-nav"
+          data-menu-toggle
+          data-i18n-aria="openMenu"
+        >
+          <span></span><span></span>
+          <span class="sr-only" data-i18n="menu">Menu</span>
+        </button>
+
+        <nav class="site-nav" id="site-nav" aria-label="Primary navigation" data-site-nav>
+          <a href="#why" data-i18n="navWhy">Why Rootloom</a>
+          <a href="#how" data-i18n="navHow">How it works</a>
+          <a href="#workflows" data-i18n="navWorkflows">Workflows</a>
+          <a href="#docs" data-i18n="navDocs">Docs</a>
+        </nav>
+
+        <div class="header-actions">
+          <button class="language-control" type="button" data-language-toggle lang="zh-CN">中文</button>
+          <a
+            class="github-link"
+            href="https://github.com/liyanqing90/rootloom"
+            target="_blank"
+            rel="noreferrer"
+            data-i18n="github"
+          >GitHub</a>
+        </div>
+      </div>
+    </header>
+
+    <main id="main">
+      <section class="hero" id="top" aria-labelledby="hero-title">
+        <div class="hero-inner">
+          <div class="hero-copy">
+            <h1 id="hero-title" data-i18n="heroTitle">Make code changes you can explain.</h1>
+            <p class="hero-lede" data-i18n="heroBody">
+              Rootloom gives Codex a disciplined path from repository evidence to a focused change and verification you can inspect.
+            </p>
+
+            <div class="hero-actions">
+              <a class="button button-primary" href="#install" data-i18n="installCta">Install Rootloom</a>
+              <a
+                class="button button-secondary"
+                href="https://github.com/liyanqing90/rootloom"
+                target="_blank"
+                rel="noreferrer"
+                data-i18n="viewGithub"
+              >View on GitHub</a>
+            </div>
+
+            <div class="command-block command-block-hero" aria-label="Rootloom installation commands">
+              <div class="command-lines">
+                <code>codex plugin marketplace add liyanqing90/rootloom</code>
+                <code>codex plugin add rootloom@rootloom</code>
+              </div>
+              <button class="copy-button" type="button" data-copy="install" data-i18n="copyBoth">Copy both</button>
+            </div>
+
+            <p class="hero-note" data-i18n="heroNote">
+              Installation exposes the Skills only. Optional setup stays off until you ask for it.
+            </p>
+          </div>
+
+          <figure class="hero-figure">
+            <img
+              src="./site/assets/rootloom-loom.webp"
+              width="1774"
+              height="887"
+              alt="A black cat at a loom weaving tangled risks, defects, and context into a checked result"
+              data-i18n-alt="heroAlt"
+            >
+          </figure>
+        </div>
+
+        <div class="thread-rule" aria-hidden="true">
+          <span></span><span></span><span></span><span></span>
+        </div>
+      </section>
+
+      <section class="problem-section section" id="why" aria-labelledby="problem-title">
+        <div class="section-inner problem-intro">
+          <h2 id="problem-title" data-i18n="problemTitle">Most coding failures happen before the diff.</h2>
+          <p data-i18n="problemBody">
+            An agent can write plausible code at the wrong boundary, run one convenient test, then report more certainty than the evidence supports. Rootloom changes that sequence.
+          </p>
+        </div>
+
+        <div class="section-inner failure-list" role="list">
+          <article class="failure-item" role="listitem">
+            <span class="failure-mark mark-coral" aria-hidden="true">×</span>
+            <div>
+              <h3 data-i18n="failureOneTitle">Patch the symptom</h3>
+              <p data-i18n="failureOneBody">The error line gets a guard; the component that owns the behavior stays broken.</p>
+            </div>
+          </article>
+          <article class="failure-item" role="listitem">
+            <span class="failure-mark mark-orange" aria-hidden="true">×</span>
+            <div>
+              <h3 data-i18n="failureTwoTitle">Test the happy path</h3>
+              <p data-i18n="failureTwoBody">Reconnect passes while cancellation and clean disconnect quietly drift.</p>
+            </div>
+          </article>
+          <article class="failure-item" role="listitem">
+            <span class="failure-mark mark-blue" aria-hidden="true">×</span>
+            <div>
+              <h3 data-i18n="failureThreeTitle">Report a result</h3>
+              <p data-i18n="failureThreeBody">Suggested checks and executed checks blur into the same sentence.</p>
+            </div>
+          </article>
+        </div>
+
+        <div class="missing-middle">
+          <div class="section-inner">
+            <div class="middle-heading">
+              <h2 data-i18n="middleTitle">Rootloom makes the missing middle visible.</h2>
+              <p data-i18n="middleBody">The patch is one step in an engineering decision, not the whole decision.</p>
+            </div>
+
+            <div class="decision-flow" aria-label="Rootloom engineering flow" data-i18n-aria="flowAria">
+              <div class="flow-node flow-start"><span data-i18n="flowRequest">Request</span></div>
+              <div class="flow-line" aria-hidden="true"></div>
+              <div class="flow-node"><span data-i18n="flowEvidence">Repository evidence</span></div>
+              <div class="flow-line" aria-hidden="true"></div>
+              <div class="flow-node"><span data-i18n="flowScope">Risk and scope</span></div>
+              <div class="flow-line" aria-hidden="true"></div>
+              <div class="flow-node"><span data-i18n="flowOwner">Owning boundary</span></div>
+              <div class="flow-line" aria-hidden="true"></div>
+              <div class="flow-node"><span data-i18n="flowChange">Focused change</span></div>
+              <div class="flow-line" aria-hidden="true"></div>
+              <div class="flow-node flow-end"><span data-i18n="flowReport">Verified report</span></div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="workflow-section section" id="how" aria-labelledby="workflow-title">
+        <div class="section-inner workflow-heading">
+          <h2 id="workflow-title" data-i18n="workflowTitle">From request to evidence, one owned step at a time.</h2>
+          <p data-i18n="workflowBody">
+            Ordinary work stays on the repository's normal edit-and-test path. Rootloom supplies the discipline around it.
+          </p>
+        </div>
+
+        <div class="section-inner workflow-layout">
+          <ol class="workflow-rail">
+            <li class="rail-coral">
+              <span class="rail-index">1</span>
+              <div>
+                <h3 data-i18n="stepOneTitle">Read the project</h3>
+                <p data-i18n="stepOneBody">Inspect source, tests, local rules, and existing work before editing.</p>
+              </div>
+            </li>
+            <li class="rail-orange">
+              <span class="rail-index">2</span>
+              <div>
+                <h3 data-i18n="stepTwoTitle">Set risk and scope</h3>
+                <p data-i18n="stepTwoBody">Match the workflow to the blast radius and name what should not change.</p>
+              </div>
+            </li>
+            <li class="rail-violet">
+              <span class="rail-index">3</span>
+              <div>
+                <h3 data-i18n="stepThreeTitle">Find the owner</h3>
+                <p data-i18n="stepThreeBody">For a defect, trace the trigger to the boundary that owns the invariant.</p>
+              </div>
+            </li>
+            <li class="rail-blue">
+              <span class="rail-index">4</span>
+              <div>
+                <h3 data-i18n="stepFourTitle">Make the focused change</h3>
+                <p data-i18n="stepFourBody">Use the repository's architecture and preserve unrelated work.</p>
+              </div>
+            </li>
+            <li class="rail-green">
+              <span class="rail-index">5</span>
+              <div>
+                <h3 data-i18n="stepFiveTitle">Verify and report</h3>
+                <p data-i18n="stepFiveBody">Exercise the main path, the invariant, and an adjacent path. Name what actually ran.</p>
+              </div>
+            </li>
+          </ol>
+
+          <figure class="workflow-figure">
+            <img
+              src="./site/assets/rootloom-loom-en.webp"
+              width="1672"
+              height="941"
+              alt="Rootloom loom diagram: risk, defects, and context are processed with evidence, a contract, and tests into a verified result"
+              data-workflow-image
+              data-image-en="./site/assets/rootloom-loom-en.webp"
+              data-image-zh="./site/assets/rootloom-loom-zh.webp"
+              data-i18n-alt="workflowAlt"
+            >
+            <figcaption data-i18n="workflowCaption">
+              The illustrated loom is the product model: messy inputs become a reviewable result through evidence, scope, and tests.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <section class="workflows-section section" id="workflows" aria-labelledby="workflows-title">
+        <div class="section-inner workflows-heading">
+          <h2 id="workflows-title" data-i18n="workflowsTitle">One plugin, three daily entry points.</h2>
+          <p data-i18n="workflowsBody">Choose the lightest workflow that can prove the result. These are alternatives, not a checklist.</p>
+        </div>
+
+        <div class="section-inner workflow-choices">
+          <article class="workflow-choice">
+            <div class="choice-name">
+              <span class="choice-mark mark-coral" aria-hidden="true"></span>
+              <h3 data-i18n="choiceChangeTitle">Daily change</h3>
+            </div>
+            <code>$operating-coding-change</code>
+            <p data-i18n="choiceChangeBody">Build, fix, or refactor ordinary code with scoped verification.</p>
+          </article>
+          <article class="workflow-choice">
+            <div class="choice-name">
+              <span class="choice-mark mark-blue" aria-hidden="true"></span>
+              <h3 data-i18n="choiceReviewTitle">Review only</h3>
+            </div>
+            <code>$operating-code-review</code>
+            <p data-i18n="choiceReviewBody">Inspect a diff, PR, migration, or design without changing files.</p>
+          </article>
+          <article class="workflow-choice">
+            <div class="choice-name">
+              <span class="choice-mark mark-orange" aria-hidden="true"></span>
+              <h3 data-i18n="choiceRiskTitle">High-risk change</h3>
+            </div>
+            <code>$operating-high-risk-change</code>
+            <p data-i18n="choiceRiskBody">Govern APIs, migrations, security, infrastructure, releases, or destructive effects.</p>
+          </article>
+        </div>
+
+        <div class="section-inner optional-line">
+          <p>
+            <span data-i18n="optionalPrefix">Need a machine-readable evidence bundle?</span>
+            <code>$engineering-change</code>
+            <span data-i18n="optionalSuffix">is explicit and optional.</span>
+          </p>
+          <a href="https://github.com/liyanqing90/rootloom#choose-the-workflow-that-matches-the-task" data-i18n="allSkills">Compare every Skill</a>
+        </div>
+      </section>
+
+      <section class="evidence-section section" aria-labelledby="evidence-title">
+        <div class="section-inner evidence-heading">
+          <h2 id="evidence-title" data-i18n="evidenceTitle">Completion should say what happened.</h2>
+          <p data-i18n="evidenceBody">Rootloom keeps plans, command results, repository state, and human judgment as separate facts.</p>
+        </div>
+
+        <div class="section-inner evidence-points">
+          <article>
+            <span class="evidence-symbol symbol-coral" aria-hidden="true">◇</span>
+            <h3 data-i18n="evidenceOneTitle">Plans stay labeled as plans.</h3>
+            <p data-i18n="evidenceOneBody">A generated verification command is a suggestion until it actually runs.</p>
+          </article>
+          <article>
+            <span class="evidence-symbol symbol-blue" aria-hidden="true">◎</span>
+            <h3 data-i18n="evidenceTwoTitle">State is checked after commands finish.</h3>
+            <p data-i18n="evidenceTwoBody">Exit code 0 is insufficient when the repository or captured evidence changed.</p>
+          </article>
+          <article>
+            <span class="evidence-symbol symbol-green" aria-hidden="true">✓</span>
+            <h3 data-i18n="evidenceThreeTitle">Evidence supports judgment.</h3>
+            <p data-i18n="evidenceThreeBody">It makes a review inspectable; it does not prove that code is correct or secure.</p>
+          </article>
+        </div>
+
+        <div class="section-inner case-link">
+          <p data-i18n="caseBody">A real Rootloom regression passed its command and still failed review because repository state changed afterward.</p>
+          <a
+            href="https://github.com/liyanqing90/rootloom/blob/main/docs/case-studies/passing-command-failed-review.md"
+            data-case-link
+            data-case-en="https://github.com/liyanqing90/rootloom/blob/main/docs/case-studies/passing-command-failed-review.md"
+            data-case-zh="https://github.com/liyanqing90/rootloom/blob/main/docs/case-studies/passing-command-failed-review.zh-CN.md"
+            data-i18n="readCase"
+          >Read the case study</a>
+        </div>
+      </section>
+
+      <section class="install-section section" id="install" aria-labelledby="install-title">
+        <div class="section-inner install-layout">
+          <div class="install-copy">
+            <h2 id="install-title" data-i18n="installTitle">Start with one Skill.</h2>
+            <p data-i18n="installBody">Install the plugin, open a new Codex task, and ask for the work in plain language.</p>
+          </div>
+
+          <div class="install-steps">
+            <div class="install-step">
+              <span class="install-number">1</span>
+              <div>
+                <h3 data-i18n="installOneTitle">Add the marketplace</h3>
+                <div class="command-block">
+                  <code>codex plugin marketplace add liyanqing90/rootloom</code>
+                  <button class="copy-button" type="button" data-copy="marketplace" data-i18n="copy">Copy</button>
+                </div>
+              </div>
+            </div>
+            <div class="install-step">
+              <span class="install-number">2</span>
+              <div>
+                <h3 data-i18n="installTwoTitle">Install Rootloom</h3>
+                <div class="command-block">
+                  <code>codex plugin add rootloom@rootloom</code>
+                  <button class="copy-button" type="button" data-copy="plugin" data-i18n="copy">Copy</button>
+                </div>
+              </div>
+            </div>
+            <div class="install-step">
+              <span class="install-number">3</span>
+              <div>
+                <h3 data-i18n="installThreeTitle">Open a new task</h3>
+                <div class="prompt-block">
+                  <code><span>$operating-coding-change</span><br><span data-i18n="promptExample">Fix the reconnect race and verify reconnect, clean disconnect, and cancellation.</span></code>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="section-inner setup-note">
+          <div>
+            <h3 data-i18n="setupTitle">Global setup is optional.</h3>
+            <p data-i18n="setupBody">Installation does not write ~/.codex/AGENTS.md, enable Hooks, install Rules, or read Project Memory.</p>
+          </div>
+          <a href="https://github.com/liyanqing90/rootloom/blob/main/docs/setup.md" data-setup-link data-setup-en="https://github.com/liyanqing90/rootloom/blob/main/docs/setup.md" data-setup-zh="https://github.com/liyanqing90/rootloom/blob/main/docs/setup.zh-CN.md" data-i18n="readSetup">Read setup and rollback</a>
+        </div>
+      </section>
+
+      <section class="limits-section section" id="docs" aria-labelledby="limits-title">
+        <div class="section-inner limits-heading">
+          <h2 id="limits-title" data-i18n="limitsTitle">Useful because it stays narrow.</h2>
+          <p data-i18n="limitsBody">Rootloom owns the execution and review boundary. Existing engineering tools keep doing their own jobs.</p>
+        </div>
+
+        <div class="section-inner limits-layout">
+          <div class="limits-column">
+            <h3 data-i18n="isTitle">Rootloom is</h3>
+            <ul>
+              <li data-i18n="isOne">A local OpenAI Codex plugin</li>
+              <li data-i18n="isTwo">Single-agent by default</li>
+              <li data-i18n="isThree">Python-standard-library-only at runtime</li>
+              <li data-i18n="isFour">Lightweight for ordinary changes</li>
+            </ul>
+          </div>
+          <div class="limits-column">
+            <h3 data-i18n="isNotTitle">Rootloom is not</h3>
+            <ul>
+              <li data-i18n="isNotOne">A specification framework or test runner</li>
+              <li data-i18n="isNotTwo">A secret scanner or sandbox</li>
+              <li data-i18n="isNotThree">Proof that a change is correct or secure</li>
+              <li data-i18n="isNotFour">An integration for other coding agents</li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="section-inner docs-links">
+          <a href="https://github.com/liyanqing90/rootloom/blob/main/docs/architecture.md" data-doc="architecture" data-i18n="docArchitecture">Architecture</a>
+          <a href="https://github.com/liyanqing90/rootloom/blob/main/docs/maturity.md" data-doc="maturity" data-i18n="docMaturity">Maturity and guarantees</a>
+          <a href="https://github.com/liyanqing90/rootloom/blob/main/docs/troubleshooting.md" data-doc="troubleshooting" data-i18n="docTroubleshooting">Troubleshooting</a>
+          <a href="https://github.com/liyanqing90/rootloom/releases" data-i18n="docReleases">Releases</a>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="section-inner footer-inner">
+        <div>
+          <a class="brand footer-brand" href="#top">
+            <span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span>
+            <span>Rootloom</span>
+          </a>
+          <p data-i18n="footerLine">An inspectable personal engineering workflow for Codex.</p>
+        </div>
+        <div class="footer-links">
+          <a href="https://github.com/liyanqing90/rootloom" data-i18n="githubRepository">GitHub repository</a>
+          <a href="https://github.com/liyanqing90/rootloom/blob/main/LICENSE" data-i18n="license">MIT License</a>
+        </div>
+      </div>
+    </footer>
+
+    <div class="copy-status" role="status" aria-live="polite" data-copy-status></div>
+  </body>
+</html>

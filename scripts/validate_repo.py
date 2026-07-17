@@ -38,6 +38,10 @@ SEMVER = re.compile(
 ACTION_USE = re.compile(r"^\s*uses:\s*[^\s@]+@([^\s#]+)", re.MULTILINE)
 LOCAL_LINK = re.compile(r"!?(?:\[[^\]]*\])\(([^)]+)\)")
 HTML_SRC = re.compile(r'<(?:img|source)\b[^>]*\bsrc="([^"]+)"', re.IGNORECASE)
+HTML_REF = re.compile(
+    r'<(?:a|img|link|script|source)\b[^>]*\b(?:href|src)="([^"]+)"',
+    re.IGNORECASE,
+)
 SECRET_PATTERNS = (
     re.compile(r"\bsk-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
@@ -574,6 +578,56 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "assume-unchanged",
             "不是内容感知型 Secret Scanner",
         ),
+        ROOT / "index.html": (
+            "Make code changes you can explain.",
+            "data-language-toggle",
+            "data-workflow-image",
+            "rootloom-loom-en.webp",
+            "rootloom-loom-zh.webp",
+            "codex plugin marketplace add liyanqing90/rootloom",
+            "codex plugin add rootloom@rootloom",
+            "$operating-coding-change",
+            "Completion should say what happened.",
+        ),
+        ROOT / "site" / "styles.css": (
+            "--canvas:",
+            "--font-sans:",
+            ".workflow-rail",
+            ".evidence-section",
+            ".copy-status",
+            "@media (prefers-reduced-motion: reduce)",
+        ),
+        ROOT / "site" / "main.js": (
+            'rootloom-language',
+            "navigator.clipboard",
+            "setLocalizedText",
+            "让每一次代码修改",
+            "data-workflow-image",
+            "data-copy",
+        ),
+        ROOT / ".github" / "workflows" / "pages.yml": (
+            "actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b",
+            "actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b",
+            "actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e",
+            "pages: write",
+            "id-token: write",
+            "GitHub Pages artifact must not contain symlinks",
+        ),
+        ROOT / "PRODUCT.md": (
+            "## Register",
+            "brand",
+            "Tactile, rigorous, candid",
+            "## Accessibility & Inclusion",
+        ),
+        ROOT / "DESIGN.md": (
+            "Creative North Star: \"The Working Loom\"",
+            "## 1. Overview",
+            "## 2. Colors",
+            "## 3. Typography",
+            "## 4. Elevation",
+            "## 5. Components",
+            "## 6. Do's and Don'ts",
+        ),
         ROOT / "docs" / "setup.md": (
             "gh pr merge 123 --merge",
             "gh release create v1.0.0",
@@ -747,12 +801,17 @@ def validate_python(errors: list[str]) -> None:
 
 
 def validate_links(errors: list[str]) -> None:
-    documents = [ROOT / "README.md", ROOT / "README.zh-CN.md"] + sorted(
+    documents = [ROOT / "README.md", ROOT / "README.zh-CN.md", ROOT / "index.html"] + sorted(
         (ROOT / "docs").glob("*.md")
     )
     for path in documents:
         text = path.read_text(encoding="utf-8")
-        for raw in LOCAL_LINK.findall(text) + HTML_SRC.findall(text):
+        references = (
+            HTML_REF.findall(text)
+            if path.suffix == ".html"
+            else LOCAL_LINK.findall(text) + HTML_SRC.findall(text)
+        )
+        for raw in references:
             target = raw.strip().strip("<>").split("#", 1)[0]
             if not target or target.startswith(("http://", "https://", "mailto:")):
                 continue
@@ -803,6 +862,9 @@ def validate_assets(errors: list[str]) -> None:
             errors.append(f"Chinese architecture diagram contains English text: {path.relative_to(ROOT)}")
     required_images = {
         ROOT / "assets" / "rootloom-brand.webp": b"RIFF",
+        ROOT / "site" / "assets" / "rootloom-loom.webp": b"RIFF",
+        ROOT / "site" / "assets" / "rootloom-loom-en.webp": b"RIFF",
+        ROOT / "site" / "assets" / "rootloom-loom-zh.webp": b"RIFF",
         ROOT / "docs" / "diagram" / "architecture-en.svg": b"<svg",
         ROOT / "docs" / "diagram" / "architecture-en@2x.png": b"\x89PNG\r\n\x1a\n",
         ROOT / "docs" / "diagram" / "architecture-zh.svg": b"<svg",
@@ -821,7 +883,18 @@ def validate_assets(errors: list[str]) -> None:
 
 
 def validate_secrets(errors: list[str]) -> None:
-    suffixes = {".md", ".py", ".json", ".toml", ".yml", ".yaml", ".rules"}
+    suffixes = {
+        ".css",
+        ".html",
+        ".js",
+        ".json",
+        ".md",
+        ".py",
+        ".rules",
+        ".toml",
+        ".yaml",
+        ".yml",
+    }
     for path in ROOT.rglob("*"):
         if not path.is_file() or ".git" in path.parts or "__pycache__" in path.parts:
             continue
