@@ -683,6 +683,8 @@ html[data-lang="zh"] .hero-copy h1 {
 }
 
 .workflow-choices {
+  display: grid;
+  grid-auto-rows: 1fr;
   margin-top: clamp(54px, 7vw, 92px);
   border-top: 1px solid var(--ink);
 }
@@ -694,11 +696,10 @@ html[data-lang="zh"] .hero-copy h1 {
   gap: 28px;
   padding: 26px 0;
   border-bottom: 1px solid var(--rule);
-  transition: background-color 180ms var(--ease-out), padding 180ms var(--ease-out);
+  transition: background-color 180ms var(--ease-out);
 }
 
 .workflow-choice:hover {
-  padding-inline: 14px;
   background: var(--surface);
 }
 
@@ -1236,6 +1237,10 @@ html[data-lang="zh"] .hero-copy h1 {
 
   .workflow-figure {
     grid-row: 1;
+  }
+
+  .workflow-choices {
+    grid-auto-rows: auto;
   }
 
   .workflow-choice {

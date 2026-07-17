@@ -1,4 +1,4 @@
-.PHONY: check test validate smoke compatibility-smoke
+.PHONY: check test validate smoke compatibility-smoke telemetry-check
 
 check: validate test
 
@@ -13,3 +13,6 @@ smoke:
 
 compatibility-smoke:
 	PYTHONDONTWRITEBYTECODE=1 python3 tests/compatibility_smoke.py
+
+telemetry-check:
+	PYTHONDONTWRITEBYTECODE=1 python3 scripts/verify_vibeloft_runtime.py

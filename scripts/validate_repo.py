@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
 import re
 import sys
 import xml.etree.ElementTree as ET
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +49,25 @@ SECRET_PATTERNS = (
     re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----"),
     re.compile(r"\bgh[opusr]_[A-Za-z0-9]{20,}\b"),
 )
+VIBELOFT_SCRIPT_URL = "https://vibeloft.ai/telemetry/v1.js"
+VIBELOFT_PRODUCT_ID = "b34aed90-7b26-4ca0-b420-e31177be66e1"
+VIBELOFT_PRODUCTION_URL = "https://liyanqing90.github.io/rootloom/"
+VIBELOFT_AUTH_KEY_SHA256 = "cbe18f13cd6245e2c27402ce96677486236c105a9c18e96be3f425ecfb9a85fc"
+VIBELOFT_AUTH_KEY = re.compile(r"vl_web\.[A-Za-z0-9_-]{43}")
+
+
+class WebDocumentParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.scripts: list[dict[str, str | None]] = []
+        self.meta: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script":
+            self.scripts.append(attributes)
+        elif tag == "meta":
+            self.meta.append(attributes)
 
 
 def load_json(path: Path, errors: list[str]) -> dict[str, Any]:
@@ -542,6 +563,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "reintake-required",
             "assume-unchanged",
             "not a content-aware secret scanner",
+            "Website telemetry",
+            "official VibeLoft browser runtime",
         ),
         ROOT / "README.zh-CN.md": (
             "Rootloom Personal Core",
@@ -577,6 +600,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "reintake-required",
             "assume-unchanged",
             "不是内容感知型 Secret Scanner",
+            "网站遥测",
+            "VibeLoft 官方浏览器运行时",
         ),
         ROOT / "index.html": (
             "Make code changes you can explain.",
@@ -588,6 +613,8 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "codex plugin add rootloom@rootloom",
             "$operating-coding-change",
             "Completion should say what happened.",
+            "https://vibeloft.ai/telemetry/v1.js",
+            'data-vl-product-id="b34aed90-7b26-4ca0-b420-e31177be66e1"',
         ),
         ROOT / "site" / "styles.css": (
             "--canvas:",
@@ -627,6 +654,21 @@ def validate_personal_contracts(errors: list[str]) -> None:
             "## 4. Elevation",
             "## 5. Components",
             "## 6. Do's and Don'ts",
+        ),
+        ROOT / "scripts" / "verify_vibeloft_runtime.py": (
+            "credentials:\"omit\"",
+            "globalPrivacyControl",
+            "doNotTrack",
+            "pushState",
+            "https://api.vibeloft.ai/api/v1/telemetry/events",
+        ),
+        ROOT / "docs" / "decisions" / "2026-07-17-vibeloft-web-telemetry.md": (
+            "Status: accepted",
+            "official VibeLoft runtime",
+            "registered production origin",
+            "GPC/DNT",
+            "Rootloom will not install a telemetry package",
+            "Rollback is a Git revert",
         ),
         ROOT / "docs" / "setup.md": (
             "gh pr merge 123 --merge",
@@ -783,7 +825,7 @@ def validate_personal_contracts(errors: list[str]) -> None:
         if forbidden in ci:
             errors.append(f"CI retains Assurance-only surface: {forbidden}")
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
-    for target in ("check:", "validate:", "test:", "compatibility-smoke:"):
+    for target in ("check:", "validate:", "test:", "compatibility-smoke:", "telemetry-check:"):
         if target not in makefile:
             errors.append(f"Makefile is missing {target}")
 
@@ -818,6 +860,78 @@ def validate_links(errors: list[str]) -> None:
             target = target.replace("%20", " ")
             if not (path.parent / target).resolve().exists():
                 errors.append(f"broken local link in {path.relative_to(ROOT)}: {raw}")
+
+
+def validate_web_telemetry(errors: list[str]) -> None:
+    index = ROOT / "index.html"
+    index_text = index.read_text(encoding="utf-8")
+    parser = WebDocumentParser()
+    parser.feed(index_text)
+    if f'<link rel="canonical" href="{VIBELOFT_PRODUCTION_URL}">' not in index_text:
+        errors.append("website canonical URL differs from the registered VibeLoft production origin")
+    if f'<meta property="og:url" content="{VIBELOFT_PRODUCTION_URL}">' not in index_text:
+        errors.append("website Open Graph URL differs from the registered VibeLoft production origin")
+    initializers = [script for script in parser.scripts if script.get("src") == VIBELOFT_SCRIPT_URL]
+    if len(initializers) != 1:
+        errors.append("website must contain exactly one official VibeLoft initializer")
+    else:
+        initializer = initializers[0]
+        if "defer" not in initializer:
+            errors.append("VibeLoft initializer must remain deferred")
+        if initializer.get("data-vl-product-id") != VIBELOFT_PRODUCT_ID:
+            errors.append("VibeLoft product ID differs from the registered website")
+        auth_key = initializer.get("data-vl-auth-key") or ""
+        if not VIBELOFT_AUTH_KEY.fullmatch(auth_key):
+            errors.append("VibeLoft browser auth key has an invalid public credential format")
+        elif hashlib.sha256(auth_key.encode()).hexdigest() != VIBELOFT_AUTH_KEY_SHA256:
+            errors.append("VibeLoft browser auth key differs from the configured product credential")
+
+    html_entries = sorted(path for path in ROOT.rglob("*.html") if ".git" not in path.parts)
+    if html_entries != [index]:
+        errors.append("GitHub Pages must keep one global HTML entry with one telemetry initializer")
+
+    credential_paths: list[Path] = []
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or ".git" in path.parts:
+            continue
+        if path.suffix.lower() not in {".css", ".html", ".js", ".json", ".md", ".py", ".yml"}:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        credential_paths.extend(path for _ in VIBELOFT_AUTH_KEY.finditer(text))
+    if credential_paths != [index]:
+        rendered = ", ".join(str(path.relative_to(ROOT)) for path in credential_paths) or "none"
+        errors.append(f"VibeLoft browser auth key must appear only in index.html; found: {rendered}")
+
+    host_sources = "\n".join(
+        path.read_text(encoding="utf-8")
+        for path in (index, ROOT / "site" / "main.js", ROOT / "site" / "styles.css")
+    )
+    for forbidden in (
+        "https://api.vibeloft.ai/api/v1/telemetry/events",
+        "VibeLoftTelemetry",
+        "trackPageView",
+        "data-vl-endpoint",
+        "supabase",
+    ):
+        if forbidden.casefold() in host_sources.casefold():
+            errors.append(f"website host code must not own or bypass VibeLoft runtime behavior: {forbidden}")
+
+    csp = next(
+        (
+            meta.get("content") or ""
+            for meta in parser.meta
+            if (meta.get("http-equiv") or "").casefold() == "content-security-policy"
+        ),
+        None,
+    )
+    if csp is not None:
+        if "https://vibeloft.ai" not in csp:
+            errors.append("website CSP script-src must allow https://vibeloft.ai")
+        if "https://api.vibeloft.ai" not in csp:
+            errors.append("website CSP connect-src must allow https://api.vibeloft.ai")
 
 
 def validate_workflows(errors: list[str]) -> None:
@@ -921,6 +1035,7 @@ def main() -> int:
     validate_personal_contracts(errors)
     validate_python(errors)
     validate_links(errors)
+    validate_web_telemetry(errors)
     validate_workflows(errors)
     validate_assets(errors)
     validate_secrets(errors)

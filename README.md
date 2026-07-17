@@ -223,6 +223,10 @@ The unmaintained 1.2.19 implementation is preserved as the [Archived Assurance E
 - [Troubleshooting](docs/troubleshooting.md)
 - [Contributing](CONTRIBUTING.md)
 
+## Website telemetry
+
+The public GitHub Pages site loads the official VibeLoft browser runtime once from the global `index.html`. Rootloom does not install a telemetry package, send manual page views, contact Supabase from the browser, or configure an alternate collector. The runtime owns its random first-party device ID, coarse environment digest, GPC/DNT handling, navigation coverage, retry behavior, and failure isolation. See the accepted [website telemetry decision](docs/decisions/2026-07-17-vibeloft-web-telemetry.md) for the exact boundary and rollback.
+
 ## Development
 
 ```bash
@@ -230,6 +234,7 @@ make validate
 make test
 make check
 make compatibility-smoke
+make telemetry-check
 
 # Preview the website at http://localhost:8000
 python3 -m http.server 8000

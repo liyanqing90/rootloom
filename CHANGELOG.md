@@ -6,6 +6,18 @@ project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Load the official VibeLoft browser telemetry runtime exactly once on the public GitHub Pages site, with a repository contract for the registered product, production origin, privacy signals, and collector boundary.
+
+### Fixed
+
+- Keep the three website workflow rows equal in height and prevent hover styling from changing padding, content position, or layout.
+
+### Security
+
+- Keep the VibeLoft browser credential only in the global script configuration, forbid local/manual collectors and Supabase access, and verify the upstream GPC/DNT and `credentials: omit` contract without emitting mock traffic.
+
 ## [3.4.0] - 2026-07-16
 
 ### Changed
